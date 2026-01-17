@@ -1,0 +1,13 @@
+{
+  "editor.inlineSuggest.enabled": true,
+  "editor.acceptSuggestionOnEnter": "off",
+  "editor.tabCompletion": "on",
+	"editor.snippetSuggestions": "top",
+	"python.analysis.autoImportCompletions": true,
+	  "editor.detectIndentation": false,
+  "editor.insertSpaces": true,
+  "editor.tabSize": 4,
+  "editor.formatOnSave": true,
+
+
+}

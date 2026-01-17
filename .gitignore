@@ -1,0 +1,14 @@
+venv/
+__pycache__/
+*.pyc
+.env
+.DS_Store
+
+# Bỏ qua dữ liệu (Data nặng không push lên git)
+data/
+chroma_db/
+
+outputs/
+logs/
+venv/
+storage/
