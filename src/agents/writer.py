@@ -18,11 +18,13 @@ logger = setup_logger(name="WriterAgent", logfile="logs/agents.log")
 llm = ChatOpenAI(model=LLM_MODEL_NAME, temperature=0.4)
 
 # 2. Define Prompt
+# --- WRITER PROMPT (UPDATED FOR LATEX SAFETY) ---
+# LƯU Ý: Các biến thật dùng {}, các ví dụ LaTeX dùng {{}}
 writer_template = """You are an expert educational content creator, capable of writing high-quality textbook material for any subject (Science, History, Technology, Arts, etc.).
 
 ---CONTEXT AND LOCATION---
 You are currently writing:
-- **Book Topic***: {course_topic}
+- **Book Topic**: {course_topic}
 - **Chapter {chapter_num}: ** {chapter_title}
 - **Section {section_num}: ** {section_title}
 - **Description:** {section_description}
@@ -35,7 +37,7 @@ RESEARCH CONTEXT: (From Vector DB)
    - For IT/Engineering: Be precise, practical. Use code blocks for examples.
    - For History/Arts: Be narrative, engaging. Use dates and cultural context.
    - For Science: Be rigorous, explanatory. Use formulas if needed (LaTeX).
-   
+
 2. FORMATTING:
    - Write in clear, academic but accessible Markdown.
    - Use bolding for key terms.
@@ -50,22 +52,33 @@ RESEARCH CONTEXT: (From Vector DB)
    - Start immediately with a level 2 Header: `## {section_num}. {section_title}`
    - Use level 3 Headers (`###`) for sub-points.
    - DO NOT output Chapter Title (it is handled elsewhere)
-   
+
 5. **Content Depth (CRITICAL):**
-   - **Target Length:** Write at least **800-1000 words**.
+   - **Target Length:** Write at least **20-50 words** (DEBUG MODE) or **800-1000 words** (FULL MODE).
    - **No Fluff:** Do not summarize. Explain concepts in depth (The "Why" and "How").
    - **Academic Tone:** Formal, precise, but accessible (like a professor teaching).
 
 6. **Required Elements:**
    - **Key Terminology:** Bold important terms.
    - **Examples:** Provide concrete, real-world examples.
-   - **Code/Math:** If the topic involves coding/math, use code blocks or LaTeX ($E=mc^2$).
+   - **Math & LaTeX Rules (CRITICAL FOR PDF):**
+     - **Block Math:** ALWAYS use double dollar signs `$$ ... $$` on new lines.
+       - ❌ BAD: `\\[ E = mc^2 \\]`
+       - ✅ GOOD: `$$ E = mc^2 $$`
+     - **Inline Math:** Use single dollar signs `$ ... $`.
+       - ✅ GOOD: The force is $F$.
+     - **No Naked Math:** NEVER use LaTeX commands (like `_`, `^`, `\\frac`) without `$`.
+       - ❌ BAD: a_x = 5
+       - ✅ GOOD: $a_x = 5$
+       - ❌ BAD: \\frac{{d}}{{t}}
+       - ✅ GOOD: $\\frac{{d}}{{t}}$
    - **Visuals:** Add a placeholder for diagrams: `> [IMAGE SUGGESTION: Describe the image needed here]`
 
 7. **Missing Info:**
-   - If the Research Material is thin, use your internal expert knowledge to fill gaps. 
+   - If the Research Material is thin, use your internal expert knowledge to fill gaps.
    - Connect this section to the broader Chapter theme.
 """
+
 
 writer_prompt = ChatPromptTemplate.from_messages([
     ("system", writer_template),
