@@ -17,26 +17,26 @@ BLACKLIST_EXTENSIONS = [
     ".zip", ".rar", ".exe", ".iso", ".mp4", ".mp3", ".avi", ".jpg", ".png", ".ppt", ".pptx", ".xls", ".xlsx"
 ]
 
+BLACKLIST_EXTENSIONS = [
+    ".zip", ".rar", ".exe", ".iso", ".mp4", ".mp3", ".avi", ".jpg", ".png", ".ppt", ".pptx", ".xls", ".xlsx"
+]
+
+# Giả lập User-Agent xịn
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+}
+
 def is_valid_url_static(url: str) -> bool:
-    """
-    Lớp 1: Kiểm tra nhanh dựa trên chuỗi URL
-    """
     try:
         parsed = urlparse(url)
         domain = parsed.netloc.lower()
         path = parsed.path.lower()
         
-        # 1. Kiểm tra Domain rác
         for bad_domain in BLACKLIST_DOMAINS:
-            if bad_domain in domain:
-                logger.info(f"Filtered Domain: {domain}")
-                return False
+            if bad_domain in domain: return False
                 
-        # 2. Kiểm tra đuôi file rác
         for ext in BLACKLIST_EXTENSIONS:
-            if path.endswith(ext):
-                logger.info(f" Filtered Ext: {path}")
-                return False
+            if path.endswith(ext): return False
         
         return True
     except:
@@ -44,56 +44,41 @@ def is_valid_url_static(url: str) -> bool:
 
 def check_url_content_type(url: str) -> str:
     """
-    Lớp 2: Gửi HEAD request để kiểm tra loại nội dung mà không cần tải hết
-    Trả về: 'pdf', 'html', hoặc None (nếu rác)
+    Dùng GET stream=True thay vì HEAD để tránh bị chặn
     """
     try:
-        # Timeout ngắn (3s) để check nhanh
-        response = requests.head(url, timeout=3, allow_redirects=True)
+        # stream=True: Chỉ tải headers, chưa tải nội dung -> Nhanh như HEAD nhưng ít lỗi hơn
+        response = requests.get(url, headers=HEADERS, timeout=5, stream=True)
         
         if response.status_code != 200:
             return None # type: ignore
             
         content_type = response.headers.get('Content-Type', '').lower()
         
+        # Đóng kết nối ngay lập tức
+        response.close()
+        
         if 'application/pdf' in content_type:
             return 'pdf'
         elif 'text/html' in content_type:
             return 'html'
         else:
-            return None # Loại bỏ ảnh, video, binary khác # type: ignore
-            
+            return None # type: ignore
     except Exception:
-        return None # type: ignore
+        return None # Coi như lỗi mạng # type: ignore
 
 def filter_and_classify_urls(urls: list[str]):
-    """
-    Hàm chính: Lọc danh sách URL thô và phân loại
-    """
     clean_urls = []
-    
-    # Bước 1: Lọc trùng lặp
     unique_urls = list(set(urls))
     
     logger.info(f"🔍 Filtering {len(unique_urls)} URLs...")
     
     for url in unique_urls:
-        # Lớp 1: Check tĩnh
-        if not is_valid_url_static(url):
-            continue
+        if not is_valid_url_static(url): continue
             
-        # Lớp 2: Check HEAD (Có thể bỏ qua bước này nếu muốn tốc độ cực nhanh, 
-        # nhưng nên giữ để biết đâu là PDF)
         doc_type = check_url_content_type(url)
-        
         if doc_type:
-            clean_urls.append({
-                "url": url,
-                "type": doc_type
-            })
-        else:
-            pass
-            logger.warning(f" ⚠️ Unreachable or Invalid Type: {url}")
+            clean_urls.append({"url": url, "type": doc_type})
             
-    logger.info(f"✅ Filtered: {len(unique_urls)} -> {len(clean_urls)} high-quality links.")
+    logger.info(f"✅ Filtered: {len(unique_urls)} -> {len(clean_urls)} valid links.")
     return clean_urls
