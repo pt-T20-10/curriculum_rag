@@ -11,7 +11,7 @@ from ddgs import DDGS
 logger = setup_logger(name="Search Engine", logfile="logs/search_engine.log")
 
 
-def search_web(query: str, max_result: int = 10):
+def search_web(query: str, max_results: int = 10):
     """
         Using DuckDuckGo search links
     """
@@ -28,7 +28,7 @@ def search_web(query: str, max_result: int = 10):
                 region="vn-vn",
                 safesearch="off",
                 timelimit=None,
-                max_result=max_result
+                max_results=max_results
             )
             
             if ddg_gen:
@@ -46,8 +46,3 @@ def search_web(query: str, max_result: int = 10):
     logger.info(f"Final Result: Found {len(results)} links.")
     return results
 
-if __name__ == "__main__":
-    links = search_web("Giáo trình Lập trình Python cơ bản", max_result=5)
-    if links:
-        for i, link in enumerate(links,1):
-            print(f"[{i}] {link['title']}\n    {link['href']}")
