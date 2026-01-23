@@ -1,7 +1,7 @@
 from email import message
 import operator
 from re import search
-from typing import List, TypedDict, Annotated, Optional
+from typing import Any, List, TypedDict, Annotated, Optional
 from pydantic import BaseModel, Field
 
 #--- 1. Data Models -----
@@ -29,14 +29,13 @@ class AgentState(TypedDict):
     request: str
 
     #Detailed planed from planner
-    curriculum: Optional[CurriculumOutline]
+    curriculum: Any
     
     #Current state
     current_chapter_index: int
     current_subsection_index: int 
     
     current_content: str
-
     final_content: str
 
     #Avoid infinity loop

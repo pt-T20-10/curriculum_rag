@@ -125,47 +125,61 @@ OUTPUT LANGUAGE: VIETNAMESE (Tiếng Việt).
 def write_section(state: AgentState):
     logger.info("--- WRITER NODE: Drafting Content ---")
     
-    # 1. Lấy thông tin vị trí từ State
     curriculum = state["curriculum"]
     chap_idx = state["current_chapter_index"]
     sub_idx = state["current_subsection_index"]
     
-    # Xử lý tương thích cả Dict và Object
-    if isinstance(curriculum, dict):
-        current_chapter = curriculum['chapters'][chap_idx]
-        current_subsection = current_chapter['sections'][sub_idx] # Đây là string tiêu đề
+    try:
+        if isinstance(curriculum, dict):
+            current_chapter = curriculum['chapters'][chap_idx]
+            
+            # --- DEFENSIVE ACCESS (Hỗ trợ cả 2 key) ---
+            if 'subsections' in current_chapter:
+                items = current_chapter['subsections']
+                is_complex = True
+            elif 'sections' in current_chapter:
+                items = current_chapter['sections']
+                is_complex = False
+            else:
+                raise KeyError("Missing sections key")
+            
+            current_item = items[sub_idx]
+            
+            chap_title = current_chapter.get('title', current_chapter.get('chapter_title', 'Unknown Chapter'))
+            
+            if is_complex:
+                sec_title = current_item.get('title', 'Unknown Section')
+                sec_desc = current_item.get('description', f"Detailed content about {sec_title}")
+            else:
+                sec_title = current_item
+                sec_desc = f"Write detailed textbook content for {sec_title} in context of {chap_title}"
+                
+        else:
+            current_chapter = curriculum.chapters[chap_idx]
+            current_item = current_chapter.subsections[sub_idx]
+            chap_title = current_chapter.title
+            sec_title = current_item.title
+            sec_desc = current_item.description
         
-        chap_title = current_chapter['chapter_title']
-        sec_title = current_subsection
-        sec_desc = f"Learn about {sec_title}" # Dict từ Planner không có desc, tự generate
-    else:
-        # Nếu dùng Pydantic Model (Future proof)
-        current_chapter = curriculum.chapters[chap_idx] # type: ignore
-        current_subsection = current_chapter.subsections[sub_idx]
+        display_chap = chap_idx + 1
+        display_sec = f"{display_chap}.{sub_idx + 1}"
         
-        chap_title = current_chapter.title
-        sec_title = current_subsection.title
-        sec_desc = current_subsection.description
+        messages = state["messages"]
+        context = messages[-1] if messages else ""
+        
+        agent = WriterAgent()
+        content = agent.write_section(
+            course_topic=state.get("request", "Topic"),
+            chapter_num=display_chap,
+            chapter_title=chap_title,
+            section_num=display_sec,
+            section_title=sec_title,
+            section_description=sec_desc,
+            context=context
+        )
+        
+        return {"current_content": content}
 
-    # Số thứ tự hiển thị
-    display_chap_num = chap_idx + 1
-    display_sec_num = f"{display_chap_num}.{sub_idx + 1}"
-
-    # 2. Lấy Context từ Researcher
-    messages = state["messages"]
-    context = messages[-1] if messages else "No context found."
-
-    # 3. Gọi Agent
-    agent = WriterAgent()
-    content = agent.write_section(
-        course_topic=state.get("request", "General Topic"),
-        chapter_num=display_chap_num,
-        chapter_title=chap_title,
-        section_num=display_sec_num,
-        section_title=sec_title,
-        section_description=sec_desc,
-        context=context
-    )
-    
-    # 4. Trả về
-    return {"current_content": content}
+    except Exception as e:
+        logger.error(f"Error in Writer Node: {e}")
+        return {"current_content": "(Error generating content. Please check logs.)"}

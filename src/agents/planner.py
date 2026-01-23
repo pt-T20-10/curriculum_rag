@@ -1,3 +1,4 @@
+import stat
 import sys
 import os
 import json
@@ -7,6 +8,8 @@ from typing import Any, List, Dict, Optional
 # --- Import Libraries ---
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.decomposition import NMF
+from sympy import Plane
+from src.graph.state import AgentState
 
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -18,6 +21,7 @@ from src.log_config import setup_logger
 
 # Setup Logger
 logger = setup_logger(name="PlannerAgent", logfile="logs/agents.log")
+
 
 class HybridPlanner:
     """
@@ -43,6 +47,7 @@ class HybridPlanner:
             'this', 'that', 'are', 'be', 'or', 'from', 'at'
         ]
         
+        
     def get_all_documents(self) -> List[str]: 
         """Retrieve all text chunks from ChromaDB."""
         try:
@@ -53,6 +58,7 @@ class HybridPlanner:
         except Exception as e:
             logger.error(f"Error fetching docs: {e}")
             return []
+        
         
     def extract_topics_with_nmf(self, docs: List[str], num_topics=8) -> str:
         """PHASE 1 (ALGO): Topic Modeling using NMF."""
@@ -96,6 +102,7 @@ class HybridPlanner:
 
         logger.info(f"       Identified raw topic clusters: \n{result_text}")
         return result_text
+    
     
     def refine_plan_with_llm(self, topic_name: str, raw_topics: str) -> Optional[Dict[str, Any]]:
         """PHASE 2 (LLM): Refine and Structure using GPT."""
@@ -160,6 +167,7 @@ class HybridPlanner:
             logger.debug(f"Raw Output: {response.content}")
             return None
         
+        
     def create_curriculum(self, topic: str) -> Optional[Dict[str, Any]]: 
         """Main orchestration method."""
         docs = self.get_all_documents()
@@ -173,3 +181,26 @@ class HybridPlanner:
         
         final_plan = self.refine_plan_with_llm(topic, raw_topic_str)
         return final_plan
+    
+def plan_curriculum(state: AgentState):
+        """
+        Node: Planner 
+        Input request -> Output Curriculum Outline (Dict)
+        """
+        logger.info(f"--- PLANNER NODE: Building Curriculum ---")
+        user_request = state["request"]
+        
+        planner = HybridPlanner()
+        plan = planner.create_curriculum(user_request)
+        
+        if not plan:
+            return {"messages": ["Error: Planner failed."]}
+        
+        return{
+            "curriculum": plan,
+            "current_chapter_index": 0,
+            "current_subsection_index": 0,
+            "final_content": "",
+            "revision_number": 0,
+            "messages": [f"Plan created for: {user_request}"]
+        }

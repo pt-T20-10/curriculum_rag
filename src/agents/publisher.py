@@ -94,8 +94,7 @@ header-includes:
                 extra_args=[
                     '--pdf-engine=xelatex',   # QUAN TRỌNG: Dùng engine này để không lỗi font Việt
                     '-V', 'mainfont=Times New Roman', # Yêu cầu máy có font này
-                    '--toc',                  # Tự động tạo Mục lục (Table of Contents)
-                    '--number-sections'       # Tự động đánh số đề mục (1, 1.1, 1.1.1)
+                    '--toc'           # Tự động tạo Mục lục (Table of Contents)
                 ]
             )
             logger.info(f"✅ PDF SAVED: {pdf_filename}")
