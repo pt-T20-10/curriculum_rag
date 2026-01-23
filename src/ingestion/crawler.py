@@ -143,7 +143,7 @@ def ingest_dynamic_data(topic: str, clean_links: list[dict]):
     logger.info(f"📊 Total Documents: {len(all_docs)} (Roots + Subs).")
 
     # Chunking
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     chunks = text_splitter.split_documents(all_docs)
     logger.info(f"🧩 Total Chunks: {len(chunks)}")
 

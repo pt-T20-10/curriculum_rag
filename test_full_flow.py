@@ -11,6 +11,7 @@ if project_root not in sys.path:
 from src.ingestion.search_engine import search_web
 from src.ingestion.url_filter import filter_and_classify_urls
 from src.ingestion.crawler import ingest_dynamic_data
+from src.agents.query_expansion import QueryExpansionAgent
 from src.agents.planner import HybridPlanner
 
 # Cấu hình log gọn gàng
@@ -19,14 +20,20 @@ logger = logging.getLogger(__name__)
 
 def run_full_process_test():
     # 0. CẤU HÌNH INPUT
-    topic = "Giáo trình Lập trình Python cơ bản"
+    topic = "Đầu tư tiền ảo"
     print(f"\n🚀 BẮT ĐẦU TEST TOÀN TRÌNH CHO CHỦ ĐỀ: '{topic}'\n")
+
+    qe_agent = QueryExpansionAgent()
+    search_queries = qe_agent.expand_query(topic)
 
     # --- GIAI ĐOẠN 1: THU THẬP DỮ LIỆU (INGESTION) ---
     
     print("1️⃣  [SEARCH] Đang tìm kiếm tài liệu trên DuckDuckGo...")
     # Tìm 20 kết quả để lọc dần
-    raw_results = search_web(topic, max_results=50)
+    main_topic = search_queries[0]
+    
+    print(f"--> Hệ thống tự động chuẩn hóa thành: '{main_topic}'")
+    raw_results = search_web(main_topic, max_results=50)
     raw_urls = [r['href'] for r in raw_results]
     print(f"   -> Tìm thấy {len(raw_urls)} links thô.")
 

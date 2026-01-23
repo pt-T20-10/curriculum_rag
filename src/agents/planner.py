@@ -60,18 +60,22 @@ class HybridPlanner:
         
         # 1. TF-IDF
         vectorizer = TfidfVectorizer(
-               max_df=0.95, 
-               min_df=2, 
+               max_df=0.95, # Maximum Document Frequency
+               min_df=2,  # Minimum Document Frequency
                stop_words=self.stop_words,
                max_features=2000 
             )
+        
+        
         try: 
             tfidf = vectorizer.fit_transform(docs)
+            
         except ValueError:
             logger.warning("Not enough data for TF-IDF. Returning empty topics.")
             return ""
         
         # 2. NMF
+        # Non-negative Matrix Factorization
         nmf = NMF(n_components=num_topics, random_state=42, init='nndsvd')
         nmf.fit(tfidf)         
         

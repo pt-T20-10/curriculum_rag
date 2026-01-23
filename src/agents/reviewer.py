@@ -1,5 +1,4 @@
 import logging
-import stat
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -10,119 +9,153 @@ from src.config import LLM_MODEL_NAME
 
 logger = setup_logger(name="ReviewerAgent", logfile="logs/agents.log")
 
-# Reviewer needs high accuracy, low temperature
-llm = ChatOpenAI(model=LLM_MODEL_NAME, temperature=0.1)
+class ReviewerAgent:
+    """
+    Reviewer Agent (The Editor):
+    Nhiệm vụ: Đọc bản nháp (Draft) từ Writer và tinh chỉnh lại.
+    Mục tiêu: Chính xác, Học thuật, Trình bày đẹp, Fix lỗi LaTeX.
+    """
+    def __init__(self):
+        self.llm = ChatOpenAI(model=LLM_MODEL_NAME, temperature=0.1)
 
-# --- REVIEWER PROMPT ---
-# LƯU Ý: Các ví dụ LaTeX bên dưới đã được escape bằng {{ }}
-# --- REVIEWER PROMPT (FINAL FIXED VERSION) ---
-# LƯU Ý: Đã dùng {{ }} để escape dấu ngoặc nhọn, tránh lỗi LangChain Missing Variable
-reviewer_template = """You are a Senior Technical Editor for a university textbook publisher. Your task is to review and polish a specific section drafted by a Writer Agent. Your goal is to ensure the content is perfect for PDF publication via LaTeX/Pandoc.
+    def review_content(self, 
+                       course_topic: str,
+                       chapter_num: str, 
+                       chapter_title: str, 
+                       section_num: str, 
+                       section_title: str, 
+                       section_description: str,
+                       draft_content: str) -> str:
+        """
+        Input: Bản nháp thô và Metadata.
+        Output: Bản thảo đã biên tập.
+        """
+        logger.info(f"   🧐 Reviewer is polishing: '{section_title}'...")
 
---- CONTEXT & LOCATION ---
-- **Book topic**: {course_topic}
-- **Current Chapter**: {chapter_num}. {chapter_title}
-- **Current Section**: {section_num}. {section_title}
-- **Section Description**: {section_description}
+        if not draft_content or len(draft_content) < 50:
+            logger.warning("   ⚠️ Draft is too short/empty. Skipping review.")
+            return draft_content
 
---- DRAFT CONTENT TO REVIEW ---
-{draft}
+        # --- REVIEWER PROMPT (ENHANCED VERSION) ---
+        reviewer_template = """You are a Senior Technical Editor and LaTeX Specialist for a university textbook publisher. 
+        Your task is to review, polish, and "debug" a specific section drafted by a Writer Agent.
+        Your ultimate goal is to ensure the content is **Academic**, **Flowing**, and **Compilation-Ready** (Error-free for Pandoc/PDF).
 
---- EDITING INSTRUCTIONS ---
+        --- CONTEXT & LOCATION ---
+        - **Book Topic**: {course_topic}
+        - **Current Chapter**: {chapter_num}. {chapter_title}
+        - **Current Section**: {section_num}. {section_title}
+        - **Section Description**: {section_description}
 
-1. **LATEX SAFETY & STANDARDIZATION (CRITICAL PRIORITY):**
-   - **Rule A: Enforce Delimiters (Pandoc Friendly):**
-     - **Block Math:** You MUST use `$$ ... $$` for standalone equations. REPLACE all `\\[ ... \\]` with `$$ ... $$`.
-       - ❌ BAD: `\\[ F = ma \\]`
-       - ✅ GOOD: `$$ F = ma $$`
-     - **Inline Math:** Use single `$` ... `$`.
-       - ❌ BAD: `\\( x = 5 \\)`
-       - ✅ GOOD: `$ x = 5 $`
+        --- DRAFT CONTENT TO REVIEW ---
+        {draft}
 
-   - **Rule B: Fix "Naked" Math (The "Missing $" Error):**
-     - Scan specifically for subscript (`_`), superscript (`^`), and commands (`\\frac`, `\\cdot`, `\\sum`, `\\Delta`).
-     - If they appear outside of `$`, **YOU MUST WRAP THEM**.
-       - ❌ BAD: The value of a_x is calculated by...
-       - ✅ GOOD: The value of $a_x$ is calculated by...
-       - ❌ BAD: F_{{net}} = m \\cdot a
-       - ✅ GOOD: $F_{{net}} = m \\cdot a$
+        --- EDITING INSTRUCTIONS (STRICT EXECUTION ORDER) ---
 
-   - **Rule C: Remove Redundant Wrappers:**
-     - Do not combine text parentheses with LaTeX escapes.
-       - ❌ BAD: `\\($E=mc^2$)`  <-- This crashes PDF generation.
-       - ✅ GOOD: `($E=mc^2$)`   <-- Standard text parentheses around math.
-       - ❌ BAD: `$$\\[ F=ma \\]$$`
-       - ✅ GOOD: `$$ F=ma $$`
+        ### PHASE 1: LATEX & MATH SANITIZATION (CRITICAL PRIORITY)
+        Your primary responsibility is to prevent PDF generation failures.
+        1.  **Enforce Delimiters (Pandoc Standard):**
+            * **Block Math:** MUST use `$$ ... $$`. REPLACE all `\\[ ... \\]` or `\\begin{{equation}}...\\end{{equation}}` with `$$ ... $$`.
+                * ❌ BAD: `\\[ F = ma \\]`
+                * ✅ GOOD: `$$ F = ma $$`
+            * **Inline Math:** MUST use single `$` ... `$`. REPLACE `\\( ... \\)` with `$ ... $`.
+                * ❌ BAD: `\\( x = 5 \\)`
+                * ✅ GOOD: `$ x = 5 $`
 
-2. **Verify Context Alignment:**
-    - Ensure the content ACTUALLY addresses the section title: "{section_title}".
-    - Check if the Header Numbering in the draft matches the Source of Truth ({section_num}). If not, FIX IT.
+        2.  **Fix "Naked" Math (The "Missing $" Error):**
+            * Scan text for orphan mathematical symbols, variables, or subscripts/superscripts.
+            * **Constraint:** Variables like x, y, z, F, m, a MUST be italicized via math mode.
+                * ❌ BAD: Ta có gia tốc a được tính bằng...
+                * ✅ GOOD: Ta có gia tốc $a$ được tính bằng...
+                * ❌ BAD: a_max = 5
+                * ✅ GOOD: $a_{{max}} = 5$
 
-3. **Protect Technical Integrity:**
-    - **DO NOT** remove valid math logic.
-    - **DO NOT** change the logic of code blocks.
-    - Ensure key terms defined in the text are **bolded**.
-    - Ensure text inside math equations uses `\\text{{...}}` (e.g., $v_{{\\text{{final}}}}$).
-    
-4. **Tone & Flow:**
-    - The tone must be **Academic but Accessible**.
-    - Fix choppy sentences. Ensure logical transitions between paragraphs.
-    - If the content is too short or shallow relative to the description, expand it using your internal knowledge.
-    
-5. **Formatting:**
-    - Ensure the output is valid Markdown.
-    - Check for the existence of `[IMAGE SUGGESTION: ...]` tags.
-    
-OUTPUT: 
-    - Return ONLY the **FINAL POLISHED MARKDOWN**. 
-    - DO NOT add comments like "Here is the reviewed version".
-"""
-reviewer_prompt = ChatPromptTemplate.from_messages([
-    ("system", reviewer_template),
-    ("human", "Review and polish this draft.")
-])
+        3.  **Handle Unicode/Vietnamese inside Math:**
+            * LaTeX math mode does NOT support Vietnamese accents directly. You MUST wrap text inside `\\text{{...}}`.
+                * ❌ BAD: `$$ v_{{cuối}} = v_{{đầu}} + at $$`  (This will crash LaTeX)
+                * ✅ GOOD: `$$ v_{{\\text{{cuối}}}} = v_{{\\text{{đầu}}}} + at $$`
 
-reviewer_chain = reviewer_prompt | llm | StrOutputParser()
+        ### PHASE 2: CONTENT & FLOW REFINEMENT
+        1.  **Header Hierarchy Check:** Ensure correct Header 2 (`##`) and Header 3 (`###`).
+        2.  **Academic Tone:** Ensure formal Vietnamese.
+        3.  **Expansion:** If draft is too short (< 200 words), expand it.
 
+        ### PHASE 3: VISUAL PREPARATION
+        1.  **Image Tag Enforcement:** Add `> [IMAGE SUGGESTION: ...]` if missing for complex concepts.
+
+        ---
+        **OUTPUT REQUIREMENT:**
+        - Return **ONLY** the final polished Markdown string.
+        """
+
+        user_prompt = f"Please review and fix the following draft:\n\n{draft_content}"
+
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", reviewer_template),
+            ("user", user_prompt)
+        ])
+
+        try:
+            chain = prompt | self.llm
+            # --- FIX: TRUYỀN ĐỦ BIẾN VÀO INVOKE ---
+            response = chain.invoke({
+                "course_topic": course_topic,
+                "chapter_num": chapter_num,
+                "chapter_title": chapter_title,
+                "section_num": section_num,
+                "section_title": section_title,
+                "section_description": section_description,
+                "draft": draft_content
+            })
+            logger.info("   ✅ Review complete.")
+            return response.content #type: ignore
+        except Exception as e:
+            logger.error(f"Error in Reviewer: {e}")
+            return draft_content
+
+# --- LANGGRAPH NODE FUNCTION ---
+# Hàm này dùng để gọi Reviewer trong LangGraph Workflow
 def review_section(state: AgentState):
-    """
-    Node: Reviewer (Editor) reads the draft and returns the polished version.
-    """
     logger.info(f"---REVIEWER: Polishing Content ---")
-    # 1. Getting medatadas (syn writer)
+    
+    # 1. Get Metadata from State
     curriculum = state["curriculum"]
     chap_idx = state["current_chapter_index"]
     sub_idx = state["current_subsection_index"]
     
-    current_chapter = curriculum.chapters[chap_idx] # type: ignore
-    current_subsection = current_chapter.subsections[sub_idx] 
-    
-    display_chap_num = chap_idx + 1
+    # Handle Dict vs Object (để tương thích cả cũ và mới)
+    if isinstance(curriculum, dict):
+        current_chapter = curriculum['chapters'][chap_idx]
+        current_subsection = current_chapter['sections'][sub_idx] # string title
+        
+        chap_title = current_chapter['chapter_title']
+        sec_title = current_subsection
+        sec_desc = f"Review content for {sec_title}"
+    else:
+        current_chapter = curriculum.chapters[chap_idx] # type: ignore
+        current_subsection = current_chapter.subsections[sub_idx]
+        
+        chap_title = current_chapter.title
+        sec_title = current_subsection.title
+        sec_desc = current_subsection.description
+        
+    display_chap_num = str(chap_idx + 1)
     display_sec_num = f"{display_chap_num}.{sub_idx + 1}"
     
-    draft = state.get("current_content", "") # type: ignore
+    draft = state.get("current_content", "")
     
-    #Safety check
-    if not draft:
-        logger.warning("Reviewer received empty draft.")
-        return {"current_content": ""}
+    # 2. Call Reviewer Agent
+    agent = ReviewerAgent()
     
-    #2. Call Editor with full context
-    try:
-        polished_content = reviewer_chain.invoke({
-            "course_topic": state.get("request", "General Knowledge"),
-            "chapter_num": display_chap_num,
-            "chapter_title": current_chapter.title,
-            "section_num": display_sec_num,
-            "section_title": current_subsection.title,
-            "section_description": current_subsection.description,
-            "draft": draft
-        })
-        
-        logger.info(f"Polished content length: {len(polished_content)} chars")
-        
-        return {"current_content": polished_content}
+    # --- FIX: GỌI HÀM VỚI ĐỦ THAM SỐ ---
+    polished_content = agent.review_content(
+        course_topic=state.get("request", "General Topic"),
+        chapter_num=display_chap_num,
+        chapter_title=chap_title,
+        section_num=display_sec_num,
+        section_title=sec_title,
+        section_description=sec_desc,
+        draft_content=draft
+    )
     
-    except Exception as e:
-        logger.error(f"Reviewer error: {e}")
-        return {"current_content": draft}
+    return {"current_content": polished_content}
