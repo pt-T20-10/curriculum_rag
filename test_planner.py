@@ -1,5 +1,5 @@
 # test_planner.py
-from src.agents.planner import plan_curriculum
+from src.agents.planner import HybridPlanner
 from src.log_config import setup_logger
 
 # Setup log để nhìn thấy output
