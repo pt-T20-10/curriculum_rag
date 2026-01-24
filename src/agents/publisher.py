@@ -17,41 +17,40 @@ logger = setup_logger(name="PublisherAgent", logfile="logs/agents.log")
 def publish_curriculum(state: AgentState):
     """
     Node: Publisher
-    Nhiệm vụ: Tổng hợp nội dung, thêm Metadata, xuất ra Markdown và PDF.
-    Đặc biệt tối ưu cho Tiếng Việt và Toán học (LaTeX).
     """
     logger.info("\n --- PUBLISHER: Finalizing Document ---")
     
-    # 1. Lấy dữ liệu từ State
-    # Lưu ý: 'final_content' là nơi tích lũy toàn bộ nội dung sách qua các vòng lặp
-    full_content = state.get("final_content", "")
+    # 1. KHỞI TẠO KẾT QUẢ TRẢ VỀ MẶC ĐỊNH (Quan trọng!)
+    # Đảm bảo key 'final_filepath' luôn tồn tại ngay từ đầu
+    result_output = {
+        "messages": [],
+        "final_filepath": None 
+    }
     
-    # Fallback: Nếu final_content rỗng (do chạy test lẻ), thử lấy current_content
+    # 2. Lấy dữ liệu nội dung
+    full_content = state.get("final_content", "")
     if not full_content:
         full_content = state.get("current_content", "")
 
-    request_topic = state.get("request", "Textbook").replace(" ", "_")
-    
     if not full_content:
         logger.error("❌ No content found to publish!")
-        return {"messages": ["Error: No content to publish"]}
-    
-    # 2. Tạo thư mục output
+        result_output["messages"].append("Error: No content to publish")
+        return result_output
+
+    # 3. Chuẩn bị đường dẫn
+    request_topic = state.get("request", "Textbook").replace(" ", "_")
     output_dir = BASE_DIR / "outputs"
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Tên file (Thêm timestamp để không bị ghi đè khi test nhiều lần)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     file_base_name = f"{request_topic}_{timestamp}"
     md_filename = output_dir / f"{file_base_name}.md"
     pdf_filename = output_dir / f"{file_base_name}.pdf"
     
-    # 3. Chuẩn bị Metadata (YAML Header cho Pandoc)
-    # Đây là bí quyết để PDF đẹp và hỗ trợ Tiếng Việt tốt
+    # 4. Metadata và Nội dung
     yaml_header = f"""---
-title: "{state.get('request', 'Giáo trình AI Generative')}"
-subtitle: "Biên soạn tự động bởi AI System"
-author: "AI Curriculum Agent"
+title: "{state.get('request', 'Giáo trình')}"
+subtitle: "Biên soạn bởi AI Agent System"
 date: "{datetime.now().strftime('%d/%m/%Y')}"
 geometry: "left=2.5cm,right=2.5cm,top=2cm,bottom=2cm"
 mainfont: "Times New Roman"
@@ -64,47 +63,56 @@ header-includes:
 ---
 
 """
-    # Ghép Metadata + Nội dung
     final_document = yaml_header + full_content
 
-    messages = []
-
-    # 4. Xuất file Markdown (Luôn thành công)
+    # 5. Xuất file Markdown
     try:
         with open(md_filename, "w", encoding="utf-8") as f:
             f.write(final_document)
+        
         logger.info(f"✅ MARKDOWN SAVED: {md_filename}")
-        messages.append(f"Markdown file: {md_filename}")
+        result_output["messages"].append(f"Markdown file: {md_filename}")
+        
+        # --- GÁN GIÁ TRỊ QUAN TRỌNG NHẤT ---
+        # Ngay khi có file MD, ta đã có thể gán đường dẫn để download (phòng hờ PDF lỗi)
+        result_output["final_filepath"] = str(md_filename)
+        
     except Exception as e:
         logger.error(f"Failed to save Markdown: {e}")
-        return {"messages": [f"Error saving MD: {e}"]}
+        result_output["messages"].append(f"Error saving MD: {e}")
+        return result_output # Dừng nếu không lưu được file gốc
 
-    # 5. Xuất file PDF (Cần cài đặt Pandoc và MikTeX/TeXLive)
+    # 6. Xuất file PDF (Nếu có công cụ)
     if pypandoc:
         try:
             logger.info("⏳ Converting to PDF (Using xelatex engine)...")
             
-            # Kiểm tra xem máy có cài xelatex không (thường đi kèm MikTeX/TeXLive)
-            # xelatex hỗ trợ Unicode (Tiếng Việt) tốt hơn pdflatex
             pypandoc.convert_text(
                 source=final_document,
                 to='pdf',
                 format='md',
                 outputfile=str(pdf_filename),
                 extra_args=[
-                    '--pdf-engine=xelatex',   # QUAN TRỌNG: Dùng engine này để không lỗi font Việt
-                    '-V', 'mainfont=Times New Roman', # Yêu cầu máy có font này
-                    '--toc'           # Tự động tạo Mục lục (Table of Contents)
+                    '--pdf-engine=xelatex',
+                    '-V', 'mainfont=Times New Roman',
+                    '--toc'
+                    # '--number-sections' # Đã tắt theo yêu cầu trước
                 ]
             )
             logger.info(f"✅ PDF SAVED: {pdf_filename}")
-            messages.append(f"PDF file: {pdf_filename}")
+            result_output["messages"].append(f"PDF file: {pdf_filename}")
+            
+            # --- CẬP NHẬT ĐƯỜNG DẪN ƯU TIÊN ---
+            # Nếu tạo PDF thành công, đổi đường dẫn download sang PDF
+            result_output["final_filepath"] = str(pdf_filename)
+            
         except Exception as e:
             logger.warning(f"⚠️ PDF Generation failed: {e}")
-            logger.warning("Tip: Make sure Pandoc and MikTeX (with xelatex) are installed.")
-            messages.append("PDF generation failed (Check logs).")
+            result_output["messages"].append("PDF generation failed (using MD instead).")
+            # Không cần reset final_filepath vì nó đã trỏ tới file MD ở bước trên
     else:
         logger.warning("⚠️ pypandoc not installed. Skipping PDF generation.")
-        messages.append("PDF skipped (pypandoc missing).")
+        result_output["messages"].append("PDF skipped (pypandoc missing).")
 
-    return {"messages": messages, "final_filepath": str(md_filename)}
+    # 7. TRẢ VỀ KẾT QUẢ CUỐI CÙNG
+    return result_output

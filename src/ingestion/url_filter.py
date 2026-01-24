@@ -17,9 +17,6 @@ BLACKLIST_EXTENSIONS = [
     ".zip", ".rar", ".exe", ".iso", ".mp4", ".mp3", ".avi", ".jpg", ".png", ".ppt", ".pptx", ".xls", ".xlsx"
 ]
 
-BLACKLIST_EXTENSIONS = [
-    ".zip", ".rar", ".exe", ".iso", ".mp4", ".mp3", ".avi", ".jpg", ".png", ".ppt", ".pptx", ".xls", ".xlsx"
-]
 
 # Giả lập User-Agent xịn
 HEADERS = {

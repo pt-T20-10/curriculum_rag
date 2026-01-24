@@ -43,6 +43,7 @@ chroma_db/
 storage/
 outputs/
 logs/
+old_ver/
 *.zip
 *.pdf
 *.db

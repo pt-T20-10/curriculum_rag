@@ -44,3 +44,4 @@ class AgentState(TypedDict):
     #List of all messages/logs from Agent
     #Annotated[List[str], operator.add]: Agent can only add.
     messages: Annotated[List[str], operator.add]
+    final_filepath: Optional[str]

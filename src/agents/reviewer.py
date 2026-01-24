@@ -24,7 +24,8 @@ class ReviewerAgent:
                        section_num: str, 
                        section_title: str, 
                        section_description: str,
-                       draft_content: str) -> str:
+                       draft_content: str,
+                       chap_cmd: str) -> str:
         """
         Input: Draft content and Metadata.
         Output: Polished content.
@@ -82,10 +83,14 @@ class ReviewerAgent:
             * Do NOT use complex environments like `\\begin{{itemize}}`, `\\begin{{tabular}}` inside Markdown. Use standard Markdown lists `*` and Markdown tables `|...|` instead.
 
         ### PHASE 2: CONTENT & FLOW REFINEMENT
-        1.  **Header Hierarchy Check:**
-            * Ensure the draft starts with the correct Header 2: `## {section_num}. {section_title}`.
-            * Ensure sub-points use Header 3 (`###`) or Header 4 (`####`). DO NOT use Header 1 (`#`).
-            * **Fix Hanging Headers:** Never leave a Header without content below it.
+        1. **Structure & Header Hierarchy:**
+           {chap_cmd}
+           * **Standardization:** Ensure the section starts with Header 2: `## {section_num}. {section_title}`.
+           * **Hierarchy:** Use Header 3 (`###`) for sub-sections. 
+           * **Exception:** Do NOT use Header 1 (`#`) **UNLESS** it is the Chapter Title line (e.g., `# CHƯƠNG...`).
+           * **Redundancy Check:** If you see patterns like `## 1.1. Mục 1.1...` or `## 1.1. Phần 1.1...`, DELETE the redundant word "Mục/Phần" and keep only `## 1.1. {section_title}`.
+           - **Remove Colons:** If you see `## 1.1: Tiêu đề` -> Change to `## 1.1 Tiêu đề`.
+           - **Preserve LaTeX:** DO NOT remove `\\newpage`, `\\begin{{center}}` or `\\textbf` commands if present.
 
         2.  **Academic Tone (Vietnamese):**
             * Ensure the language is **Formal Vietnamese** (Tiếng Việt học thuật).
@@ -127,7 +132,8 @@ class ReviewerAgent:
                 "section_num": section_num,
                 "section_title": section_title,
                 "section_description": section_description,
-                "draft": draft_content
+                "draft": draft_content,
+                "chap_cmd": chap_cmd
             })
             logger.info("   ✅ Review complete.")
             return response.content # type: ignore
@@ -179,6 +185,30 @@ def review_section(state: AgentState):
         display_chap_num = str(chap_idx + 1)
         display_sec_num = f"{display_chap_num}.{sub_idx + 1}"
         
+        if ":" in sec_title and any(x in sec_title for x in ["Mục", "Phần", "Bài"]):
+             sec_title_clean = sec_title.split(":", 1)[1].strip()
+        else:
+             sec_title_clean = sec_title
+
+        display_chap = str(chap_idx + 1)
+        display_sec = f"{display_chap}.{sub_idx + 1}"
+        
+        is_new_chapter = display_sec.endswith(".1")
+        chap_cmd_text = ""
+        if is_new_chapter:
+            chap_cmd_text = f"""
+            - **CHECK NEW CHAPTER:** This is the start of Chapter {display_chap}.
+            - Ensure the content starts with:
+              ```latex
+              \\newpage
+              \\begin{{center}}
+              \\Huge \\textbf{{CHƯƠNG {display_chap}: {chap_title.upper()}}}
+              \\end{{center}}
+              \\vspace{{1cm}}
+              ```
+            - If missing, ADD IT.
+            """
+        
         draft = state.get("current_content", "")
         
         agent = ReviewerAgent()
@@ -189,7 +219,8 @@ def review_section(state: AgentState):
             section_num=display_sec_num,
             section_title=sec_title,
             section_description=sec_desc,
-            draft_content=draft
+            draft_content=draft,
+            chap_cmd=chap_cmd_text
         )
         
         return {"current_content": polished}

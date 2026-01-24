@@ -20,7 +20,7 @@ class WriterAgent:
         self.llm = ChatOpenAI(model=LLM_MODEL_NAME, temperature=0.4)
 
     def write_section(self, course_topic: str, chapter_num: int, chapter_title: str, 
-                      section_num: str, section_title: str, section_description: str, context: str) -> str:
+                      section_num: str, section_title: str, section_description: str, context: str, chapter_instruction: str) -> str:
         """
         Generate content for a specific section using RAG context.
         """
@@ -60,9 +60,16 @@ RESEARCH CONTEXT: (From Vector DB)
    - If the context provided is empty/irrelevant, use your general knowledge but mention that specific textbook references were missing.
 
 4. STRUCTURE & NUMBERING:
-   - Start immediately with a level 2 Header: `## {section_num}. {section_title}`
-   - Use level 3 Headers (`###`) for sub-points.
-   - DO NOT output Chapter Title (it is handled elsewhere)
+    **Header Formatting (STRICT):**
+           {chapter_instruction}
+           - **Section Header:** Start immediately with Header 2: `## {section_num} {section_title}`
+           - **Clean Titles:** - ❌ BAD: `## 1.1. Mục 1.1 Khái niệm` (Double numbering/Redundant text)
+             - ❌ BAD: `## 1.1. 1.1. Khái niệm`
+             - ✅ GOOD: `## 1.1. Khái niệm`
+             - **IMPORTANT:** Use a SPACE between the number and title. DO NOT use colons (`:`) or extra dots.
+            - ❌ WRONG: `## 1.1: Khái niệm`, `## 1.1. Khái niệm`
+            - ✅ RIGHT: `## 1.1 Khái niệm`
+           - **Sub-points:** Use Header 3 (`###`). Never use Header 1 (`#`) inside the section body.
 
 5. **Content Depth (CRITICAL):**
    - **Target Length:** Write approximately **800-1000 words** (Comprehensive coverage).
@@ -114,7 +121,8 @@ OUTPUT LANGUAGE: VIETNAMESE (Tiếng Việt).
                 "section_num": section_num,
                 "section_title": section_title,
                 "section_description": section_description,
-                "context": context
+                "context": context,
+                "chapter_instruction": chapter_instruction
             })
             return response.content #type: ignore
         except Exception as e:
@@ -148,38 +156,64 @@ def write_section(state: AgentState):
             chap_title = current_chapter.get('title', current_chapter.get('chapter_title', 'Unknown Chapter'))
             
             if is_complex:
-                sec_title = current_item.get('title', 'Unknown Section')
-                sec_desc = current_item.get('description', f"Detailed content about {sec_title}")
+                raw_sec_title = current_item.get('title', 'Unknown')
+                sec_desc = current_item.get('description', '')
             else:
-                sec_title = current_item
-                sec_desc = f"Write detailed textbook content for {sec_title} in context of {chap_title}"
+                raw_sec_title = current_item
+                sec_desc = f"Write about {raw_sec_title}"
                 
         else:
             current_chapter = curriculum.chapters[chap_idx]
             current_item = current_chapter.subsections[sub_idx]
             chap_title = current_chapter.title
-            sec_title = current_item.title
+            raw_sec_title = current_item.title
             sec_desc = current_item.description
         
-        display_chap = chap_idx + 1
+        if ":" in raw_sec_title and any(x in raw_sec_title for x in ["Mục", "Phần", "Bài"]):
+             sec_title_clean = raw_sec_title.split(":", 1)[1].strip()
+        else:
+             sec_title_clean = raw_sec_title
+        
+        display_chap = str(chap_idx + 1)
         display_sec = f"{display_chap}.{sub_idx + 1}"
         
+        # 3. --- LOGIC TẠO INSTRUCTION (TẠO CHUỖI TẠI ĐÂY) ---
+        is_first_sub = display_sec.endswith(".1")
+        chapter_instruction_text = "" # Mặc định rỗng
+        
+        if is_first_sub:
+            # Điền luôn giá trị vào chuỗi Python này trước khi gửi cho LangChain
+            chapter_instruction_text = f"""
+            **SPECIAL INSTRUCTION (NEW CHAPTER):**
+            - This is the start of Chapter {display_chap}.
+            - You MUST inject these EXACT LaTeX commands at the very top:
+            
+            ```latex
+            \\newpage
+            \\begin{{center}}
+            \\Huge \\textbf{{CHƯƠNG {display_chap}: {chap_title.upper()}}}
+            \\end{{center}}
+            \\vspace{{1cm}}
+            ```
+            """
+
         messages = state["messages"]
         context = messages[-1] if messages else ""
         
         agent = WriterAgent()
         content = agent.write_section(
             course_topic=state.get("request", "Topic"),
-            chapter_num=display_chap,
+            chapter_num=display_chap, # type: ignore
             chapter_title=chap_title,
             section_num=display_sec,
-            section_title=sec_title,
+            section_title=sec_title_clean,
             section_description=sec_desc,
-            context=context
+            context=context,
+            chapter_instruction=chapter_instruction_text # <--- Truyền chuỗi đã tạo
         )
         
         return {"current_content": content}
 
     except Exception as e:
         logger.error(f"Error in Writer Node: {e}")
-        return {"current_content": "(Error generating content. Please check logs.)"}
+        return {"current_content": ""}
