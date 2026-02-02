@@ -8,6 +8,7 @@ from src.agents.researcher import perform_research
 from src.agents.writer import write_section
 from src.agents.publisher import publish_curriculum
 from src.agents.reviewer import review_section
+from src.agents.illustrator import illustrate_section
 
 # --- IMPORT NODE MỚI ---
 from src.agents.ingestion_agent import perform_ingestion
@@ -28,6 +29,7 @@ def create_workflow():
     builder.add_node("researcher", perform_research)
     builder.add_node("writer", write_section)
     builder.add_node("reviewer", review_section)
+    builder.add_node("illustrator", illustrate_section)
     builder.add_node("publisher", publish_curriculum)
     
     # Logic cập nhật trạng thái (giữ nguyên)
@@ -68,7 +70,7 @@ def create_workflow():
     builder.add_edge("planner", "researcher")   # Plan xong -> Research
     builder.add_edge("researcher", "writer")
     builder.add_edge("writer", "reviewer")
-    
+    builder.add_edge("reviewer", "illustrator")
     # 5. Conditional Edges (Giữ nguyên)
     def check_next_step(state: AgentState):
         curriculum = state["curriculum"]
@@ -106,7 +108,7 @@ def create_workflow():
             return "finished" # Dừng an toàn
         
     builder.add_conditional_edges(
-        "reviewer",
+        "illustrator",
         check_next_step,
         {
             "continue_subsection":"update_subsection",

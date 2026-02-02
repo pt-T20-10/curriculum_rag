@@ -5,6 +5,11 @@ from dotenv import load_dotenv
 load_dotenv()
 if not os.getenv("OPENAI_API_KEY"):
     raise ValueError("OPENAI_API_KEY not found! Please check your .env file.")
+
+
+SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY")
+if not SERPAPI_API_KEY:
+    print("⚠️ CẢNH BÁO: Chưa tìm thấy SERPAPI_API_KEY trong .env")
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Data path config

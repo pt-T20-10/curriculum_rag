@@ -26,8 +26,6 @@ This project automates the entire lifecycle of educational content creation. Ins
 ## 🏗️ System Architecture
 
 The workflow follows a sequential and iterative graph:
-
-```mermaid
 graph TD
     A[Start] --> B(Ingestion Node);
     B --> C(Planner Node);

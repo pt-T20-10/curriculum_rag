@@ -196,9 +196,6 @@ def plan_curriculum(state: AgentState):
         if not plan_data:
             return {"messages": ["Error: Planner failed."]}
         
-        if 'chapters' in plan_data and len(plan_data['chapters']) > 0:
-            logger.warning("⚠️ TEST MODE: Keeping only the first chapter for speed.")
-        plan_data['chapters'] = plan_data['chapters'][:1]  # <--- CẮT NGẮN TẠI ĐÂY
         
 
         
