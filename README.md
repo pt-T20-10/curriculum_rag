@@ -149,6 +149,7 @@ ai-textbook-generator/
 ├── app.py                  # Streamlit frontend
 ├── agents/                 # Agent definitions
 │   ├── planner.py
+|   ├── ingester.py
 │   ├── researcher.py
 │   ├── writer.py
 │   ├── reviewer.py
