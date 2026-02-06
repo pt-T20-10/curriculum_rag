@@ -1,5 +1,6 @@
 import os
 import logging
+import shutil # <--- Import mới để xóa thư mục
 from datetime import datetime
 from pathlib import Path
 
@@ -14,20 +15,24 @@ from src.log_config import setup_logger
 
 logger = setup_logger(name="PublisherAgent", logfile="logs/agents.log")
 
+def cleanup_temp_images():
+    """Hàm dọn dẹp thư mục ảnh tạm"""
+    image_dir = BASE_DIR / "outputs" / "images"
+    if image_dir.exists():
+        try:
+            shutil.rmtree(image_dir) # Xóa sạch thư mục images
+            logger.info("🧹 Cleaned up temporary images.")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to cleanup images: {e}")
+
 def publish_curriculum(state: AgentState):
-    """
-    Node: Publisher
-    """
     logger.info("\n --- PUBLISHER: Finalizing Document ---")
     
-    # 1. KHỞI TẠO KẾT QUẢ TRẢ VỀ MẶC ĐỊNH (Quan trọng!)
-    # Đảm bảo key 'final_filepath' luôn tồn tại ngay từ đầu
     result_output = {
         "messages": [],
         "final_filepath": None 
     }
     
-    # 2. Lấy dữ liệu nội dung
     full_content = state.get("final_content", "")
     if not full_content:
         full_content = state.get("current_content", "")
@@ -37,7 +42,6 @@ def publish_curriculum(state: AgentState):
         result_output["messages"].append("Error: No content to publish")
         return result_output
 
-    # 3. Chuẩn bị đường dẫn
     request_topic = state.get("request", "Textbook").replace(" ", "_")
     output_dir = BASE_DIR / "outputs"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -47,7 +51,10 @@ def publish_curriculum(state: AgentState):
     md_filename = output_dir / f"{file_base_name}.md"
     pdf_filename = output_dir / f"{file_base_name}.pdf"
     
-    # 4. Metadata và Nội dung
+    # --- CẤU HÌNH LATEX ĐỂ FIX LỖI CAPTION ---
+    # 1. \usepackage{caption}: Thư viện quản lý chú thích
+    # 2. \captionsetup[figure]{labelformat=empty}: Tắt tự động điền "Figure 1:"
+    #    Để ta có thể tự viết "Hình 1.1.1: ..." từ Markdown.
     yaml_header = f"""---
 title: "{state.get('request', 'Giáo trình')}"
 subtitle: "Biên soạn bởi AI Agent System"
@@ -60,33 +67,31 @@ header-includes:
   - \\usepackage{{hyperref}}
   - \\hypersetup{{colorlinks=true, linkcolor=blue, urlcolor=blue}}
   - \\usepackage{{indentfirst}}
+  - \\usepackage{{float}} 
+  - \\usepackage[font=small,labelfont=bf]{{caption}}
+  - \\captionsetup[figure]{{labelformat=empty}} 
+  - \\let\\origfigure\\figure
+  - \\let\\endorigfigure\\endfigure
+  - \\renewenvironment{{figure}}[1][2] {{\\expandafter\\origfigure\\expandafter[H]}} {{\\endorigfigure}}
 ---
 
 """
+
     final_document = yaml_header + full_content
 
-    # 5. Xuất file Markdown
     try:
         with open(md_filename, "w", encoding="utf-8") as f:
             f.write(final_document)
-        
         logger.info(f"✅ MARKDOWN SAVED: {md_filename}")
         result_output["messages"].append(f"Markdown file: {md_filename}")
-        
-        # --- GÁN GIÁ TRỊ QUAN TRỌNG NHẤT ---
-        # Ngay khi có file MD, ta đã có thể gán đường dẫn để download (phòng hờ PDF lỗi)
         result_output["final_filepath"] = str(md_filename)
-        
     except Exception as e:
         logger.error(f"Failed to save Markdown: {e}")
-        result_output["messages"].append(f"Error saving MD: {e}")
-        return result_output # Dừng nếu không lưu được file gốc
+        return result_output
 
-    # 6. Xuất file PDF (Nếu có công cụ)
     if pypandoc:
         try:
             logger.info("⏳ Converting to PDF (Using xelatex engine)...")
-            
             pypandoc.convert_text(
                 source=final_document,
                 to='pdf',
@@ -96,23 +101,17 @@ header-includes:
                     '--pdf-engine=xelatex',
                     '-V', 'mainfont=Times New Roman',
                     '--toc'
-                    # '--number-sections' # Đã tắt theo yêu cầu trước
                 ]
             )
             logger.info(f"✅ PDF SAVED: {pdf_filename}")
             result_output["messages"].append(f"PDF file: {pdf_filename}")
-            
-            # --- CẬP NHẬT ĐƯỜNG DẪN ƯU TIÊN ---
-            # Nếu tạo PDF thành công, đổi đường dẫn download sang PDF
             result_output["final_filepath"] = str(pdf_filename)
-            
+            cleanup_temp_images()
         except Exception as e:
             logger.warning(f"⚠️ PDF Generation failed: {e}")
-            result_output["messages"].append("PDF generation failed (using MD instead).")
-            # Không cần reset final_filepath vì nó đã trỏ tới file MD ở bước trên
+            result_output["messages"].append("PDF generation failed.")
     else:
-        logger.warning("⚠️ pypandoc not installed. Skipping PDF generation.")
-        result_output["messages"].append("PDF skipped (pypandoc missing).")
+        logger.warning("⚠️ pypandoc not installed.")
 
-    # 7. TRẢ VỀ KẾT QUẢ CUỐI CÙNG
+    # cleanup_temp_images()
     return result_output

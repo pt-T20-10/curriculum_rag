@@ -1,25 +1,37 @@
-# ---Core Framework ---
-langchain>=0.1.0
-langchain-community	
-langchain-core 
+# --- Core Framework & Orchestration ---
+langchain
+langchain-community
+langchain-core
 langchain-openai
 langgraph
-pydantic # Data validation
-python-dotenv # API keys manager 
+
+# --- Web Interface ---
+streamlit
+watchdog              # Giúp Streamlit reload nhanh hơn khi sửa code
 
 # --- Vector Database ---
-chromadb>=0.4.0
+chromadb
 
-#--- AI Models (Embeddings & LLM) ----
-sentence-transformers #run model all-MiniLM-L6-v2 local
-openai # call GPT-4i-mini
+# --- AI Models & Embeddings (Local) ---
+sentence-transformers # Dùng để chạy model embedding local (all-MiniLM-L6-v2)
+scikit-learn          # Dùng cho thuật toán NMF/TF-IDF (Planner)
 
-#--- Data Processing ---
-beautifulsoup4 #Parse XML/HTML
-lxml #Parser BeatiufulSoup
+# --- Data Processing & Utilities ---
+python-dotenv         # Quản lý biến môi trường .env
+beautifulsoup4        # Cào dữ liệu web (Ingestion)
+lxml                  # Parser tốc độ cao cho BeautifulSoup
+pandas                # Xử lý dữ liệu bảng (thường dùng kèm scikit-learn)
+numpy                 # Tính toán số học (thường dùng kèm scikit-learn)
+tiktoken              # Đếm token cho OpenAI
+tqdm                  # Thanh hiển thị tiến trình (Loading bar)
 
-#--- Utilities ---
-python-dotenv #(.env) Envaironment Manager
-tqdm # Loading bar when running loops
+# --- Network & Media ---
+requests              # Gọi API, tải ảnh
+Pillow                # Xử lý ảnh (Convert WebP -> PNG)
+fake-useragent        # Giả lập trình duyệt khi cào web (Tránh bị chặn)
 
+# --- PDF Generation ---
+pypandoc              # Cầu nối Python sang phần mềm Pandoc
+pypdf                 # Thư viện đọc PDF
+# --- REVIEW CẦN THIẾT (Xem mục hướng dẫn bên dưới) ---
 

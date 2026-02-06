@@ -1,6 +1,6 @@
 import re
 import logging
-import requests # <--- Dùng thư viện requests chuẩn thay vì google_search_results
+import requests
 from src.config import SERPAPI_API_KEY
 from src.log_config import setup_logger
 from src.graph.state import AgentState

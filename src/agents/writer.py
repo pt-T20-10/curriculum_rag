@@ -186,15 +186,13 @@ def write_section(state: AgentState):
             chapter_instruction_text = f"""
             **SPECIAL INSTRUCTION (NEW CHAPTER):**
             - This is the start of Chapter {display_chap}.
-            - You MUST inject these EXACT LaTeX commands at the very top:
+            - Insert these RAW LaTeX commands at the very top (DO NOT use markdown code blocks):
             
-            ```latex
             \\newpage
             \\begin{{center}}
             \\Huge \\textbf{{CHƯƠNG {display_chap}: {chap_title.upper()}}}
             \\end{{center}}
             \\vspace{{1cm}}
-            ```
             """
 
         messages = state["messages"]
@@ -209,7 +207,7 @@ def write_section(state: AgentState):
             section_title=sec_title_clean,
             section_description=sec_desc,
             context=context,
-            chapter_instruction=chapter_instruction_text # <--- Truyền chuỗi đã tạo
+            chapter_instruction=chapter_instruction_text 
         )
         
         return {"current_content": content}

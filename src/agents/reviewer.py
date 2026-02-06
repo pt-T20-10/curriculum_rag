@@ -197,16 +197,14 @@ def review_section(state: AgentState):
         chap_cmd_text = ""
         if is_new_chapter:
             chap_cmd_text = f"""
-            - **CHECK NEW CHAPTER:** This is the start of Chapter {display_chap}.
-            - Ensure the content starts with:
-              ```latex
+            - **CHECK CHAPTER HEADER:** This is the start of Chapter {display_chap}.
+            - Ensure raw LaTeX commands exist at the top:
               \\newpage
               \\begin{{center}}
               \\Huge \\textbf{{CHƯƠNG {display_chap}: {chap_title.upper()}}}
               \\end{{center}}
               \\vspace{{1cm}}
-              ```
-            - If missing, ADD IT.
+            - If they are wrapped in code blocks, UNWRAP them.
             """
         
         draft = state.get("current_content", "")
