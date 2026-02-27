@@ -3,35 +3,38 @@ langchain
 langchain-community
 langchain-core
 langchain-openai
-langgraph
+langgraph       # Orchestrating multi-step agent workflows
+
+
 
 # --- Web Interface ---
 streamlit
-watchdog              # Giúp Streamlit reload nhanh hơn khi sửa code
+watchdog              # Speeding up Streamlit hot-reload during development
 
 # --- Vector Database ---
-chromadb
+chromadb            # Storing and querying vector embeddings
 
 # --- AI Models & Embeddings (Local) ---
-sentence-transformers # Dùng để chạy model embedding local (all-MiniLM-L6-v2)
-scikit-learn          # Dùng cho thuật toán NMF/TF-IDF (Planner)
+sentence-transformers # Running local embeddings model (all-MiniLM-L6-v2)
+scikit-learn          # Supporting NMF/TF-IDF  (Planner)
 
 # --- Data Processing & Utilities ---
-python-dotenv         # Quản lý biến môi trường .env
-beautifulsoup4        # Cào dữ liệu web (Ingestion)
-lxml                  # Parser tốc độ cao cho BeautifulSoup
-pandas                # Xử lý dữ liệu bảng (thường dùng kèm scikit-learn)
-numpy                 # Tính toán số học (thường dùng kèm scikit-learn)
-tiktoken              # Đếm token cho OpenAI
-tqdm                  # Thanh hiển thị tiến trình (Loading bar)
+python-dotenv         # Loading environment variables from .env
+beautifulsoup4        # Scraping and parsing web data (Ingestion)
+lxml                  # Accelerating HTML/XML parsing for BeautifulSoup
+pandas                # Handling tabular data for preprocessing 
+numpy                 # Supporting numerical operations
+tiktoken              # Counting tokens for LLM requests
+tqdm                  # Displaying progress bar for long-running tasks
 
 # --- Network & Media ---
-requests              # Gọi API, tải ảnh
-Pillow                # Xử lý ảnh (Convert WebP -> PNG)
-fake-useragent        # Giả lập trình duyệt khi cào web (Tránh bị chặn)
+requests              # Sending HTTP request to external services (API calling, download pictures)
+Pillow                # Converting and processing image format
+fake-useragent        # Rotating user agents to avoid scraping blocks(Tránh bị chặn)
 
 # --- PDF Generation ---
-pypandoc              # Cầu nối Python sang phần mềm Pandoc
-pypdf                 # Thư viện đọc PDF
-# --- REVIEW CẦN THIẾT (Xem mục hướng dẫn bên dưới) ---
+pypandoc              # Converting markdown to PDF via Pandoc
+pypdf                 # Reading and manipulating PDF
 
+
+Pillow>=10.0.0

@@ -1,28 +1,36 @@
-import sys
-import os
+"""
+Web Search Engine for AI Textbook Generator.
 
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
-if project_root not in sys.path:
-    sys.path.append(project_root)
+Uses DuckDuckGo to search for relevant educational resources
+without API keys or rate limits.
+"""
 
-from src.log_config import setup_logger
+from typing import List, Dict
+
 from ddgs import DDGS
 
-logger = setup_logger(name="Search Engine", logfile="logs/search_engine.log")
+from src.log_config import setup_logger
+
+logger = setup_logger(name="SearchEngine", logfile="logs/search_engine.log")
 
 
-def search_web(query: str, max_results: int = 10):
+def search_web(query: str, max_results: int = 10) -> List[Dict[str, str]]:
     """
-        Using DuckDuckGo search links
-    """
+    Search web using DuckDuckGo.
     
-    logger.info(f"Search for: '{query}' Region(Vietnam)...")
+    Args:
+        query: Search query (typically expanded academic query)
+        max_results: Maximum number of results to return
+        
+    Returns:
+        List of search results with title, href, and snippet.
+    """
+    logger.info(f"Searching for: '{query}' (region: Vietnam)")
     
     results = []
     
     try:
         with DDGS() as ddgs:
-            
             ddg_gen = ddgs.text(
                 query,
                 region="vn-vn",
@@ -33,16 +41,14 @@ def search_web(query: str, max_results: int = 10):
             
             if ddg_gen:
                 for r in ddg_gen:
-                    results.append(
-                        {
-                            "title": r.get("title",""),
-                            "href": r.get("href",""),
-                            "body": r.get("body","")
-                        }
-                    )
+                    results.append({
+                        "title": r.get("title", ""),
+                        "href": r.get("href", ""),
+                        "body": r.get("body", "")
+                    })
+                    
     except Exception as e:
-        logger.error(f"Search Failed: {e}")
+        logger.error(f"Search failed: {e}", exc_info=True)
         
-    logger.info(f"Final Result: Found {len(results)} links.")
+    logger.info(f"Found {len(results)} links")
     return results
-

@@ -2,14 +2,14 @@ import logging
 import sys
 from pathlib import Path
 
-def setup_logger(name: str = "Guardian", logfile: str = "logs/guardian.log", level: int = logging.INFO):
+def setup_logger(name: str = "SystemLog", logfile: str = "logs/SystemLog.log", level: int = logging.INFO):
     """
     Sets up and returns a shared logger instance.
     
     Parameters
     ----------
     name : str, optional
-        Name of the logger (default: "Guardian").
+        Name of the logger (default: "SystemLog").
     logfile : str, optional
         Path to the log file.
     level : int, optional

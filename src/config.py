@@ -1,35 +1,51 @@
 import os
+import warnings
 from pathlib import Path
 from dotenv import load_dotenv
+from functools import lru_cache
+
 
 load_dotenv()
-if not os.getenv("OPENAI_API_KEY"):
+
+# -- Required keys (app cannot function without these)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if not OPENAI_API_KEY:
     raise ValueError("OPENAI_API_KEY not found! Please check your .env file.")
 
-
+# -- Optional keys (app degrades gracefully without these)
 SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY")
 if not SERPAPI_API_KEY:
-    print("⚠️ CẢNH BÁO: Chưa tìm thấy SERPAPI_API_KEY trong .env")
+    warnings.warn(
+        "SERPAPI_API_KEY not set. Image generation will be disabled.",
+        UserWarning,
+        stacklevel=2
+    )
+    
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Data path config
-DATA_DIR = BASE_DIR / "data"
-RAW_MANUAL_DIR = DATA_DIR / "raw_manual"   # Zip files
-EXTRACTED_DIR = DATA_DIR / "extracted"    
-CHROMA_DB_DIR = DATA_DIR / "chroma_db"    
-STORAGE_DIR = BASE_DIR / "storage" 
 
-# Model config
+# --DATA PATHS --
+DATA_DIR = BASE_DIR / "data"
+CHROMA_DB_DIR = DATA_DIR / "chroma_db"    
+
+# -- AI MODELS --
 EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 LLM_MODEL_NAME = "gpt-4o-mini"
 
-# Chunking config
+# -- CHUNKINGS --
 CHUNK_SIZE = 1000  
 CHUNK_OVERLAP = 200
 
 def setup_directories():
-    for path in [DATA_DIR, RAW_MANUAL_DIR, EXTRACTED_DIR, CHROMA_DB_DIR]:
+    for path in [DATA_DIR, CHROMA_DB_DIR]:
         path.mkdir(parents=True, exist_ok=True)
         print(f"[OK] Directory ready: {path}")
 
-
+@lru_cache(maxsize=1)
+def get_embedding_model():
+    """
+    Singleton embedding model — loaded once, reused everywhere.
+    lru_cache đảm bảo chỉ khởi tạo 1 lần duy nhất trong suốt app lifetime.
+    """
+    from langchain_huggingface import HuggingFaceEmbeddings
+    return HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
