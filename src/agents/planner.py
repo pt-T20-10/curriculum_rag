@@ -42,7 +42,6 @@ class HybridPlanner:
     def __init__(self) -> None:
         """Initialize LLM, vector DB connection, and stopwords."""
         self.llm = ChatOpenAI(model=LLM_MODEL_NAME, temperature=0.3)
-     
         
         self.vector_db = Chroma(
             persist_directory=str(CHROMA_DB_DIR),
@@ -94,12 +93,11 @@ class HybridPlanner:
         """
         logger.info(f"Phase 1 (NMF): Extracting {num_topics} topic clusters...")
         
-        # Step 1: TF-IDF Vectorization
         vectorizer = TfidfVectorizer(
-            max_df=0.95,           # Ignore terms appearing in >95% of docs (too common)
-            min_df=2,              # Ignore terms appearing in <2 docs (too rare)
+            max_df=0.95,
+            min_df=2,
             stop_words=self.stop_words,
-            max_features=2000      # Limit vocabulary size
+            max_features=2000
         )
         
         try:
@@ -108,23 +106,19 @@ class HybridPlanner:
             logger.warning(f"Insufficient data for TF-IDF vectorization: {e}")
             return ""
         
-        # Step 2: NMF Decomposition
         nmf = NMF(
             n_components=num_topics,
             random_state=42,
-            init='nndsvd'  # Improved initialization for better convergence
+            init='nndsvd'
         )
         nmf.fit(tfidf_matrix)
         
         feature_names = vectorizer.get_feature_names_out()
         
-        # Step 3: Extract Top Keywords per Topic
         topics_summary = []
         for topic_idx, topic in enumerate(nmf.components_):
-            # Get indices of top 10 keywords (sorted by weight)
             top_indices = topic.argsort()[:-11:-1]
             keywords = [str(feature_names[i]) for i in top_indices]
-            
             summary_line = f"- Topic Cluster {topic_idx + 1}: {', '.join(keywords)}"
             topics_summary.append(summary_line)
         
@@ -132,110 +126,285 @@ class HybridPlanner:
         logger.info(f"Extracted topic clusters:\n{result_text}")
         return result_text
     
-    def refine_plan_with_llm(self, topic_name: str, raw_topics: str) -> Optional[Dict[str, Any]]:
+    @staticmethod
+    def _extract_json(raw: str) -> Any:
         """
-        Phase 2: Refine raw topic clusters into structured curriculum using LLM.
+        Robust JSON extractor — handles markdown fences and leading/trailing prose.
+        Raises json.JSONDecodeError if no valid JSON found.
+        """
+        content = raw.strip()
+        if "```json" in content:
+            content = content.split("```json")[1].split("```")[0].strip()
+        elif "```" in content:
+            content = content.split("```")[1].strip()
+        else:
+            start = content.find("{")
+            end   = content.rfind("}")
+            if start != -1 and end > start:
+                content = content[start:end + 1]
+        return json.loads(content)
+
+    def _plan_chapter_titles(
+        self,
+        topic_name: str,
+        raw_topics: str,
+        num_chapters: int
+    ) -> Optional[List[str]]:
+        """
+        Phase 2a: Generate ONLY chapter titles — tiny JSON output (~300 tokens).
         
-        The LLM:
-        1. Analyzes keyword clusters to understand content themes
-        2. Organizes topics into pedagogical flow (basic → advanced)
-        3. Generates professional titles and subsections
-        4. Returns structured JSON matching CurriculumOutline schema
-        
-        Args:
-            topic_name: Main subject/topic from user request
-            raw_topics: NMF-extracted topic clusters
-            
         Returns:
-            Dictionary conforming to CurriculumOutline schema, or None on parse failure.
+            List of chapter title strings, or None on failure.
         """
-        logger.info("Phase 2 (LLM): Refining curriculum structure...")
-        
-        # CRITICAL FIX: Remove newlines from JSON example to avoid LangChain parsing it as variable
-        system_prompt = """You are an expert curriculum designer and professor.
+        logger.info(f"Phase 2a: Planning {num_chapters} chapter titles...")
 
-You will receive raw topic keywords extracted from a document corpus via NMF algorithm.
+        system_prompt = (
+            "You are a curriculum designer. "
+            "Given a subject and topic clusters, output ONLY a JSON array of chapter titles in Vietnamese. "
+            f"You MUST output EXACTLY {num_chapters} titles. "
+            "No explanation, no markdown, no extra keys — just the JSON array.\n\n"
+            'Example output: ["Chương 1 title", "Chương 2 title"]'
+        )
+        user_prompt = (
+            f"Subject: {topic_name}\n"
+            f"Number of chapters: {num_chapters}\n\n"
+            f"Topic clusters:\n{raw_topics}\n\n"
+            f"Output a JSON array of exactly {num_chapters} chapter titles:"
+        )
 
-YOUR TASK:
-1. Analyze the keyword clusters to understand core content themes
-2. Structure topics into logical pedagogical flow (foundational → intermediate → advanced)
-3. Create professional chapter titles based on the themes
-4. Design 3-5 subsections for each chapter with specific learning objectives
-
-CRITICAL CONSTRAINTS:
-- Output content (titles, descriptions) MUST be in Vietnamese (Tiếng Việt)
-- Output format MUST be valid JSON matching this EXACT schema (all in one line, no line breaks):
-
-{{"topic": "Tên chủ đề chính", "chapters": [{{"title": "Tên chương 1", "subsections": [{{"title": "Tên phần 1.1", "description": "Mô tả ngắn gọn nội dung phần này", "search_query": "từ khóa tìm kiếm tiếng Anh cho RAG"}}]}}]}}
-
-IMPORTANT FOR search_query:
-- Use English keywords for better RAG retrieval
-- Be specific and technical (e.g., "Python variable types scope" not just "variables")
-- Include 3-5 relevant terms per query
-
-OUTPUT ONLY THE JSON - NO MARKDOWN FENCES, NO PREAMBLE, NO LINE BREAKS IN JSON."""
-
-        user_prompt = f"""Subject: {topic_name}
-
-Raw Keyword Clusters (from NMF):
-{raw_topics}
-
-Generate the structured curriculum now:"""
-        
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
             ("human", user_prompt)
         ])
+        chain = prompt | self.llm
+
+        MAX_RETRIES = 3
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                response = chain.invoke({})
+                raw = str(response.content).strip()  # type: ignore
+
+                # Extract JSON array
+                start = raw.find("[")
+                end   = raw.rfind("]")
+                if start == -1 or end == -1:
+                    raise ValueError("No JSON array found in response")
+                titles = json.loads(raw[start:end + 1])
+
+                if not isinstance(titles, list) or len(titles) == 0:
+                    raise ValueError("Empty or non-list response")
+
+                if len(titles) != num_chapters:
+                    logger.warning(
+                        f"Got {len(titles)} titles instead of {num_chapters} — "
+                        f"padding/trimming to match"
+                    )
+                    # Trim if too many
+                    titles = titles[:num_chapters]
+                    # Pad if too few
+                    while len(titles) < num_chapters:
+                        titles.append(f"Chương {len(titles) + 1}: {topic_name}")
+
+                logger.info(f"✓ Phase 2a: {len(titles)} chapter titles planned")
+                return [str(t) for t in titles]
+
+            except Exception as e:
+                logger.warning(f"Phase 2a attempt {attempt}/{MAX_RETRIES} failed: {e}")
+
+        logger.error("Phase 2a: Failed to generate chapter titles after all retries")
+        return None
+
+    def _generate_chapter_subsections(
+        self,
+        topic_name: str,
+        chapter_title: str,
+        chapter_index: int,
+        num_chapters: int,
+        raw_topics: str,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """
+        Phase 2b: Generate subsections for ONE chapter — small focused JSON output.
         
-        try:
-            chain = prompt | self.llm
-            # FIX: Pass empty dict explicitly (no variables needed, all in messages)
-            response = chain.invoke({"topic_name": topic_name, "raw_topics": raw_topics})
-            
-            # Parse LLM JSON response with defensive extraction
-            content = response.content.strip()  # type: ignore
-            
-            # Remove markdown code fences if present
-            if "```json" in content:
-                content = content.split("```json")[1].split("```")[0].strip()
-            elif "```" in content:
-                content = content.split("```")[1].strip()
-            
-            parsed_json = json.loads(content)
-            
-            # Validate basic structure
-            if "chapters" not in parsed_json:
-                logger.error("LLM output missing 'chapters' field")
-                return None
-            
-            logger.info(f"Successfully parsed curriculum with {len(parsed_json['chapters'])} chapters")
-            return parsed_json
-            
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse JSON from LLM output: {e}")
-            logger.debug(f"Raw LLM output: {response.content}")  # type: ignore
+        Each call produces ~400-600 tokens output → never truncated.
+        
+        Returns:
+            List of subsection dicts, or None on failure.
+        """
+        system_prompt = """You are an expert curriculum designer.
+Generate 3-5 subsections for ONE chapter of a Vietnamese textbook.
+
+OUTPUT: A JSON array of subsection objects. Each object must have:
+- "title": string (in Vietnamese)
+- "description": string (in Vietnamese, 1-2 sentences)
+- "search_query": string (in English, 3-5 specific keywords for RAG)
+- "section_type": one of "intro", "concept", "example", "practice", "summary"
+
+SECTION TYPE RULES:
+- First subsection: always "intro"
+- Last subsection: always "summary"  
+- Middle subsections: "concept", "example", or "practice" based on content
+
+OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
+
+        user_prompt = (
+            f"Textbook topic: {topic_name}\n"
+            f"This is Chapter {chapter_index + 1} of {num_chapters}: \"{chapter_title}\"\n\n"
+            f"Relevant topic clusters:\n{raw_topics}\n\n"
+            f"Generate 3-5 subsections for this chapter now:"
+        )
+
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", system_prompt),
+            ("human", user_prompt)
+        ])
+        chain = prompt | self.llm
+
+        valid_types = {"intro", "concept", "example", "practice", "summary"}
+        MAX_RETRIES = 3
+
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                response = chain.invoke({})
+                raw = str(response.content).strip()  # type: ignore
+
+                # Extract JSON array
+                start = raw.find("[")
+                end   = raw.rfind("]")
+                if start == -1 or end == -1:
+                    raise ValueError("No JSON array in response")
+                subsections = json.loads(raw[start:end + 1])
+
+                if not isinstance(subsections, list) or len(subsections) == 0:
+                    raise ValueError("Empty subsection list")
+
+                # Normalize and validate each subsection
+                for sub in subsections:
+                    sub.setdefault("title", "Untitled")
+                    sub.setdefault("description", "")
+                    sub.setdefault("search_query", topic_name)
+                    if sub.get("section_type", "") not in valid_types:
+                        sub["section_type"] = "concept"
+
+                # Enforce intro/summary on first/last
+                subsections[0]["section_type"]  = "intro"
+                subsections[-1]["section_type"] = "summary"
+
+                logger.info(
+                    f"  ✓ Chapter {chapter_index + 1} '{chapter_title}': "
+                    f"{len(subsections)} subsections"
+                )
+                return subsections
+
+            except Exception as e:
+                logger.warning(
+                    f"Chapter {chapter_index + 1} attempt {attempt}/{MAX_RETRIES} failed: {e}"
+                )
+
+        logger.error(f"Failed to generate subsections for chapter {chapter_index + 1}")
+        return None
+
+    def refine_plan_with_llm(
+        self,
+        topic_name: str,
+        raw_topics: str,
+        num_chapters: int = 3
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Phase 2: Build full curriculum via 2-phase approach to avoid token limit.
+
+        Phase 2a — 1 small LLM call → chapter titles list  (~300 tokens output)
+        Phase 2b — N small LLM calls → subsections per chapter (~500 tokens/call)
+
+        Total output tokens = 300 + (N × 500) — never truncated regardless of N.
+
+        Args:
+            topic_name: Main subject/topic from user request
+            raw_topics: NMF-extracted topic clusters
+            num_chapters: Exact number of chapters to generate
+
+        Returns:
+            Dictionary conforming to CurriculumOutline schema, or None on failure.
+        """
+        logger.info(
+            f"Phase 2 (LLM): 2-phase curriculum build — {num_chapters} chapters "
+            f"({num_chapters + 1} total LLM calls)"
+        )
+
+        # Phase 2a: Get chapter titles
+        chapter_titles = self._plan_chapter_titles(topic_name, raw_topics, num_chapters)
+        if not chapter_titles:
             return None
-        except Exception as e:
-            logger.error(f"Unexpected error parsing LLM response: {e}", exc_info=True)
+
+        # Phase 2b: Generate subsections for each chapter independently
+        chapters = []
+        failed_chapters = 0
+
+        for idx, title in enumerate(chapter_titles):
+            subsections = self._generate_chapter_subsections(
+                topic_name=topic_name,
+                chapter_title=title,
+                chapter_index=idx,
+                num_chapters=num_chapters,
+                raw_topics=raw_topics
+            )
+            if subsections:
+                chapters.append({"title": title, "subsections": subsections})
+            else:
+                failed_chapters += 1
+                logger.warning(f"Skipping chapter {idx + 1} due to generation failure")
+                # Add minimal fallback chapter so curriculum is not broken
+                chapters.append({
+                    "title": title,
+                    "subsections": [
+                        {
+                            "title": f"Giới thiệu về {title}",
+                            "description": f"Tổng quan về {title}",
+                            "search_query": f"{topic_name} {title} introduction",
+                            "section_type": "intro"
+                        }
+                    ]
+                })
+
+        if failed_chapters == num_chapters:
+            logger.error("All chapters failed to generate subsections")
             return None
+
+        total_subsections = sum(len(c["subsections"]) for c in chapters)
+        logger.info(
+            f"✓ Curriculum built: {len(chapters)} chapters, "
+            f"{total_subsections} subsections "
+            f"({failed_chapters} chapters used fallback)"
+        )
+
+        return {"topic": topic_name, "chapters": chapters}
     
-    def create_curriculum(self, topic: str, num_topics: int = 7) -> Optional[CurriculumOutline]:
+    def create_curriculum(
+        self,
+        topic: str,
+        num_chapters: int = 3,
+        num_topics: int = 7
+    ) -> Optional[CurriculumOutline]:
         """
         Main orchestration: Run hybrid planning pipeline.
         
         Pipeline:
         1. Fetch all documents from vector DB
         2. Extract topic clusters via NMF
-        3. Refine into structured curriculum via LLM
+        3. Refine into structured curriculum via LLM (with num_chapters constraint)
         4. Parse into Pydantic CurriculumOutline object
         
         Args:
             topic: User's requested subject
-            num_topics: Number of NMF topic clusters to extract
+            num_chapters: Number of chapters to generate (from user config)
+            num_topics: Number of NMF topic clusters to extract (auto-scaled to num_chapters)
             
         Returns:
             CurriculumOutline Pydantic object, or None on failure.
         """
+        # Scale NMF topics to at least cover the requested chapters
+        # More chapters → need more topic clusters for variety
+        effective_num_topics = max(num_topics, num_chapters + 2)
+        
         # Step 1: Get corpus
         docs = self.get_all_documents()
         if not docs:
@@ -243,21 +412,35 @@ Generate the structured curriculum now:"""
             return None
         
         # Step 2: NMF topic extraction
-        raw_topics = self.extract_topics_with_nmf(docs, num_topics=num_topics)
+        # If corpus is too small for the requested num_topics, scale down gracefully
+        raw_topics = ""
+        for n_topics in [effective_num_topics, max(3, effective_num_topics // 2), 3]:
+            raw_topics = self.extract_topics_with_nmf(docs, num_topics=n_topics)
+            if raw_topics:
+                if n_topics < effective_num_topics:
+                    logger.warning(
+                        f"NMF scaled down: {effective_num_topics} → {n_topics} topics "
+                        f"(corpus may be too small)"
+                    )
+                break
+
         if not raw_topics:
-            logger.error("Topic extraction failed - insufficient data")
+            logger.error("Topic extraction failed at all fallback levels - insufficient data")
             return None
         
-        # Step 3: LLM refinement
-        plan_dict = self.refine_plan_with_llm(topic, raw_topics)
+        # Step 3: LLM refinement — refine_plan_with_llm already retries internally
+        plan_dict = self.refine_plan_with_llm(topic, raw_topics, num_chapters=num_chapters)
         if not plan_dict:
-            logger.error("LLM refinement failed - could not generate valid curriculum")
+            logger.error("LLM refinement failed after all retries")
             return None
         
-        # Step 4: Parse into Pydantic model for type safety
+        # Step 4: Parse into Pydantic model
         try:
             curriculum = CurriculumOutline(**plan_dict)
-            logger.info(f"✓ Created curriculum: {curriculum.topic} ({len(curriculum.chapters)} chapters)")
+            logger.info(
+                f"✓ Created curriculum: '{curriculum.topic}' "
+                f"({len(curriculum.chapters)} chapters)"
+            )
             return curriculum
         except Exception as e:
             logger.error(f"Failed to parse curriculum into Pydantic model: {e}")
@@ -269,14 +452,8 @@ def plan_curriculum(state: AgentState) -> dict:
     """
     Planner node: Generate curriculum outline from user request.
     
-    Workflow integration:
-    - Input: state["request"] (user's topic request)
-    - Output: state["curriculum"] (CurriculumOutline object)
-    
-    Also initializes workflow tracking fields:
-    - current_chapter_index = 0
-    - current_subsection_index = 0
-    - revision_number = 0
+    Reads user config from state:
+    - num_chapters: exact number of chapters to generate
     
     Args:
         state: Current workflow state
@@ -289,16 +466,19 @@ def plan_curriculum(state: AgentState) -> dict:
     logger.info("=" * 60)
     
     user_request = state["request"]
-    logger.info(f"User request: {user_request}")
+    num_chapters  = state.get("num_chapters", 3)   # type: ignore[call-overload]
     
-    # Run hybrid planning pipeline
+    logger.info(f"User request : {user_request}")
+    logger.info(f"Num chapters : {num_chapters}")
+    
     planner = HybridPlanner()
-    curriculum = planner.create_curriculum(user_request)
+    curriculum = planner.create_curriculum(user_request, num_chapters=num_chapters)
     
     if not curriculum:
         raise ValueError("Planner failed: Could not generate curriculum")
     
-    # Initialize workflow state
+    total_subsections = sum(len(ch.subsections) for ch in curriculum.chapters)
+    
     return {
         "curriculum": curriculum,
         "current_chapter_index": 0,
@@ -308,6 +488,6 @@ def plan_curriculum(state: AgentState) -> dict:
         "messages": [
             f"✓ Curriculum created: {curriculum.topic}",
             f"  - {len(curriculum.chapters)} chapters planned",
-            f"  - Total subsections: {sum(len(ch.subsections) for ch in curriculum.chapters)}"
+            f"  - Total subsections: {total_subsections}"
         ]
     }

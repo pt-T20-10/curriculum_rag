@@ -11,7 +11,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 
 from src.log_config import setup_logger
-from src.graph.state import AgentState, CurriculumOutline, Chapter, SubSection, get_chapter_and_subsection
+from src.graph.state import AgentState, CurriculumOutline, Chapter, SubSection, get_chapter_and_subsection, get_word_target
 from src.config import LLM_MODEL_NAME
 
 logger = setup_logger(name="WriterAgent", logfile="logs/agents.log")
@@ -42,7 +42,9 @@ class WriterAgent:
         section_description: str,
         context: str,
         chapter_instruction: str,
-        review_feedback: str = ""
+        review_feedback: str = "",
+        section_type: str = "concept",
+        word_target: tuple[int, int] = (800, 1000)
     ) -> str:
         """
         Generate content for a specific section using RAG context.
@@ -57,6 +59,8 @@ class WriterAgent:
             context: Retrieved RAG context
             chapter_instruction: Special LaTeX instructions for chapter headers
             review_feedback: Feedback from Reviewer (non-empty means this is a revision)
+            section_type: Content purpose — controls tone and depth expectations
+            word_target: (min_words, max_words) tuple derived from section_type + user config
             
         Returns:
             Generated Markdown content, or error message on failure.
@@ -152,8 +156,14 @@ RESEARCH CONTEXT (From Vector DB):
    - **IMPORTANT**: Use a SPACE between number and title, NO colons or extra dots.
 
 5. **Content Depth (CRITICAL)**:
-   - **Target Length**: Write approximately **800-1000 words** (Comprehensive coverage).
-   - **No Fluff**: Do not summarize. Explain concepts in depth (The "Why" and "How").
+   - **Section Type**: This is a **{section_type}** section — adapt accordingly:
+     - "intro"    : Engaging overview, set the scene, motivate the reader. Light depth.
+     - "concept"  : Deep explanation of theory, definitions, principles. The "Why" and "How".
+     - "example"  : Worked examples, case studies, step-by-step walkthroughs.
+     - "practice" : Exercises, problems, hands-on tasks with guidance.
+     - "summary"  : Concise recap of key points, takeaways, bridge to next section.
+   - **Target Length**: Write approximately **{word_min}–{word_max} words** for this section type.
+   - **No Fluff**: Every sentence must add value. Do not pad or repeat unnecessarily.
    - **Academic Tone**: Formal, precise, but accessible (like a professor teaching).
    - **Paragraph Structure**: Each paragraph should be 3-5 sentences. Add blank line between paragraphs.
 
@@ -227,7 +237,10 @@ OUTPUT LANGUAGE: VIETNAMESE (Tiếng Việt).
                 "section_description": section_description,
                 "context": context,
                 "chapter_instruction": chapter_instruction,
-                "revision_instruction": revision_instruction
+                "revision_instruction": revision_instruction,
+                "section_type": section_type,
+                "word_min": word_target[0],
+                "word_max": word_target[1]
             })
             
             raw_content = response.content
@@ -315,6 +328,16 @@ def write_section(state: AgentState) -> dict:
         chap_title = chapter.title if isinstance(chapter, Chapter) else chapter.get('title', 'Unknown Chapter')
         sec_title = subsection.title if isinstance(subsection, SubSection) else subsection.get('title', 'Unknown Section')
         sec_desc = subsection.description if isinstance(subsection, SubSection) else subsection.get('description', '')
+        sec_type = subsection.section_type if isinstance(subsection, SubSection) else subsection.get('section_type', 'concept')
+        
+        # Compute word target: start from section_type defaults, then apply user min floor
+        min_words_floor = state.get("min_words_per_section", 0)   # type: ignore[call-overload]
+        base_min, base_max = get_word_target(sec_type)
+        effective_min = max(base_min, min_words_floor)
+        effective_max = max(base_max, effective_min + 100)  # ensure max > min
+        word_target = (effective_min, effective_max)
+        
+        logger.info(f"Section type: '{sec_type}' → word target: {effective_min}–{effective_max} words")
         
         # Clean section title
         if ":" in sec_title and any(prefix in sec_title for prefix in ["Mục", "Phần", "Bài"]):
@@ -354,7 +377,9 @@ def write_section(state: AgentState) -> dict:
             section_description=sec_desc,
             context=context,
             chapter_instruction=chapter_instruction_text,
-            review_feedback=review_feedback   # ← Truyền feedback vào
+            review_feedback=review_feedback,
+            section_type=sec_type,
+            word_target=word_target
         )
         
         return {"current_content": content}
