@@ -21,7 +21,7 @@ from langchain_chroma import Chroma
 from src.config import get_embedding_model
 
 from src.graph.state import AgentState, CurriculumOutline
-from src.config import CHROMA_DB_DIR, LLM_MODEL_NAME
+from src.config import CHROMA_DB_DIR, LLM_MODEL_PREMIUM
 from src.log_config import setup_logger
 
 logger = setup_logger(name="PlannerAgent", logfile="logs/agents.log")
@@ -41,7 +41,7 @@ class HybridPlanner:
     
     def __init__(self) -> None:
         """Initialize LLM, vector DB connection, and stopwords."""
-        self.llm = ChatOpenAI(model=LLM_MODEL_NAME, temperature=0.3)
+        self.llm = ChatOpenAI(model=LLM_MODEL_PREMIUM, temperature=0.3)
         
         self.vector_db = Chroma(
             persist_directory=str(CHROMA_DB_DIR),
@@ -221,28 +221,42 @@ class HybridPlanner:
         chapter_index: int,
         num_chapters: int,
         raw_topics: str,
+        max_subsections: int = 5,
     ) -> Optional[List[Dict[str, Any]]]:
         """
         Phase 2b: Generate subsections for ONE chapter — small focused JSON output.
-        
+
         Each call produces ~400-600 tokens output → never truncated.
-        
+        The structure adapts to the subject domain; section_type controls word count.
+
+        Args:
+            max_subsections: Upper bound on subsections (from user depth control)
+
         Returns:
             List of subsection dicts, or None on failure.
         """
-        system_prompt = """You are an expert curriculum designer.
-Generate 3-5 subsections for ONE chapter of a Vietnamese textbook.
+        system_prompt = f"""You are an expert curriculum designer.
+Generate between 3 and {max_subsections} subsections for ONE chapter of a Vietnamese textbook.
+Choose as many subsections as the chapter NATURALLY needs — do not pad unnecessarily.
 
 OUTPUT: A JSON array of subsection objects. Each object must have:
-- "title": string (in Vietnamese)
+- "title": string (in Vietnamese — descriptive title suited to the subject domain)
 - "description": string (in Vietnamese, 1-2 sentences)
 - "search_query": string (in English, 3-5 specific keywords for RAG)
 - "section_type": one of "intro", "concept", "example", "practice", "summary"
 
-SECTION TYPE RULES:
-- First subsection: always "intro"
-- Last subsection: always "summary"  
-- Middle subsections: "concept", "example", or "practice" based on content
+SECTION TYPE GUIDE (controls word count — pick what fits the content):
+- "intro"    → orientation, background, motivation (~400-600 words)
+- "concept"  → theory, analysis, principles, deep explanation (~800-1000 words)
+- "example"  → case studies, worked examples, historical events (~600-800 words)
+- "practice" → exercises, applications, hands-on tasks (~500-700 words)
+- "summary"  → recap, key takeaways, connections to next chapter (~300-500 words)
+
+STRUCTURE GUIDANCE:
+- Adapt the section structure to the SUBJECT DOMAIN — a history chapter differs from a coding chapter
+- Do NOT rigidly follow intro→concept→practice→summary every time
+- Choose an order and mix of types that makes pedagogical sense for THIS chapter
+- Subsection titles should reflect actual content (e.g. "Bối cảnh lịch sử", "Phân tích học thuyết")
 
 OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
 
@@ -250,7 +264,7 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
             f"Textbook topic: {topic_name}\n"
             f"This is Chapter {chapter_index + 1} of {num_chapters}: \"{chapter_title}\"\n\n"
             f"Relevant topic clusters:\n{raw_topics}\n\n"
-            f"Generate 3-5 subsections for this chapter now:"
+            f"Generate 3–{max_subsections} subsections appropriate for this chapter:"
         )
 
         prompt = ChatPromptTemplate.from_messages([
@@ -277,6 +291,14 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
                 if not isinstance(subsections, list) or len(subsections) == 0:
                     raise ValueError("Empty subsection list")
 
+                # Enforce max limit (trim if LLM exceeded it)
+                if len(subsections) > max_subsections:
+                    logger.warning(
+                        f"Chapter {chapter_index + 1}: LLM returned {len(subsections)} subsections "
+                        f"(limit {max_subsections}) — trimming"
+                    )
+                    subsections = subsections[:max_subsections]
+
                 # Normalize and validate each subsection
                 for sub in subsections:
                     sub.setdefault("title", "Untitled")
@@ -284,10 +306,6 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
                     sub.setdefault("search_query", topic_name)
                     if sub.get("section_type", "") not in valid_types:
                         sub["section_type"] = "concept"
-
-                # Enforce intro/summary on first/last
-                subsections[0]["section_type"]  = "intro"
-                subsections[-1]["section_type"] = "summary"
 
                 logger.info(
                     f"  ✓ Chapter {chapter_index + 1} '{chapter_title}': "
@@ -303,11 +321,106 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
         logger.error(f"Failed to generate subsections for chapter {chapter_index + 1}")
         return None
 
+    def _generate_textbook_title(self, topic: str, curriculum: CurriculumOutline) -> str:
+        """
+        Generate a formal academic Vietnamese textbook title from the user request.
+
+        Returns a concise title string (max ~12 words).
+        Falls back to "Giáo trình {topic}" on any error.
+        """
+        logger.info("Generating academic textbook title...")
+        chapter_list = "\n".join(
+            f"  - {ch.title}" for ch in curriculum.chapters
+        )
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", (
+                "You are a Vietnamese academic textbook editor. "
+                "Given a user request and a list of chapter titles, generate ONE formal academic "
+                "textbook title. No explanation, no markdown, maximum 12 words. "
+                "Output MUST be in Vietnamese. "
+                'Example: "Giáo trình Hóa học Đại cương"'
+            )),
+            ("human", (
+                f"User request: {topic}\n\n"
+                f"Chapters:\n{chapter_list}\n\n"
+                "Output the Vietnamese textbook title:"
+            ))
+        ])
+        try:
+            response = (prompt | self.llm).invoke({})
+            title = str(response.content).strip().strip('"').strip("'")  # type: ignore
+            logger.info(f"✓ Textbook title: {title}")
+            return title
+        except Exception as e:
+            logger.warning(f"Title generation failed: {e}")
+            return f"Giáo trình {topic}"
+
+    def _generate_preface(
+        self, topic: str, title: str, curriculum: CurriculumOutline
+    ) -> str:
+        """
+        Generate a Lời nói đầu (preface) page as raw Markdown with LaTeX header.
+
+        Covers: target audience, purpose, chapter structure, unique features, usage guide.
+        Returns empty string on failure (preface is optional).
+        """
+        logger.info("Generating preface (Lời nói đầu)...")
+        chapter_summary = "\n".join(
+            f"  - Chương {i + 1}: {ch.title}"
+            for i, ch in enumerate(curriculum.chapters)
+        )
+        system_prompt = """You are the author of a Vietnamese university textbook writing the "Lời nói đầu" (Preface).
+
+Write a natural, flowing academic preface. Output raw Markdown — no outer code fences.
+
+REQUIRED — start with exactly these LaTeX commands:
+
+\\begin{{center}}
+\\Large\\textbf{{LỜI NÓI ĐẦU}}
+\\end{{center}}
+
+\\vspace{{0.5cm}}
+
+Then write 4-6 paragraphs that naturally cover these aspects (in any order, without rigid labels):
+- Who the textbook is intended for and what prerequisite knowledge is assumed
+- The purpose and learning objectives of the textbook
+- How the content is structured across chapters (reference the provided chapter list)
+- What makes this textbook distinctive or valuable for students
+- How to use the textbook effectively for best results
+
+Style rules:
+- Formal academic Vietnamese (văn phong học thuật trang trọng)
+- Each paragraph 3-5 sentences, flowing naturally without bolded section labels
+- No conversational filler or generic phrases
+- Tailor the content specifically to the topic and chapter structure provided
+
+All output MUST be in formal Vietnamese."""
+
+        user_prompt = (
+            f"Textbook title: {title}\n"
+            f"Topic: {topic}\n\n"
+            f"Chapter list:\n{chapter_summary}\n\n"
+            "Write the Vietnamese preface now:"
+        )
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", system_prompt),
+            ("human", user_prompt)
+        ])
+        try:
+            response = (prompt | self.llm).invoke({})
+            preface = str(response.content).strip()  # type: ignore
+            logger.info("✓ Preface generated")
+            return preface
+        except Exception as e:
+            logger.warning(f"Preface generation failed: {e}")
+            return ""
+
     def refine_plan_with_llm(
         self,
         topic_name: str,
         raw_topics: str,
-        num_chapters: int = 3
+        num_chapters: int = 3,
+        max_subsections: int = 5,
     ) -> Optional[Dict[str, Any]]:
         """
         Phase 2: Build full curriculum via 2-phase approach to avoid token limit.
@@ -321,13 +434,14 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
             topic_name: Main subject/topic from user request
             raw_topics: NMF-extracted topic clusters
             num_chapters: Exact number of chapters to generate
+            max_subsections: Upper bound on subsections per chapter
 
         Returns:
             Dictionary conforming to CurriculumOutline schema, or None on failure.
         """
         logger.info(
             f"Phase 2 (LLM): 2-phase curriculum build — {num_chapters} chapters "
-            f"({num_chapters + 1} total LLM calls)"
+            f"({num_chapters + 1} total LLM calls, max {max_subsections} subsections/chapter)"
         )
 
         # Phase 2a: Get chapter titles
@@ -345,7 +459,8 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
                 chapter_title=title,
                 chapter_index=idx,
                 num_chapters=num_chapters,
-                raw_topics=raw_topics
+                raw_topics=raw_topics,
+                max_subsections=max_subsections,
             )
             if subsections:
                 chapters.append({"title": title, "subsections": subsections})
@@ -382,7 +497,8 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
         self,
         topic: str,
         num_chapters: int = 3,
-        num_topics: int = 7
+        num_topics: int = 7,
+        max_subsections: int = 5,
     ) -> Optional[CurriculumOutline]:
         """
         Main orchestration: Run hybrid planning pipeline.
@@ -429,7 +545,7 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
             return None
         
         # Step 3: LLM refinement — refine_plan_with_llm already retries internally
-        plan_dict = self.refine_plan_with_llm(topic, raw_topics, num_chapters=num_chapters)
+        plan_dict = self.refine_plan_with_llm(topic, raw_topics, num_chapters=num_chapters, max_subsections=max_subsections)
         if not plan_dict:
             logger.error("LLM refinement failed after all retries")
             return None
@@ -465,22 +581,31 @@ def plan_curriculum(state: AgentState) -> dict:
     logger.info("NODE: Planner - Building curriculum outline")
     logger.info("=" * 60)
     
-    user_request = state["request"]
-    num_chapters  = state.get("num_chapters", 3)   # type: ignore[call-overload]
-    
-    logger.info(f"User request : {user_request}")
-    logger.info(f"Num chapters : {num_chapters}")
-    
+    user_request   = state["request"]
+    num_chapters   = state.get("num_chapters", 3)             # type: ignore[call-overload]
+    max_subsections = state.get("max_subsections_per_chapter", 5)  # type: ignore[call-overload]
+
+    logger.info(f"User request       : {user_request}")
+    logger.info(f"Num chapters       : {num_chapters}")
+    logger.info(f"Max subsections/ch : {max_subsections}")
+
     planner = HybridPlanner()
-    curriculum = planner.create_curriculum(user_request, num_chapters=num_chapters)
+    curriculum = planner.create_curriculum(
+        user_request, num_chapters=num_chapters, max_subsections=max_subsections
+    )
     
     if not curriculum:
         raise ValueError("Planner failed: Could not generate curriculum")
     
     total_subsections = sum(len(ch.subsections) for ch in curriculum.chapters)
-    
+
+    textbook_title = planner._generate_textbook_title(user_request, curriculum) or f"Giáo trình {user_request}"
+    preface_content = planner._generate_preface(user_request, textbook_title, curriculum)
+
     return {
         "curriculum": curriculum,
+        "textbook_title": textbook_title,
+        "preface_content": preface_content,
         "current_chapter_index": 0,
         "current_subsection_index": 0,
         "final_content": "",
@@ -488,6 +613,7 @@ def plan_curriculum(state: AgentState) -> dict:
         "messages": [
             f"✓ Curriculum created: {curriculum.topic}",
             f"  - {len(curriculum.chapters)} chapters planned",
-            f"  - Total subsections: {total_subsections}"
+            f"  - Total subsections: {total_subsections}",
+            f"  - Textbook title: {textbook_title}",
         ]
     }

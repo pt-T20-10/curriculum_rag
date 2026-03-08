@@ -10,10 +10,13 @@ Provides web interface with Google Gemini Deep Search style:
 
 import os
 import sys
+import threading
+import queue as _queue
 
 from src.config import setup_directories
 from src.graph.workflow import create_workflow
 from src.log_config import setup_logger
+from src import stop_signal
 
 logger = setup_logger(name="App", logfile="logs/app.log")
 
@@ -133,6 +136,10 @@ if "current_progress" not in st.session_state:
         "total_chapters": 0,
         "total_subsections": 0
     }
+if "stop_event" not in st.session_state:
+    st.session_state.stop_event = threading.Event()
+if "is_running" not in st.session_state:
+    st.session_state.is_running = False
 
 # Header
 st.markdown(
@@ -186,8 +193,19 @@ with st.sidebar:
         unsafe_allow_html=True
     )
     
+    max_subsections = st.slider(
+        "Số mục tối đa / chương",
+        min_value=3,
+        max_value=10,
+        value=5,
+        help=(
+            "Giới hạn số mục con trong mỗi chương. "
+            "Planner sẽ chọn cấu trúc phù hợp với chủ đề trong giới hạn này."
+        )
+    )
+
     st.divider()
-    
+
     # --- Hình ảnh ---
     st.subheader("🖼️ Hình ảnh")
     
@@ -217,8 +235,8 @@ with st.sidebar:
     # Công thức: ingestion(1) + planner(1) + subsections × 7 + publisher(1) + buffer(20%)
     # 7 steps/subsection = researcher + writer + reviewer + illustrator +
     #                      check_next_step + update_subsection + (update_chapter mỗi chương)
-    # Ước tính trước khi có curriculum: giả định 5 subsections/chapter
-    _est_subs = num_chapters * 5
+    # Ước tính trước khi có curriculum: dùng max_subsections từ slider
+    _est_subs = num_chapters * max_subsections
     _steps_per_sub = 7 if enable_images else 6
     _auto_limit = int((2 + _est_subs * _steps_per_sub + 1) * 1.2)
     
@@ -251,13 +269,23 @@ with col1:
 with col2:
     st.write("")
     st.write("")
-    start_btn = st.button("🚀 Bắt đầu tạo", type="primary", use_container_width=True)
+    start_btn = st.button(
+        "🚀 Bắt đầu tạo", type="primary", use_container_width=True,
+        disabled=st.session_state.is_running
+    )
+    if st.session_state.is_running:
+        if st.button("⛔ Dừng lại", type="secondary", use_container_width=True):
+            st.session_state.stop_event.set()
+            stop_signal.request_stop()
+            st.session_state.is_running = False
+            st.rerun()
 
 # Show current config summary below input
 if topic:
     img_label = "✓ Có hình ảnh" if enable_images else "✗ Không có hình"
     st.caption(
         f"Cấu hình: **{num_chapters} chương** · "
+        f"**≤{max_subsections} mục/chương** · "
         f"**≥{min_words} từ/mục** · "
         f"**{img_label}**"
     )
@@ -338,16 +366,21 @@ if start_btn and topic:
         "total_chapters": 0, "total_subsections": 0
     }
     
+    st.session_state.stop_event.clear()
+    stop_signal.clear()
+    st.session_state.is_running = True
+
     app = create_workflow()
-    
+
     # Initial state now includes user config fields
     initial_state = {
         "request": topic,
         
         # User configuration
-        "num_chapters":          num_chapters,
-        "enable_images":         enable_images,
-        "min_words_per_section": min_words,
+        "num_chapters":                  num_chapters,
+        "enable_images":                 enable_images,
+        "min_words_per_section":         min_words,
+        "max_subsections_per_chapter":   max_subsections,
         
         # Runtime state
         "rag_context":             "",
@@ -382,8 +415,42 @@ if start_btn and topic:
         total_estimated_steps = 30  # Will be updated after planner completes
         recursion_limit = _auto_limit   # Start with pre-planner estimate
         content_started = False
-        
-        for event in app.stream(initial_state, {"recursion_limit": recursion_limit}):
+
+        # Run streaming loop in a background thread so the stop button stays responsive
+        event_q = _queue.Queue()
+
+        def _stream_worker(rl=recursion_limit):
+            try:
+                for ev in app.stream(initial_state, {"recursion_limit": rl}):
+                    if stop_signal.is_stopped():
+                        event_q.put(("STOPPED", None))
+                        return
+                    event_q.put(("EVENT", ev))
+                event_q.put(("DONE", None))
+            except Exception as exc:
+                event_q.put(("ERROR", exc))
+
+        _worker = threading.Thread(target=_stream_worker, daemon=True)
+        _worker.start()
+
+        while True:
+            try:
+                msg_type, payload = event_q.get(timeout=1.0)
+            except _queue.Empty:
+                continue
+            if msg_type == "STOPPED":
+                st.session_state.is_running = False
+                st.warning("⛔ Quá trình đã bị dừng.")
+                break
+            elif msg_type == "DONE":
+                st.session_state.is_running = False
+                break
+            elif msg_type == "ERROR":
+                st.session_state.is_running = False
+                raise payload
+
+            # msg_type == "EVENT"
+            event = payload
             for key, value in event.items():
                 step_count += 1
                 progress = min(step_count / total_estimated_steps, 0.95)

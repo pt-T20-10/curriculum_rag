@@ -37,6 +37,27 @@ class WorkflowDecision(str, Enum):
     CONTINUE_SUBSECTION = "continue_subsection"
     NEXT_CHAPTER = "next_chapter"
     FINISHED = "finished"
+    REVISE = "revise"
+    APPROVE = "approve"
+
+
+def route_after_review(state: AgentState) -> str:
+    """
+    Decision function for conditional routing after review.
+
+    Logic:
+    - If review_feedback is non-empty → content was rejected → route back to writer
+    - Otherwise → content approved → proceed to illustrator
+
+    Returns:
+        WorkflowDecision.REVISE or WorkflowDecision.APPROVE
+    """
+    feedback = state.get("review_feedback", "")
+    if feedback:
+        logger.info(f"Review decision: REVISE — feedback: {feedback[:80]}")
+        return WorkflowDecision.REVISE
+    logger.info("Review decision: APPROVE — proceeding to illustrator")
+    return WorkflowDecision.APPROVE
 
 
 def _accumulate_content(state: AgentState) -> dict:
@@ -239,7 +260,16 @@ def _define_edges(builder: StateGraph) -> None:
     builder.add_edge("planner", "researcher")
     builder.add_edge("researcher", "writer")
     builder.add_edge("writer", "reviewer")
-    builder.add_edge("reviewer", "illustrator")
+
+    # Conditional routing after review: reject → writer, approve → illustrator
+    builder.add_conditional_edges(
+        "reviewer",
+        route_after_review,
+        {
+            WorkflowDecision.REVISE: "writer",
+            WorkflowDecision.APPROVE: "illustrator",
+        }
+    )
     
     # Conditional routing after illustration
     builder.add_conditional_edges(
@@ -259,7 +289,7 @@ def _define_edges(builder: StateGraph) -> None:
     # Terminal edge
     builder.add_edge("publisher", END)
     
-    logger.debug("Defined 10 edges in workflow graph")
+    logger.debug("Defined 11 edges in workflow graph")
 
 
 def create_workflow() -> CompiledStateGraph:  # ← FIXED RETURN TYPE

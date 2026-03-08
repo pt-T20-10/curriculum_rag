@@ -30,11 +30,17 @@ CHROMA_DB_DIR = DATA_DIR / "chroma_db"
 
 # -- AI MODELS --
 EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-LLM_MODEL_NAME = "gpt-4o-mini"
+LLM_MODEL_CHEAP = "gpt-4o-mini"
+LLM_MODEL_PREMIUM = "gpt-4o"
 
 # -- CHUNKINGS --
-CHUNK_SIZE = 1000  
+CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
+
+# -- PDF RENDERING (override in .env) --
+PDF_BODY_FONTSIZE    = os.getenv("PDF_BODY_FONTSIZE",    "12pt")   # xelatex body font size
+PDF_CHAPTER_FONTSIZE = os.getenv("PDF_CHAPTER_FONTSIZE", "Large")   # LaTeX size cmd for chapter titles
+PDF_TOC_TITLE        = os.getenv("PDF_TOC_TITLE","MỤC LỤC")  # TOC section heading
 
 def setup_directories():
     for path in [DATA_DIR, CHROMA_DB_DIR]:

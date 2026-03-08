@@ -3,8 +3,8 @@ Ingestion Agent for AI Textbook Generator.
 
 This agent orchestrates the document ingestion pipeline:
 1. Clear old vector database
-2. Expand user query for better search results
-3. Search web for relevant resources
+2. Expand user query into bilingual queries (Vietnamese + English)
+3. Search web — vn-vn with VI queries, us-en with EN queries (parallel)
 4. Filter and classify URLs
 5. Crawl and ingest into ChromaDB
 """
@@ -12,6 +12,7 @@ This agent orchestrates the document ingestion pipeline:
 import logging
 import shutil
 import os
+import concurrent.futures
 
 from src.graph.state import AgentState
 from src.config import CHROMA_DB_DIR
@@ -19,6 +20,7 @@ from src.agents.query_expansion import QueryExpansionAgent
 from src.ingestion.search_engine import search_web
 from src.ingestion.url_filter import filter_and_classify_urls
 from src.ingestion.crawler import ingest_dynamic_data
+from src import stop_signal
 
 logger = logging.getLogger("IngestionNode")
 
@@ -29,9 +31,9 @@ def perform_ingestion(state: AgentState) -> dict:
     
     Pipeline:
     1. Clear old database (clean slate)
-    2. Expand query for better search coverage
-    3. Search web (Google/DuckDuckGo)
-    4. Filter out junk URLs
+    2. Expand query bilingually: VI queries for vn-vn, EN queries for us-en
+    3. Search all query-region pairs in parallel
+    4. Deduplicate → Filter URLs
     5. Crawl and ingest into ChromaDB
     
     Args:
@@ -53,30 +55,73 @@ def perform_ingestion(state: AgentState) -> dict:
         except Exception as e:
             logger.warning(f"Could not clear DB: {e}")
 
-    # Step 2: Query expansion (understand user intent)
+    if stop_signal.is_stopped():
+        return {"messages": ["⛔ Ingestion stopped by user"]}
+
+    # Step 2: Bilingual query expansion
+    # VI queries → vn-vn (Vietnamese sources)
+    # EN queries → us-en (English academic sources)
     qe = QueryExpansionAgent()
-    expanded_queries = qe.expand_query(topic)
-    
-    # Use best query (usually the first one)
-    best_query = expanded_queries[0] if expanded_queries else topic
-    logger.info(f"Optimized query: '{best_query}'")
-    
-    # Step 3: Web search
-    raw_results = search_web(best_query, max_results=20)
-    raw_urls = [r['href'] for r in raw_results]
-    
-    if not raw_urls:
-        logger.error("No search results found")
+    expanded = qe.expand_query_bilingual(topic)
+    vi_queries = expanded["vi"]
+    en_queries = expanded["en"]
+
+    logger.info(f"VI queries: {vi_queries}")
+    logger.info(f"EN queries: {en_queries}")
+
+    # Step 3: Search all query-region pairs in parallel
+    # 3 VI queries × vn-vn + 3 EN queries × us-en = 6 concurrent searches
+    # Each search fetches 15 results → up to 90 raw, ~40-60 unique after dedup
+    region_query_pairs = (
+        [(q, "vn-vn") for q in vi_queries] +
+        [(q, "us-en") for q in en_queries]
+    )
+
+    seen_urls: set[str] = set()
+    all_raw_urls: list[str] = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+        futures = {
+            executor.submit(search_web, q, 15, r): (q, r)
+            for q, r in region_query_pairs
+        }
+        for future in concurrent.futures.as_completed(futures):
+            if stop_signal.is_stopped():
+                break
+            q, r = futures[future]
+            try:
+                results = future.result()
+                added = 0
+                for res in results:
+                    url = res.get("href", "")
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        all_raw_urls.append(url)
+                        added += 1
+                logger.info(f"[{r}] '{q[:50]}': {len(results)} results, {added} new unique")
+            except Exception as e:
+                logger.warning(f"Search failed [{r}] '{q[:50]}': {e}")
+
+    logger.info(f"Total unique URLs before filtering: {len(all_raw_urls)}")
+
+    if stop_signal.is_stopped():
+        return {"messages": ["⛔ Ingestion stopped by user"]}
+
+    if not all_raw_urls:
+        logger.error("No search results found from any region")
         return {"messages": ["✗ Ingestion failed: No search results"]}
 
-    # Step 4: Filter URLs
-    clean_links = filter_and_classify_urls(raw_urls)
+    # Step 4: Filter URLs (parallel inside filter_and_classify_urls)
+    clean_links = filter_and_classify_urls(all_raw_urls)
     logger.info(f"Found {len(clean_links)} valid links to crawl")
-    
+
+    if stop_signal.is_stopped():
+        return {"messages": ["⛔ Ingestion stopped by user"]}
+
     if not clean_links:
         logger.error("No valid links after filtering")
         return {"messages": ["✗ Ingestion failed: All URLs filtered out"]}
-    
+
     # Step 5: Deep crawl & ingest
     success = ingest_dynamic_data(topic, clean_links)
     

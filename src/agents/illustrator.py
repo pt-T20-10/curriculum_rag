@@ -59,10 +59,10 @@ class IllustratorAgent:
             Short, specific search query optimized for image search.
         """
         from langchain_openai import ChatOpenAI
-        from src.config import LLM_MODEL_NAME
+        from src.config import LLM_MODEL_CHEAP
         
         try:
-            llm = ChatOpenAI(model=LLM_MODEL_NAME, temperature=0)
+            llm = ChatOpenAI(model=LLM_MODEL_CHEAP, temperature=0)
             response = llm.invoke(
                 f"Convert this image description into a short, specific Google Image search query "
                 f"(5-7 words max, English, no quotes).\n"
@@ -177,10 +177,10 @@ class IllustratorAgent:
             Vietnamese caption string, or original on error.
         """
         from langchain_openai import ChatOpenAI
-        from src.config import LLM_MODEL_NAME
+        from src.config import LLM_MODEL_CHEAP
         
         try:
-            llm = ChatOpenAI(model=LLM_MODEL_NAME, temperature=0)
+            llm = ChatOpenAI(model=LLM_MODEL_CHEAP, temperature=0)
             response = llm.invoke(
                 f"Translate this image caption to Vietnamese. "
                 f"Return ONLY the translation, no explanation:\n\n{english_description}"

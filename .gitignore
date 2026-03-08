@@ -48,3 +48,4 @@ old_ver/
 *.pdf
 *.db
 *.sqlite3
+/skills.txt

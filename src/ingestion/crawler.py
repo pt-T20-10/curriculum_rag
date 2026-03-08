@@ -26,6 +26,7 @@ from src.config import get_embedding_model
 
 from src.log_config import setup_logger
 from src.config import CHROMA_DB_DIR
+from src import stop_signal
 
 logger = setup_logger(name="Crawler", logfile="logs/crawler.log")
 
@@ -169,11 +170,15 @@ def process_deep_crawl(link_info: Dict[str, str]) -> List[Document]:
             ))
             
             # Deep crawl: Follow internal links (depth=1)
+            if stop_signal.is_stopped():
+                return results
             if soup:
                 sub_links = get_internal_links(soup, url, limit=5)
                 if sub_links:
                     logger.info(f"  ↳ Crawling {len(sub_links)} sub-links...")
                     for sub in sub_links:
+                        if stop_signal.is_stopped():
+                            return results
                         sub_text, _ = fetch_text_from_url(sub)
                         if len(sub_text) > 500:
                             results.append(Document(
@@ -216,9 +221,15 @@ def ingest_dynamic_data(topic: str, clean_links: List[Dict[str, str]]) -> bool:
     
     # Parallel crawling of root URLs
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(process_deep_crawl, link) for link in clean_links]
-        
+        futures = [
+            executor.submit(process_deep_crawl, link)
+            for link in clean_links
+            if not stop_signal.is_stopped()
+        ]
+
         for future in concurrent.futures.as_completed(futures):
+            if stop_signal.is_stopped():
+                break
             docs = future.result()
             if docs:
                 for doc in docs:

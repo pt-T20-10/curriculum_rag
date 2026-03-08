@@ -15,7 +15,7 @@ from langchain_core.prompts import ChatPromptTemplate
 
 from src.log_config import setup_logger
 from src.graph.state import AgentState, CurriculumOutline, get_chapter_and_subsection
-from src.config import LLM_MODEL_NAME
+from src.config import LLM_MODEL_CHEAP, PDF_CHAPTER_FONTSIZE
 
 logger = setup_logger(name="ReviewerAgent", logfile="logs/agents.log")
 
@@ -36,7 +36,7 @@ class ReviewerAgent:
     
     def __init__(self) -> None:
         """Initialize LLM with low temperature for precise editing."""
-        self.llm = ChatOpenAI(model=LLM_MODEL_NAME, temperature=0.1)
+        self.llm = ChatOpenAI(model=LLM_MODEL_CHEAP, temperature=0.1)
 
     def should_revise(self, content: str) -> tuple[bool, str]:
         """
@@ -56,18 +56,26 @@ class ReviewerAgent:
             Falls back to (False, "") on any error to avoid blocking workflow.
         """
         prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a strict academic editor.
-Evaluate the content below and decide if it needs revision.
+            ("system", """<role>
+You are a strict academic quality gate. Your only output is a JSON object. No extra text.
+</role>
 
-CRITERIA FOR REVISION (return needs_revision=true if ANY of these):
-- Content is less than 300 words (too short)
-- Missing key concepts described in section description
-- Contains broken LaTeX (naked math symbols without $)
-- Unprofessional or conversational tone
+<evaluation_criteria>
+Step 1: Count the words in the content.
+Step 2: Return needs_revision=true if ANY of the following is true:
+1. Word count is less than 300.
+2. Contains naked math — LaTeX symbols or variables written outside $ delimiters (e.g., a_x, \\frac outside $).
+3. Contains wrong math delimiters: \\[ \\] or \\( \\) instead of $$ or $.
+4. Uses conversational or unprofessional tone in Vietnamese.
+5. Section is superficial — missing definitions, examples, or core explanations.
+</evaluation_criteria>
 
-OUTPUT FORMAT (JSON only, no markdown):
-{{"needs_revision": true/false, "feedback": "Specific feedback for writer"}}
-"""),
+<output_format>
+Output a single JSON object, no markdown fences, no extra text:
+{{"needs_revision": true, "feedback": "Actionable feedback for the writer"}}
+or
+{{"needs_revision": false, "feedback": ""}}
+</output_format>"""),
             ("user", "Content to evaluate:\n\n{content}")
         ])
         
@@ -129,92 +137,98 @@ OUTPUT FORMAT (JSON only, no markdown):
             logger.warning("Draft too short/empty - skipping review")
             return draft_content
 
-        # Reviewer prompt with LaTeX safety rules
+        # Reviewer prompt — XML-structured for strict LLM compliance
         # NOTE: Variables use single braces {var}, LaTeX examples use double braces {{...}}
-        reviewer_template = """You are a Senior Technical Editor and LaTeX Specialist for a university textbook publisher.
-Your task is to review, polish, and "debug" a specific section drafted by a Writer Agent.
-Your ultimate goal is to ensure the content is **Academic**, **Flowing**, and **Compilation-Ready** (Error-free for Pandoc/PDF).
+        reviewer_template = """<role>
+You are a Senior Technical Editor and LaTeX Specialist for a Vietnamese university textbook publisher.
+Edit the draft below. Your sole output is the final polished Markdown — no preamble, no explanations.
+</role>
 
---- CONTEXT & LOCATION ---
-- **Book Topic**: {course_topic}
-- **Current Chapter**: {chapter_num}. {chapter_title}
-- **Current Section**: {section_num}. {section_title}
-- **Section Description**: {section_description}
+<task_context>
+<book_topic>{course_topic}</book_topic>
+<chapter num="{chapter_num}">{chapter_title}</chapter>
+<section num="{section_num}">{section_title}</section>
+<description>{section_description}</description>
+</task_context>
 
---- DRAFT CONTENT TO REVIEW ---
+<draft>
 {draft}
+</draft>
 
---- EDITING INSTRUCTIONS (STRICT EXECUTION ORDER) ---
+<editing_phases>
 
-### PHASE 1: LATEX & MATH SANITIZATION (CRITICAL PRIORITY)
-Your primary responsibility is to prevent PDF generation failures.
+<phase id="1" name="LATEX_SANITIZATION" priority="CRITICAL">
+Execute these fixes IN ORDER before any other edits.
 
-1. **Enforce Delimiters (Pandoc Standard)**:
-   * **Block Math**: MUST use `$$ ... $$`. REPLACE all `\\[ ... \\]` or `\\begin{{equation}}...\\end{{equation}}` with `$$ ... $$`.
-     - ❌ BAD: `\\[ F = ma \\]`
-     - ✅ GOOD: `$$ F = ma $$`
-   * **Inline Math**: MUST use single `$ ... $`. REPLACE `\\( ... \\)` with `$ ... $`.
-     - ❌ BAD: `\\( x = 5 \\)`
-     - ✅ GOOD: `$ x = 5 $`
+1. Block math delimiters — replace ALL non-standard forms with $$ $$:
+   ❌ \\[ F = ma \\]  →  ✅ $$ F = ma $$
+   ❌ \\begin{{equation}} F = ma \\end{{equation}}  →  ✅ $$ F = ma $$
 
-2. **Fix "Naked" Math (The "Missing $" Error)**:
-   * Scan text for orphan mathematical symbols, variables, or subscripts/superscripts.
-   * **Constraint**: Variables like x, y, z, F, m, a MUST be italicized via math mode.
-     - ❌ BAD: Ta có gia tốc a được tính bằng...
-     - ✅ GOOD: Ta có gia tốc $a$ được tính bằng...
-     - ❌ BAD: a_max = 5
-     - ✅ GOOD: $a_{{max}} = 5$
+2. Inline math delimiters — replace ALL \\( \\) with $ $:
+   ❌ \\( x = 5 \\)  →  ✅ $ x = 5 $
 
-3. **Handle Unicode/Vietnamese inside Math**:
-   * LaTeX math mode does NOT support Vietnamese accents directly. You MUST wrap text inside `\\text{{...}}`.
-     - ❌ BAD: `$$ v_{{cuối}} = v_{{đầu}} + at $$` (This will crash LaTeX)
-     - ✅ GOOD: `$$ v_{{\\text{{cuối}}}} = v_{{\\text{{đầu}}}} + at $$`
+3. Naked math — wrap standalone variables, symbols, subscripts in $:
+   ❌ Ta có gia toc a duoc tinh bang...  →  ✅ Ta có gia tốc $a$ được tính bằng...
+   ❌ a_max = 5  →  ✅ $a_{{max}} = 5$
 
-4. **Sanitize Environments**:
-   * Do NOT use complex environments like `\\begin{{itemize}}`, `\\begin{{tabular}}` inside Markdown. Use standard Markdown lists `*` and Markdown tables `|...|` instead.
+4. Vietnamese text inside math — MUST use \\text{{...}}:
+   ❌ $$ v_{{cuoi}} = v_{{dau}} + at $$
+   ✅ $$ v_{{\\text{{cuối}}}} = v_{{\\text{{đầu}}}} + at $$
 
-### PHASE 2: CONTENT & FLOW REFINEMENT
+5. LaTeX environments — remove \\begin{{itemize}}, \\begin{{tabular}}.
+   Replace with Markdown lists (* item) and Markdown tables (| col |).
 
-1. **Structure & Header Hierarchy**:
+6. Unicode subscripts/superscripts — convert ALL to LaTeX math (they render as □ in PDF):
+   ❌ H₂O, CO₂, Na⁺, Cl⁻, 1s², H₂SO₄  (Unicode chars not in Times New Roman)
+   ✅ H$_2$O, CO$_2$, Na$^+$, Cl$^-$, $1s^2$, H$_2$SO$_4$
+   Rule: subscript digits (₀–₉) → $_n$, superscripts (⁺⁻⁰–⁹) → $^n$
+</phase>
+
+<phase id="2" name="CONTENT_REFINEMENT">
+1. Chapter header (apply only if instructed):
    {chap_cmd}
-   * **Standardization**: Ensure the section starts with Header 2: `## {section_num} {section_title}`.
-   * **Hierarchy**: Use Header 3 (`###`) for sub-sections.
-   * **Exception**: Do NOT use Header 1 (`#`) **UNLESS** it is the Chapter Title line (e.g., `# CHƯƠNG...`).
-   * **Redundancy Check**: If you see patterns like `## 1.1. Mục 1.1...` or `## 1.1. Phần 1.1...`, DELETE the redundant word "Mục/Phần" and keep only `## 1.1 {section_title}`.
-   * **Remove Colons**: If you see `## 1.1: Tiêu đề` → Change to `## 1.1 Tiêu đề`.
-   * **Preserve LaTeX**: DO NOT remove `\\newpage`, `\\begin{{center}}` or `\\textbf` commands if present.
 
-2. **Academic Tone (Vietnamese)**:
-   * Ensure the language is **Formal Vietnamese** (Tiếng Việt học thuật).
-   * Eliminate conversational fillers (e.g., "Chúng ta hãy cùng xem...", "Trong phần này tôi sẽ..."). Go straight to the point.
-   * **Translation**: Ensure technical terms are handled consistently. Generally, keep standard English terms (like "DataFrame", "CPU", "Marketing Mix") if common, or use standard Vietnamese translations.
+2. Section header must be exactly: ## {section_num} {section_title}
+   - Remove colon: ## 1.1: Title  →  ## 1.1 Title
+   - Remove double numbering: ## 1.1. Muc 1.1 Title  →  ## 1.1 {section_title}
+   - Do NOT use # (Header 1) unless it is the chapter title line
+   - Preserve \\newpage, \\begin{{center}}, \\textbf — do NOT remove them
 
-3. **Expansion & Filling**:
-   * If the draft is too short (< 200 words) or superficial compared to the `{section_description}`, use your internal knowledge to **expand** it. Add definitions, explanations of "Why" and "How".
+3. Academic tone — eliminate conversational fillers:
+   Remove: "Chung ta hay cung xem...", "Trong phan nay toi se..."
+   Keep: direct, formal, Vietnamese academic prose
 
-### PHASE 3: VISUAL PREPARATION (ILLUSTRATOR PREP)
+4. Technical terms — keep standard English terms as-is (DataFrame, CPU, API).
+   Use standard Vietnamese translations for general terms.
 
-1. **Image Tag Enforcement**:
-   * Scan for `> [IMAGE SUGGESTION: ...]` tags.
-   * If the section explains a complex concept (e.g., a biological process, a physics diagram, a code architecture) and NO image tag exists, **YOU MUST ADD ONE**.
-   * Format: `> [IMAGE SUGGESTION: Detailed description of the image needed for {section_title}]`
-**Image Suggestions (Use Sparingly)**:
-- Only add `> [IMAGE SUGGESTION: ...]` for truly ESSENTIAL visuals
-- Prioritize: diagrams, charts, technical illustrations
-- Skip: decorative images, generic photos
-- Limit: Maximum 1-2 image suggestions per section
+5. Length — if draft is under 200 words, expand using internal knowledge.
+   Add definitions, explain the WHY and HOW, provide an example.
+</phase>
 
-### PHASE 4: FINAL FORMATTING CHECK
+<phase id="3" name="VISUALS">
+Default: do NOT add image suggestions.
+Add > [IMAGE SUGGESTION: ...] ONLY when ALL of the following are true:
+  - The section explains a process or architecture that requires a diagram to understand
+  - No image suggestion tag already exists in the draft
+Maximum: 1 image suggestion per section. Prefer 0.
+Format: > [IMAGE SUGGESTION: Specific technical description of the required diagram]
+</phase>
 
-* **Bold** key terms upon first mention.
-* Ensure Code Blocks have language identifiers (e.g., ```python, ```bash).
+<phase id="4" name="FORMAT_CHECK">
+1. Bold audit — REMOVE excessive bold. Keep bold ONLY for the first formal definition of the
+   section's primary technical term. Remove bold from: adjectives, general nouns, phrases
+   longer than 4 words, any term that already appears in a Markdown header.
+2. Code blocks must have a language identifier: ```python, ```bash, ```sql.
+3. Every header must have a blank line before AND after.
+</phase>
 
----
-**OUTPUT REQUIREMENT**:
-- Return **ONLY** the final polished Markdown string.
-- **NO** conversational preamble (e.g., "Here is the fixed version...").
-- **NO** markdown fences around the output (unless part of the content).
-"""
+</editing_phases>
+
+<output_format>
+- Return ONLY the final polished Markdown
+- NO conversational preamble ("Here is the revised version...", "I have fixed...")
+- NO outer markdown fences wrapping the entire output
+</output_format>"""
 
         user_template = "Here is the draft to review:\n\n{draft}"
 
@@ -294,7 +308,7 @@ def review_section(state: AgentState) -> dict:
 - Ensure raw LaTeX commands exist at the top:
   \\newpage
   \\begin{{center}}
-  \\Huge \\textbf{{CHƯƠNG {display_chap_num}: {chap_title.upper()}}}
+  \\{PDF_CHAPTER_FONTSIZE} \\textbf{{CHƯƠNG {display_chap_num}: {chap_title.upper()}}}
   \\end{{center}}
   \\vspace{{1cm}}
 - If they are wrapped in code blocks, UNWRAP them.
