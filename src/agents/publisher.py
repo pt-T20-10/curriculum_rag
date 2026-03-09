@@ -119,6 +119,71 @@ def fix_unicode_math(content: str) -> str:
     return converted
 
 
+_COMPLEX_MATH_RE = re.compile(
+    r'\\(?:frac|int|sum|prod|lim|begin|end|sqrt|left|right|binom|matrix|pmatrix|cases)'
+)
+
+
+def fix_inline_display_math(content: str) -> str:
+    """
+    Convert simple $$ display math blocks to inline $ math.
+
+    The LLM sometimes wraps single variables or short expressions in display
+    math ($$...$$) when they appear in the middle of prose sentences. This
+    causes them to render as centered block equations instead of staying
+    inline with the surrounding text.
+
+    Examples:
+        $$\\nf(x)\\n$$        →  $f(x)$
+        $$\\nQ_s\\n$$         →  $Q_s$
+        $$\\n\\frac{a}{b}\\n$$  →  (kept as display — complex)
+    """
+    def maybe_inline(m: re.Match) -> str:
+        expr = m.group(1).strip()
+        # Keep as display if it contains complex math constructs
+        if _COMPLEX_MATH_RE.search(expr):
+            return m.group(0)
+        # Keep as display if expression is too long (standalone equation)
+        if len(expr) > 40:
+            return m.group(0)
+        # Convert to inline math
+        return f'${expr}$'
+
+    # Only match single-line $$ blocks (no newlines inside the expression)
+    return re.sub(
+        r'\$\$\n([^\n]{1,40})\n[ \t]*\$\$',
+        maybe_inline,
+        content
+    )
+
+
+def fix_markdown_headings(content: str) -> str:
+    """
+    Ensure ## and ### headings always appear on their own lines.
+
+    When the LLM hits token limits near the end of a long section, it may
+    emit headings inline without proper newline separators:
+        '...sentence. ## 5.2 Title ### 5.2.1 Sub Content...'
+
+    This function inserts the required blank lines so Pandoc recognises
+    them as headings instead of literal text.
+    """
+    # Insert blank line before ## or ### that follows non-newline text
+    content = re.sub(
+        r'([^\n])\s+(#{2,3} \d)',
+        r'\1\n\n\2',
+        content
+    )
+    # Ensure blank line after heading line when content follows immediately
+    content = re.sub(
+        r'^(#{2,3} [^\n]+)\n(?!\n)',
+        r'\1\n\n',
+        content,
+        flags=re.MULTILINE
+    )
+    return content
+
+
 def fix_math_formatting(content: str) -> str:
     """
     Fix common math formatting issues that cause xelatex compilation errors.
@@ -324,6 +389,8 @@ header-includes:
 """
 
     full_content = fix_unicode_math(full_content)
+    full_content = fix_markdown_headings(full_content)
+    full_content = fix_inline_display_math(full_content)
     full_content = fix_math_formatting(full_content)
     logger.info("✓ Math formatting fixed")
 

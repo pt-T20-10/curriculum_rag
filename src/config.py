@@ -23,6 +23,13 @@ if not SERPAPI_API_KEY:
     
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
+if not HUGGINGFACE_API_KEY:
+    warnings.warn(
+        "HUGGINGFACE_API_KEY not set. AI image generation will be disabled.",
+        UserWarning,
+        stacklevel=2
+    )
 
 # --DATA PATHS --
 DATA_DIR = BASE_DIR / "data"

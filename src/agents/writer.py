@@ -12,7 +12,7 @@ from langchain_core.prompts import ChatPromptTemplate
 
 from src.log_config import setup_logger
 from src.graph.state import AgentState, CurriculumOutline, Chapter, SubSection, get_chapter_and_subsection, get_word_target
-from src.config import LLM_MODEL_PREMIUM, PDF_CHAPTER_FONTSIZE
+from src.config import LLM_MODEL_CHEAP, PDF_CHAPTER_FONTSIZE
 
 logger = setup_logger(name="WriterAgent", logfile="logs/agents.log")
 
@@ -30,7 +30,7 @@ class WriterAgent:
     
     def __init__(self) -> None:
         """Initialize LLM with balanced creativity (temperature=0.4)."""
-        self.llm = ChatOpenAI(model=LLM_MODEL_PREMIUM, temperature=0.4)
+        self.llm = ChatOpenAI(model=LLM_MODEL_CHEAP, temperature=0.4)
 
     def write_section(
         self,
@@ -44,7 +44,8 @@ class WriterAgent:
         chapter_instruction: str,
         review_feedback: str = "",
         section_type: str = "concept",
-        word_target: tuple[int, int] = (800, 1000)
+        word_target: tuple[int, int] = (800, 1000),
+        enable_images: bool = True
     ) -> str:
         """
         Generate content for a specific section using RAG context.
@@ -69,6 +70,32 @@ class WriterAgent:
         
         if review_feedback:
             logger.info(f"Revision mode — feedback: {review_feedback[:80]}")
+
+        # Build visual rule based on enable_images flag and section type
+        LOW_VISUAL_TYPES = ("summary", "practice")
+        if not enable_images:
+            visual_rule = "Do NOT add any image suggestions."
+        elif section_type in LOW_VISUAL_TYPES:
+            visual_rule = (
+                "Insert an image suggestion only if a diagram is truly essential.\n"
+                "Prefer 0 for this section type. Maximum: 1.\n"
+                "Format: > [IMAGE SUGGESTION: Specific technical description]"
+            )
+        else:
+            visual_rule = (
+                "Insert image suggestions where they genuinely enhance understanding.\n"
+                "Aim for 1–3 images per section based on content complexity.\n\n"
+                "WHEN to add:\n"
+                "- System architecture, flowcharts, process steps, data structures\n"
+                "- Scientific diagrams: circuits, biological processes, physics phenomena\n"
+                "- Comparisons: before/after, A vs B visual contrast\n"
+                "- Spatial structures: layouts, 3D models, hierarchies\n\n"
+                "WHEN to skip:\n"
+                "- Pure definition paragraphs with no visual component\n"
+                "- If a diagram adds no information beyond the surrounding text\n\n"
+                "Placement: insert the tag inline immediately AFTER the paragraph it illustrates.\n"
+                "Format: > [IMAGE SUGGESTION: Specific technical description of the required diagram]"
+            )
 
         # Inject revision instruction if this is a re-draft
         revision_instruction = ""
@@ -146,6 +173,13 @@ Inline math — single $ delimiter:
   ✅ The force is $F$ where $F = ma$.
   ❌ The force is F where F = ma.
 
+Display math ($$ ... $$) — use ONLY when the formula needs centering/prominence:
+  USE for: \\frac, \\int, \\sum, \\lim, matrices, long multi-term equations.
+  NEVER use $$ for a single variable or short notation referenced inside a sentence:
+  ✅ CORRECT — "Hàm số $f(x)$ ánh xạ mỗi $x$ tới bình phương của nó, $f(3) = 9$."
+  ❌ WRONG   — "Hàm số\n\n$$\nf(x)\n$$\n\nánh xạ mỗi\n\n$$\nx\n$$"
+  ❌ NEVER isolate a single variable name on its own paragraph with blank lines around it.
+
 Naked math — NEVER write LaTeX commands or math symbols without $:
   ✅ $a_x = 5$     ❌ a_x = 5
   ✅ $\\frac{{d}}{{t}}$   ❌ \\frac{{d}}{{t}}
@@ -174,11 +208,7 @@ RULE 6 — CONTENT REQUIREMENTS:
 - If research material is thin or irrelevant, use internal knowledge to fill gaps
 
 RULE 7 — VISUALS:
-Default: write ZERO image suggestions.
-Only add one if the concept absolutely cannot be understood without a diagram
-(e.g., system architecture, biological process, physics circuit).
-Format: > [IMAGE SUGGESTION: Specific technical description of the required diagram]
-Maximum: 1 per section. Prefer 0.
+{visual_rule}
 
 </rules>
 
@@ -215,7 +245,8 @@ Maximum: 1 per section. Prefer 0.
                 "revision_instruction": revision_instruction,
                 "section_type": section_type,
                 "word_min": word_target[0],
-                "word_max": word_target[1]
+                "word_max": word_target[1],
+                "visual_rule": visual_rule
             })
             
             raw_content = response.content
@@ -347,6 +378,7 @@ def write_section(state: AgentState) -> dict:
         
         # Get RAG context from dedicated field (not messages)
         context = state.get("rag_context", "") or "No specific context available."
+        enable_images = state.get("enable_images", True)   # type: ignore[call-overload]
         
         # Generate content (with optional revision feedback)
         agent = WriterAgent()
@@ -361,7 +393,8 @@ def write_section(state: AgentState) -> dict:
             chapter_instruction=chapter_instruction_text,
             review_feedback=review_feedback,
             section_type=sec_type,
-            word_target=word_target
+            word_target=word_target,
+            enable_images=enable_images
         )
         
         return {"current_content": content}

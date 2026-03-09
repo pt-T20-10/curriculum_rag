@@ -9,6 +9,10 @@ import re
 import requests
 import io
 import hashlib
+import uuid
+from src.config import HUGGINGFACE_API_KEY
+
+      
 
 from src.config import SERPAPI_API_KEY, BASE_DIR
 from src.log_config import setup_logger
@@ -47,6 +51,8 @@ class IllustratorAgent:
         self.api_key = SERPAPI_API_KEY
         if not self.api_key:
             logger.warning("⚠️ SERPAPI_API_KEY is missing. Images will not be generated.")
+        if not HUGGINGFACE_API_KEY:
+            logger.warning("HUGGINGFACE_API_KEY not set — cannot generate image")
 
     def build_image_query(self, description: str) -> str:
         """
@@ -220,44 +226,122 @@ class IllustratorAgent:
 
         for description in matches:
             old_tag = f"> [IMAGE SUGGESTION: {description}]"
-            image_url = self.find_image_url(description)
-            
-            if image_url:
-                local_path = download_and_convert_image(image_url, IMAGE_OUTPUT_DIR)
-                
-                if local_path:
-                    vietnamese_caption = self.translate_caption(description)
-                    
-                    # Use forward slashes for LaTeX compatibility on Windows
-                    latex_path = local_path.replace("\\", "/")
-                    
-                    # LaTeX figure environment:
-                    # - [H] forces image to appear HERE (not float to next page)
-                    # - \centering centers both image and caption
-                    # - width=0.7\textwidth fits A4 with margins while allowing caption space
-                    # - \caption*{} renders caption without "Figure N:" prefix
-                    latex_figure = (
-                        "\n\n"
-                        "\\begin{figure}[H]\n"
-                        "\\centering\n"
-                        f"\\includegraphics[width=0.7\\textwidth]{{{latex_path}}}\n"
-                        f"\\caption*{{{vietnamese_caption}}}\n"
-                        "\\end{figure}\n\n"
-                    )
-                    
-                    new_content = new_content.replace(old_tag, latex_figure)
-                    images_inserted += 1
-                    logger.info(f"✓ Inserted image {images_inserted}/{len(matches)}: {local_path}")
-                else:
-                    # Download failed → remove tag cleanly
-                    new_content = new_content.replace(old_tag, "")
-                    logger.warning(f"✗ Removed failed image tag: {description[:50]}...")
+            local_path = ""
+
+            action = self.route_image_request(description)
+
+            if action == "DRAW":
+                local_path = self.generate_image_hf(description)
+                if not local_path:
+                    logger.info(f"DRAW failed — falling back to SEARCH for: '{description[:50]}'")
+                    action = "SEARCH"
+
+            if action == "SEARCH":
+                image_url = self.find_image_url(description)
+                if image_url:
+                    local_path = download_and_convert_image(image_url, IMAGE_OUTPUT_DIR)
+
+            if local_path:
+                vietnamese_caption = self.translate_caption(description)
+
+                # Use forward slashes for LaTeX compatibility on Windows
+                latex_path = local_path.replace("\\", "/")
+
+                # LaTeX figure environment:
+                # - [H] forces image to appear HERE (not float to next page)
+                # - \centering centers both image and caption
+                # - width=0.7\textwidth fits A4 with margins while allowing caption space
+                # - \caption*{} renders caption without "Figure N:" prefix
+                latex_figure = (
+                    "\n\n"
+                    "\\begin{figure}[H]\n"
+                    "\\centering\n"
+                    f"\\includegraphics[width=0.7\\textwidth]{{{latex_path}}}\n"
+                    f"\\caption*{{{vietnamese_caption}}}\n"
+                    "\\end{figure}\n\n"
+                )
+
+                new_content = new_content.replace(old_tag, latex_figure)
+                images_inserted += 1
+                logger.info(f"✓ Inserted image {images_inserted}/{len(matches)}: {local_path}")
             else:
                 new_content = new_content.replace(old_tag, "")
-                logger.warning(f"✗ No image found for: {description[:50]}...")
+                logger.warning(f"✗ No image for: '{description[:50]}'")
 
         logger.info(f"Image insertion complete: {images_inserted}/{len(matches)} successful")
         return new_content
+
+    def route_image_request(self, description: str) -> str:
+        """Returns 'SEARCH' or 'DRAW' """
+        from langchain_openai import ChatOpenAI
+        from src.config import LLM_MODEL_CHEAP
+        import json
+
+        PROMPT = """You are an image sourcing assistant for an educational textbook.
+Classify this image description as either SEARCH or DRAW.
+
+Rules:
+- SEARCH: real entities that exist — logos, UI screenshots, specific places,
+  real people, real products, maps, historical photos, datasets/charts from papers.
+- DRAW: abstract concepts, diagrams, flowcharts, educational art, metaphors,
+  illustrative scenarios that don't correspond to a single findable real image.
+
+Respond with ONLY valid JSON: {{"action": "SEARCH"}} or {{"action": "DRAW"}}
+
+Description: {description}"""
+        try:
+            llm = ChatOpenAI(model=LLM_MODEL_CHEAP, temperature=0)
+            response = llm.invoke(PROMPT.format(description=description))
+            data = json.loads(response.content.strip())  # type: ignore
+            action = data.get("action", "SEARCH").upper()
+            if action not in ("SEARCH", "DRAW"):
+                action = "SEARCH"
+            logger.info(f"Router -> {action}: '{description[:50]}...'")
+            return action
+            
+        except Exception as e:
+            logger.warning(f"Router failed ({e}), defaulting to SEARCH")
+            return "SEARCH"
+
+    def generate_image_hf(self, description: str) -> str:
+        """
+        Generate image via HF FLUX.1-schnell. Returns local path or "" on failure.
+        Callers should treat "" as signal to fallback to SEARCH.
+        """
+
+
+        HF_URL = "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell"
+        headers = {"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"}
+        hf_prompt = f"Educational illustration, clear diagram, white background: {description}"
+        payload = {"inputs": hf_prompt}
+
+        RETRIABLE = {503, 429}
+        try:
+            response = requests.post(HF_URL, headers=headers, json=payload, timeout=60)
+
+            if response.status_code in RETRIABLE:
+                logger.warning(f"HF API returned {response.status_code} — triggering fallback")
+                return ""
+
+            response.raise_for_status()
+
+            img_bytes = io.BytesIO(response.content)
+            img = Image.open(img_bytes).convert("RGB")
+            img.thumbnail((IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT))
+
+            uid = uuid.uuid4().hex[:12]
+            IMAGE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+            local_path = IMAGE_OUTPUT_DIR / f"gen_{uid}.png"
+            img.save(local_path, "PNG")
+            logger.info(f"✓ Generated image saved: {local_path.name}")
+            return str(local_path)
+
+        except requests.exceptions.Timeout:
+            logger.warning("HF API timeout — triggering fallback")
+            return ""
+        except Exception as e:
+            logger.warning(f"HF generation failed ({e}) — triggering fallback")
+            return ""
 
 
 def download_and_convert_image(image_url: str, output_dir: Path) -> str:
@@ -364,9 +448,10 @@ def illustrate_section(state: AgentState) -> dict:
         cleaned_content = re.sub(r"> \[IMAGE SUGGESTION: .*?\]", "", current_content)
         return {"current_content": cleaned_content}
     
-    # Graceful degradation: remove tags if SerpAPI not configured
-    if not SERPAPI_API_KEY:
-        logger.warning("SerpAPI not configured - removing all image suggestion tags")
+    # Graceful degradation: remove tags only if BOTH APIs are unavailable
+    from src.config import HUGGINGFACE_API_KEY
+    if not SERPAPI_API_KEY and not HUGGINGFACE_API_KEY:
+        logger.warning("No image API configured (SERPAPI + HUGGINGFACE both missing) — removing tags")
         cleaned_content = re.sub(r"> \[IMAGE SUGGESTION: .*?\]", "", current_content)
         return {"current_content": cleaned_content}
     
@@ -374,3 +459,5 @@ def illustrate_section(state: AgentState) -> dict:
     illustrated_content = agent.illustrate_content(current_content)
     
     return {"current_content": illustrated_content}
+
+
