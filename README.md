@@ -22,7 +22,7 @@ This project automates the entire lifecycle of educational content creation. Ins
 * **Academic Quality:**
     * Automatic **Table of Contents** generation using Topic Modeling (NMF).
     * **LaTeX Support:** Handles complex math formulas (`$$E=mc^2$$`) and scientific notation.
-    * **Vietnamese Support:** Fully optimized for Vietnamese language output using XeLaTeX.
+    * **Vietnamese Support:** Fully optimized for Vietnamese language output using Typst.
     * **Review System:** A dedicated Editor Agent fixes formatting, structure, and tone.
 * **Modern Frontend:** A user-friendly **Streamlit** interface with real-time progress tracking, logs, and file downloads.
 * **Professional Output:** Generates both Markdown (`.md`) and formatted PDF (`.pdf`) with automated TOC, page breaks, and chapter styling.
@@ -39,13 +39,13 @@ This project automates the entire lifecycle of educational content creation. Ins
 
 **Researcher**: Retrieves relevant context from ChromaDB for the specific section being written.
 
-**Writer**: Drafts the section content using the retrieved context, strictly following LaTeX and Markdown rules.
+**Writer**: Drafts the section content using the retrieved context, following standard Markdown rules.
 
 **Reviewer**: Acts as a Senior Editor. Checks for logical flow, formatting errors, "hanging headers," and enforces academic tone.
 
 **Illustrator**: Scans content for image suggestions, downloads images from Google (via SerpApi), converts them to PNG, and embeds them into the document.
 
-**Publisher**: Compiles all sections, adds metadata (YAML), generates Table of Contents, and converts the final document to PDF using Pandoc/XeLaTeX.
+**Publisher**: Compiles all sections, adds metadata (YAML), generates Table of Contents, and converts the final document to PDF using Pandoc/Typst.
 
 ---
 
@@ -59,7 +59,7 @@ This project automates the entire lifecycle of educational content creation. Ins
 * **Database:** ChromaDB (Vector Store)
 * **Search & Media:** SerpApi (Google Search & Images), Requests, Pillow (Image Processing)
 * **Frontend:** Streamlit
-* **Document Conversion:** Pandoc, PyPandoc, MiKTeX/TeX Live (XeLaTeX engine)
+* **Document Conversion:** Pandoc, PyPandoc, Typst
 
 ---
 
@@ -77,12 +77,14 @@ You must install these tools on your computer before running the code.
 * **Mac/Linux:** `brew install pandoc` or `sudo apt-get install pandoc`
 * **Verify:** Open terminal and type `pandoc --version`
 
-#### **1.2 MiKTeX (or TeX Live)**
+#### **1.2 Typst (PDF Compiler)**
 
-Required for compiling PDF with Vietnamese support.
+Required for compiling PDF. Typst is lightweight, fast, and supports UTF-8/Vietnamese natively — no extra font packages needed.
 
-* **Windows:** Download from [https://miktex.org/download](https://miktex.org/download)
-* **Important:** During installation, set "Install missing packages on-the-fly" to **Yes** (or **Ask me first**). This allows it to automatically download font packages like `vntex`.
+* **Windows:** `winget install typst.typst`
+* **Mac:** `brew install typst`
+* **Linux:** `snap install typst` or download from [typst.app](https://typst.app)
+* **Verify:** Open terminal and type `typst --version`
 
 ### **Step 2: Python Setup**
 
@@ -171,8 +173,9 @@ ai-textbook-generator/
 
 ### **PDF Generation Failed**
 
-* Ensure `pandoc` is in your system PATH
-* Ensure MiKTeX console is updated. If it's the first time running, watch for a pop-up asking to install packages (e.g., `geometry`, `vntex`)
+* Ensure `pandoc` is in your system PATH (`pandoc --version`)
+* Ensure `typst` is in your system PATH (`typst --version`)
+* If Pandoc reports "cannot find typst", reinstall Typst and restart your terminal
 
 ### **Images Not Showing**
 

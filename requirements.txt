@@ -29,6 +29,7 @@ tqdm                  # Displaying progress bar for long-running tasks
 
 # --- Network & Media ---
 requests              # Sending HTTP request to external services (API calling, download pictures)
+google-genai          # Google GenAI SDK (Imagen 3 image generation)
 Pillow                # Converting and processing image format
 fake-useragent        # Rotating user agents to avoid scraping blocks(Tránh bị chặn)
 

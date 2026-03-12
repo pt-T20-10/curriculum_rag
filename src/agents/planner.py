@@ -21,7 +21,7 @@ from langchain_chroma import Chroma
 from src.config import get_embedding_model
 
 from src.graph.state import AgentState, CurriculumOutline
-from src.config import CHROMA_DB_DIR, LLM_MODEL_PREMIUM
+from src.config import CHROMA_DB_DIR, LLM_MODEL_CHEAP
 from src.log_config import setup_logger
 
 logger = setup_logger(name="PlannerAgent", logfile="logs/agents.log")
@@ -41,7 +41,7 @@ class HybridPlanner:
     
     def __init__(self) -> None:
         """Initialize LLM, vector DB connection, and stopwords."""
-        self.llm = ChatOpenAI(model=LLM_MODEL_PREMIUM, temperature=0.3)
+        self.llm = ChatOpenAI(model=LLM_MODEL_CHEAP, temperature=0.3)
         
         self.vector_db = Chroma(
             persist_directory=str(CHROMA_DB_DIR),
@@ -243,19 +243,21 @@ OUTPUT: A JSON array of subsection objects. Each object must have:
 - "title": string (in Vietnamese — descriptive title suited to the subject domain)
 - "description": string (in Vietnamese, 1-2 sentences)
 - "search_query": string (in English, 3-5 specific keywords for RAG)
-- "section_type": one of "intro", "concept", "example", "practice", "summary"
+- "section_type": one of "light", "medium", "deep", "applied"
 
-SECTION TYPE GUIDE (controls word count — pick what fits the content):
-- "intro"    → orientation, background, motivation (~400-600 words)
-- "concept"  → theory, analysis, principles, deep explanation (~800-1000 words)
-- "example"  → case studies, worked examples, historical events (~600-800 words)
-- "practice" → exercises, applications, hands-on tasks (~500-700 words)
-- "summary"  → recap, key takeaways, connections to next chapter (~300-500 words)
+DEPTH LEVEL GUIDE (controls character count — pick what fits the content):
+- "light"   → orientation, motivation, recap, bridge to next chapter (~1500-2500 chars)
+- "medium"  → explanation, demonstration, illustration, case study (~3000-4500 chars)
+- "deep"    → sustained theory, critical analysis, complex technique (~4500-6500 chars)
+- "applied" → exercises, hands-on tasks, problems the reader solves (~2500-3500 chars)
+
+IMPORTANT: Choose depth based on HOW MUCH analytical work the section requires,
+NOT based on a rigid intro→concept→practice→summary template.
+Adapt freely to the subject domain — a cooking chapter differs from a philosophy chapter.
 
 STRUCTURE GUIDANCE:
 - Adapt the section structure to the SUBJECT DOMAIN — a history chapter differs from a coding chapter
-- Do NOT rigidly follow intro→concept→practice→summary every time
-- Choose an order and mix of types that makes pedagogical sense for THIS chapter
+- Choose an order and mix of depth levels that makes pedagogical sense for THIS chapter
 - Subsection titles should reflect actual content (e.g. "Bối cảnh lịch sử", "Phân tích học thuyết")
 
 OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
@@ -273,7 +275,7 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
         ])
         chain = prompt | self.llm
 
-        valid_types = {"intro", "concept", "example", "practice", "summary"}
+        valid_types = {"light", "medium", "deep", "applied"}
         MAX_RETRIES = 3
 
         for attempt in range(1, MAX_RETRIES + 1):
@@ -305,7 +307,7 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
                     sub.setdefault("description", "")
                     sub.setdefault("search_query", topic_name)
                     if sub.get("section_type", "") not in valid_types:
-                        sub["section_type"] = "concept"
+                        sub["section_type"] = "medium"
 
                 logger.info(
                     f"  ✓ Chapter {chapter_index + 1} '{chapter_title}': "

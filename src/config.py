@@ -13,10 +13,10 @@ if not OPENAI_API_KEY:
     raise ValueError("OPENAI_API_KEY not found! Please check your .env file.")
 
 # -- Optional keys (app degrades gracefully without these)
-SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY")
-if not SERPAPI_API_KEY:
+SERPER_API_KEY = os.getenv("SERPER_API_KEY")
+if not SERPER_API_KEY:
     warnings.warn(
-        "SERPAPI_API_KEY not set. Image generation will be disabled.",
+        "SERPER_API_KEY not set. Image generation will be disabled.",
         UserWarning,
         stacklevel=2
     )
@@ -30,6 +30,15 @@ if not HUGGINGFACE_API_KEY:
         UserWarning,
         stacklevel=2
     )
+
+IMAGE3_API_KEY = os.getenv("IMAGE3_API_KEY")
+if not IMAGE3_API_KEY:
+    warnings.warn(
+        "IMAGE3_API_KEY not set. AI image generation will be disabled.",
+        UserWarning,
+        stacklevel=2
+    )
+
 
 # --DATA PATHS --
 DATA_DIR = BASE_DIR / "data"

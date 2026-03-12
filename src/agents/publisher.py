@@ -20,11 +20,11 @@ except ImportError:
     pypandoc = None
 
 from src.graph.state import AgentState
-from src.config import BASE_DIR, PDF_BODY_FONTSIZE, PDF_CHAPTER_FONTSIZE, PDF_TOC_TITLE
+from src.config import BASE_DIR
 from src.log_config import setup_logger
 
 logger = setup_logger(name="PublisherAgent", logfile="logs/agents.log")
-
+image_dir = BASE_DIR / "outputs" / "images"
 
 def cleanup_temp_images() -> None:
     """
@@ -33,7 +33,7 @@ def cleanup_temp_images() -> None:
     Called in finally block to guarantee execution regardless of
     whether PDF generation succeeded or fell back to Markdown.
     """
-    image_dir = BASE_DIR / "outputs" / "images"
+    
     if image_dir.exists():
         try:
             shutil.rmtree(image_dir)
@@ -157,20 +157,42 @@ def fix_inline_display_math(content: str) -> str:
     )
 
 
+_TYPST_PAGEBREAK = "```{=typst}\n#pagebreak()\n```"
+
+# Custom TOC block injected before the body.
+# Replaces Pandoc's --toc so we can:
+#   • Center all level-1 headings (Lời nói đầu, CHƯƠNG N) via a show rule
+#   • Rename "Contents" → "Mục lục" and center it
+#   • Insert a page break between the title page and the TOC
+# The existing _TYPST_PAGEBREAK that follows this block separates TOC from body.
+_TYPST_TOC_BLOCK = (
+    "```{=typst}\n"
+    "#show heading.where(level: 1): it => align(center, it)\n"
+    "#pagebreak()\n"
+    "#v(1em)\n"
+    "#align(center)[\n"
+    '  #text(weight: "bold", size: 1.4em)[Mục lục]\n'
+    "]\n"
+    "#v(0.5em)\n"
+    "#outline(title: none, indent: auto)\n"
+    "```"
+)
+
+
 def fix_markdown_headings(content: str) -> str:
     """
     Ensure ## and ### headings always appear on their own lines.
 
     When the LLM hits token limits near the end of a long section, it may
     emit headings inline without proper newline separators:
-        '...sentence. ## 5.2 Title ### 5.2.1 Sub Content...'
+        '...sentence.## 5.2 Title ### 5.2.1 Sub Content...'
 
-    This function inserts the required blank lines so Pandoc recognises
-    them as headings instead of literal text.
+    Uses \\s* (zero or more whitespace) so both '...text ## 1.2' and
+    '...text.## 1.2' (no space) are caught.
     """
     # Insert blank line before ## or ### that follows non-newline text
     content = re.sub(
-        r'([^\n])\s+(#{2,3} \d)',
+        r'([^\n])\s*(#{2,3} \d)',
         r'\1\n\n\2',
         content
     )
@@ -182,6 +204,22 @@ def fix_markdown_headings(content: str) -> str:
         flags=re.MULTILINE
     )
     return content
+
+
+def fix_chapter_pagebreaks(content: str) -> str:
+    """
+    Insert a Typst #pagebreak() before each level-1 heading (# CHƯƠNG N or # Lời nói đầu).
+
+    Only inserts a break when content precedes the heading (i.e., the heading
+    is not the very first element). This ensures each chapter and the preface
+    start on a fresh page.
+    """
+    pb = _TYPST_PAGEBREAK + "\n\n"
+
+    def insert_break(m: re.Match) -> str:
+        return m.group(1) + pb + m.group(2)
+
+    return re.sub(r'(\n\n)(# )', insert_break, content)
 
 
 def fix_math_formatting(content: str) -> str:
@@ -256,6 +294,18 @@ def fix_math_formatting(content: str) -> str:
     # ------------------------------------------------------------------
     content = re.sub(r'\$\s+\[', '$[', content)
     content = re.sub(r'\]\s+\$', ']$', content)
+
+    # ------------------------------------------------------------------
+    # Fix 3b: Strip leading/trailing spaces inside inline $ ... $
+    # LLMs often write "$ \Delta x $" but Pandoc requires "$\Delta x$"
+    # (Pandoc ignores inline math when space immediately follows opening $)
+    # e.g. "$ \psi(x,t) $" → "$\psi(x,t)$"
+    # ------------------------------------------------------------------
+    content = re.sub(
+        r'(?<!\$)\$ +([^$\n]+?) +\$(?!\$)',
+        lambda m: '$' + m.group(1).strip() + '$',
+        content
+    )
 
     # ------------------------------------------------------------------
     # Fix 4: Stray single $ at start of line (not part of inline math)
@@ -335,15 +385,8 @@ def publish_curriculum(state: AgentState) -> dict:
     if preface:
         # Strip any leading \newpage the LLM may have generated (page breaks handled here)
         preface_clean = re.sub(r'^\s*\\(new|clear)page\s*', '', preface, count=1).lstrip()
-        preface_block = (
-            "\\clearpage\n"
-            "\\pagenumbering{arabic}\n"
-            "\\setcounter{page}{1}\n\n"
-            "\\phantomsection\n"
-            "\\addcontentsline{toc}{chapter}{Lời nói đầu}\n\n"
-            + preface_clean
-        )
-        full_content = preface_block + "\n\n\\clearpage\n\n" + full_content
+        preface_block = "# Lời nói đầu\n\n" + preface_clean
+        full_content = preface_block + "\n\n" + full_content
 
     # Prepare output paths
     raw_topic = state.get("request", "Textbook")
@@ -357,33 +400,12 @@ def publish_curriculum(state: AgentState) -> dict:
     md_filename = output_dir / f"{file_base_name}.md"
     pdf_filename = output_dir / f"{file_base_name}.pdf"
     
-    # YAML header — LaTeX config for Vietnamese + Math + Image support
+    # YAML header — Typst-compatible metadata
     title = state.get("textbook_title") or state.get("request", "Giáo trình")
     yaml_header = f"""---
 title: "{title}"
-fontsize: {PDF_BODY_FONTSIZE}
-geometry: "left=2.5cm,right=2.5cm,top=2cm,bottom=2cm"
+fontsize: 12pt
 mainfont: "Times New Roman"
-header-includes:
-  - \\usepackage{{titling}}
-  - \\renewcommand{{\\maketitle}}{{\\begin{{titlepage}}\\null\\vfill\\begin{{center}}{{\\Large\\bfseries\\thetitle}}\\end{{center}}\\vfill\\null\\end{{titlepage}}}}
-  - \\usepackage{{amsmath}}
-  - \\usepackage{{amssymb}}
-  - \\usepackage{{hyperref}}
-  - \\hypersetup{{colorlinks=true, linkcolor=blue, urlcolor=blue}}
-  - \\usepackage{{indentfirst}}
-  - \\usepackage{{float}}
-  - \\usepackage{{graphicx}}
-  - \\usepackage[font=small,labelfont=bf]{{caption}}
-  - \\captionsetup[figure]{{labelformat=empty}}
-  - \\let\\origfigure\\figure
-  - \\let\\endorigfigure\\endfigure
-  - \\renewenvironment{{figure}}[1][2] {{\\expandafter\\origfigure\\expandafter[H]}} {{\\endorigfigure}}
-  - \\usepackage{{tocloft}}
-  - \\renewcommand{{\\cfttoctitlefont}}{{\\hfill\\Large\\bfseries}}
-  - \\renewcommand{{\\cftaftertoctitle}}{{\\hfill\\mbox{{}}}}
-  - \\renewcommand{{\\contentsname}}{{{PDF_TOC_TITLE}}}
-  - \\pagenumbering{{gobble}}
 ---
 
 """
@@ -392,14 +414,21 @@ header-includes:
     full_content = fix_markdown_headings(full_content)
     full_content = fix_inline_display_math(full_content)
     full_content = fix_math_formatting(full_content)
-    logger.info("✓ Math formatting fixed")
+    full_content = fix_chapter_pagebreaks(full_content)
+    # Layout: title page → TOC (Mục lục, centered) → body
+    # _TYPST_TOC_BLOCK: show rule for level-1 heading centering + page break + custom TOC
+    # _TYPST_PAGEBREAK: separates TOC from body content
+    full_content = _TYPST_TOC_BLOCK + "\n\n" + _TYPST_PAGEBREAK + "\n\n" + full_content
+    logger.info("✓ Math formatting and page structure fixed")
 
     final_document = yaml_header + full_content
+    # Sanitize headings before saving — ensures .md on disk matches what PDF engine receives
+    safe_document = re.sub(r'([^\n])\n(#+ )', r'\1\n\n\2', final_document)
 
     # Save Markdown
     try:
         with open(md_filename, "w", encoding="utf-8") as f:
-            f.write(final_document)
+            f.write(safe_document)
         logger.info(f"✓ Markdown saved: {md_filename}")
     except Exception as e:
         logger.error(f"Failed to save Markdown: {e}", exc_info=True)
@@ -413,17 +442,35 @@ header-includes:
     result_filepath = str(md_filename)  # Default fallback to MD
 
     if pypandoc:
+        # Pandoc copies referenced images to the system TEMP dir and writes their
+        # absolute Windows paths (e.g. "C:/Users/.../media-xxx/img.png") into the
+        # Typst .typ file.  Typst strips the drive letter from those paths and
+        # re-resolves them relative to its --root, so:
+        #   • Redirect TEMP to BASE_DIR so images land on the same drive as the
+        #     .typ file (both on D:).
+        #   • Pass --root <drive-root> so Typst correctly maps "D:/..." absolute
+        #     paths: strip "D:" → "/Thesis/..." → prepend root → "D:\Thesis\..." ✓
+        pandoc_tmp = BASE_DIR / ".pandoc_tmp"
+        pandoc_tmp.mkdir(exist_ok=True)
+        typst_root = BASE_DIR.anchor          # e.g. "D:\\"
+        _old_env = {k: os.environ.get(k) for k in ('TEMP', 'TMP')}
+        os.environ['TEMP'] = str(pandoc_tmp)
+        os.environ['TMP']  = str(pandoc_tmp)
         try:
-            logger.info("Converting to PDF (xelatex engine)...")
-            pypandoc.convert_text(
-                source=final_document,
+            typst_bin = shutil.which('typst') or 'typst'
+            logger.info(f"Converting to PDF (typst engine: {typst_bin})...")
+            pypandoc.convert_file(
+                str(md_filename),
                 to='pdf',
-                format='md',
                 outputfile=str(pdf_filename),
                 extra_args=[
-                    '--pdf-engine=xelatex',
-                    '-V', 'mainfont=Times New Roman',
-                    '--toc',
+                    f'--pdf-engine={typst_bin}',
+                    '--pdf-engine-opt=--root',
+                    f'--pdf-engine-opt={typst_root}',
+                    '-V', 'margin-left=2.5cm',
+                    '-V', 'margin-right=2.5cm',
+                    '-V', 'margin-top=2cm',
+                    '-V', 'margin-bottom=2cm',
                 ]
             )
             logger.info(f"✓ PDF saved: {pdf_filename}")
@@ -432,9 +479,15 @@ header-includes:
             logger.warning(f"PDF generation failed: {e}", exc_info=True)
             logger.info("Falling back to Markdown output only")
         finally:
+            # Restore original TEMP/TMP
+            for k, v in _old_env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+            shutil.rmtree(pandoc_tmp, ignore_errors=True)
             # ALWAYS cleanup images — whether PDF succeeded, failed, or crashed
             cleanup_temp_images()
-
     else:
         logger.warning("pypandoc not installed - skipping PDF generation")
         # Still cleanup images even if PDF was never attempted

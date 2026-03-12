@@ -15,7 +15,7 @@ from langchain_core.prompts import ChatPromptTemplate
 
 from src.log_config import setup_logger
 from src.graph.state import AgentState, CurriculumOutline, get_chapter_and_subsection
-from src.config import LLM_MODEL_CHEAP, PDF_CHAPTER_FONTSIZE
+from src.config import LLM_MODEL_CHEAP
 
 logger = setup_logger(name="ReviewerAgent", logfile="logs/agents.log")
 
@@ -68,6 +68,8 @@ Step 2: Return needs_revision=true if ANY of the following is true:
 3. Contains wrong math delimiters: \\[ \\] or \\( \\) instead of $$ or $.
 4. Uses conversational or unprofessional tone in Vietnamese.
 5. Section is superficial — missing definitions, examples, or core explanations.
+   OR any ### sub-section contains fewer than 3 paragraphs (shallow structure).
+6. Any Markdown heading (`#`, `##`, `###`) is NOT preceded by a blank line — i.e., the line immediately before the `#` is non-empty text.
 </evaluation_criteria>
 
 <output_format>
@@ -164,8 +166,9 @@ Execute these fixes IN ORDER before any other edits.
    ❌ \\[ F = ma \\]  →  ✅ $$ F = ma $$
    ❌ \\begin{{equation}} F = ma \\end{{equation}}  →  ✅ $$ F = ma $$
 
-2. Inline math delimiters — replace ALL \\( \\) with $ $:
-   ❌ \\( x = 5 \\)  →  ✅ $ x = 5 $
+2. Inline math delimiters — replace ALL \\( \\) with $:
+   ❌ \\( x = 5 \\)  →  ✅ $x = 5$
+   CRITICAL: NO space after opening $ or before closing $. $ x $ is WRONG — Pandoc ignores it.
 
 3. Naked math — wrap standalone variables, symbols, subscripts in $:
    ❌ Ta có gia toc a duoc tinh bang...  →  ✅ Ta có gia tốc $a$ được tính bằng...
@@ -175,24 +178,20 @@ Execute these fixes IN ORDER before any other edits.
    ❌ $$ v_{{cuoi}} = v_{{dau}} + at $$
    ✅ $$ v_{{\\text{{cuối}}}} = v_{{\\text{{đầu}}}} + at $$
 
-5. LaTeX environments — remove \\begin{{itemize}}, \\begin{{tabular}}.
-   Replace with Markdown lists (* item) and Markdown tables (| col |).
-
-6. Unicode subscripts/superscripts — convert ALL to LaTeX math (they render as □ in PDF):
+5. Unicode subscripts/superscripts — convert ALL to math notation (may not render correctly):
    ❌ H₂O, CO₂, Na⁺, Cl⁻, 1s², H₂SO₄  (Unicode chars not in Times New Roman)
    ✅ H$_2$O, CO$_2$, Na$^+$, Cl$^-$, $1s^2$, H$_2$SO$_4$
    Rule: subscript digits (₀–₉) → $_n$, superscripts (⁺⁻⁰–⁹) → $^n$
 </phase>
 
 <phase id="2" name="CONTENT_REFINEMENT">
-1. Chapter header (apply only if instructed):
+1. Chapter header — DO NOT add or modify any # (level-1) heading. The Writer node owns chapter headers exclusively. Your only job here is to ensure the ## section header is correctly formatted.
    {chap_cmd}
 
 2. Section header must be exactly: ## {section_num} {section_title}
    - Remove colon: ## 1.1: Title  →  ## 1.1 Title
    - Remove double numbering: ## 1.1. Muc 1.1 Title  →  ## 1.1 {section_title}
    - Do NOT use # (Header 1) unless it is the chapter title line
-   - Preserve \\newpage, \\begin{{center}}, \\textbf — do NOT remove them
 
 3. Academic tone — eliminate conversational fillers:
    Remove: "Chung ta hay cung xem...", "Trong phan nay toi se..."
@@ -206,11 +205,17 @@ Execute these fixes IN ORDER before any other edits.
 </phase>
 
 <phase id="3" name="VISUALS">
-Default: do NOT add image suggestions.
-Add > [IMAGE SUGGESTION: ...] ONLY when ALL of the following are true:
-  - The section explains a process or architecture that requires a diagram to understand
-  - No image suggestion tag already exists in the draft
-Maximum: 1 image suggestion per section. Prefer 0.
+PRESERVE all existing > [IMAGE SUGGESTION: ...] tags — do NOT remove them.
+
+ADD new suggestions only where a visual would genuinely aid understanding AND is still missing:
+- ADD when: architecture diagrams, flowcharts, process steps, scientific phenomena, data structures
+- DO NOT ADD when: pure definition paragraphs, abstract concepts with no visual component, or if
+  the surrounding text already conveys everything without a diagram
+
+Quantity rules (mirror the Writer's policy):
+- Summary or practice sections (inferable from title/description): max 1 total, prefer 0
+- All other sections: up to 3 total, scaled to content complexity — don't pad with weak suggestions
+
 Format: > [IMAGE SUGGESTION: Specific technical description of the required diagram]
 </phase>
 
@@ -219,7 +224,14 @@ Format: > [IMAGE SUGGESTION: Specific technical description of the required diag
    section's primary technical term. Remove bold from: adjectives, general nouns, phrases
    longer than 4 words, any term that already appears in a Markdown header.
 2. Code blocks must have a language identifier: ```python, ```bash, ```sql.
-3. Every header must have a blank line before AND after.
+3. CRITICAL: Every heading (`#`, `##`, `###`) MUST have a blank line immediately BEFORE and AFTER it.
+   Fix any heading that directly follows a paragraph with no blank line between them.
+   ❌  ...end of paragraph.\n### 2.1.2 Title
+   ✅  ...end of paragraph.\n\n### 2.1.2 Title\n\nNext paragraph...
+4. Sub-section depth audit — if any ### block contains fewer than 3 paragraphs:
+   - MERGE it into the adjacent ### block, OR
+   - EXPAND it to at least 3 paragraphs using domain knowledge.
+   A ### heading with only 1–2 paragraphs beneath it is a structural defect — fix it.
 </phase>
 
 </editing_phases>
@@ -300,19 +312,14 @@ def review_section(state: AgentState) -> dict:
         display_chap_num = str(chap_idx + 1)
         display_sec_num = f"{display_chap_num}.{sub_idx + 1}"
         
-        # Generate chapter header instruction for first subsection
+        # Chapter header is owned exclusively by the Writer node (gated by chapter_header_written flag).
+        # Reviewer must NOT re-inject it. Only verify it exists if this is the first subsection.
         chap_cmd_text = ""
-        if display_sec_num.endswith(".1"):
-            chap_cmd_text = f"""
-- **CHECK CHAPTER HEADER**: This is the start of Chapter {display_chap_num}.
-- Ensure raw LaTeX commands exist at the top:
-  \\newpage
-  \\begin{{center}}
-  \\{PDF_CHAPTER_FONTSIZE} \\textbf{{CHƯƠNG {display_chap_num}: {chap_title.upper()}}}
-  \\end{{center}}
-  \\vspace{{1cm}}
-- If they are wrapped in code blocks, UNWRAP them.
-"""
+        if display_sec_num.endswith(".1") and state.get("chapter_header_written", False):
+            chap_cmd_text = (
+                f"VERIFY ONLY (do NOT add): Confirm a '# CHƯƠNG {display_chap_num}' heading exists "
+                f"at the very top of the draft. If missing, that is acceptable — do not add it."
+            )
         
         draft = state.get("current_content", "")
         

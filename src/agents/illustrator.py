@@ -14,7 +14,7 @@ from src.config import HUGGINGFACE_API_KEY
 
       
 
-from src.config import SERPAPI_API_KEY, BASE_DIR
+from src.config import SERPER_API_KEY, BASE_DIR
 from src.log_config import setup_logger
 from src.graph.state import AgentState
 from urllib.parse import urlparse
@@ -42,15 +42,15 @@ class IllustratorAgent:
     Images are:
     - Downloaded locally (avoids Pandoc fetching URLs at compile time)
     - Resized to fit A4 page (max 800x500px)
-    - Converted to PNG (xelatex compatible)
-    - Rendered as centered LaTeX figure with Vietnamese caption
+    - Converted to PNG
+    - Rendered as a Pandoc Markdown figure (engine-agnostic, works with Typst)
     """
     
     def __init__(self) -> None:
         """Initialize with SerpAPI key."""
-        self.api_key = SERPAPI_API_KEY
+        self.api_key = SERPER_API_KEY
         if not self.api_key:
-            logger.warning("⚠️ SERPAPI_API_KEY is missing. Images will not be generated.")
+            logger.warning("⚠️ SERPER_API_KEY is missing. Images will not be generated.")
         if not HUGGINGFACE_API_KEY:
             logger.warning("HUGGINGFACE_API_KEY not set — cannot generate image")
 
@@ -105,71 +105,64 @@ class IllustratorAgent:
         optimized_query = self.build_image_query(query)
         logger.info(f"Searching Google Images for: '{optimized_query}'")
         
-        url = "https://serpapi.com/search"
-        params = {
-            "engine": "google_images",
-            "q": optimized_query,
-            "api_key": self.api_key,
-            "num": 3,
-            "safe": "active",
-            "isz": "m",
-            "ijn": "0"
+        # Serper API: POST to /images with X-API-KEY header
+        url = "https://google.serper.dev/images"
+        headers = {
+            "X-API-KEY": self.api_key,
+            "Content-Type": "application/json",
         }
-        
+        payload = {"q": optimized_query, "num": 3}
+
         REJECTED_EXTENSIONS = ('.svg', '.shtml', '.html', '.php', '.webp', '.gif')
         REJECTED_DOMAINS = ('wikipedia.org', 'wikimedia.org')
-        
+
         try:
-            response = requests.get(url, params=params, timeout=10)
+            response = requests.post(url, headers=headers, json=payload, timeout=10)
             response.raise_for_status()
-            
+
             results = response.json()
-            
-            if "error" in results:
-                logger.error(f"SerpAPI error: {results['error']}")
-                return ""
-            
-            images_results = results.get("images_results", [])
-            
+
+            images_results = results.get("images", [])
+
             if not images_results:
                 logger.warning(f"No images found for '{optimized_query[:40]}'")
                 return ""
-            
+
             # Loop top 3 candidates, return first one that passes validation
             for i, candidate in enumerate(images_results[:3]):
-                image_url = candidate.get("original", "")
-                
+                image_url = candidate.get("imageUrl", "")
+
                 if not image_url or not isinstance(image_url, str):
                     logger.debug(f"Candidate {i+1}: Invalid or missing URL, skipping")
                     continue
-                
+
                 if not image_url.startswith(('http://', 'https://')):
                     logger.debug(f"Candidate {i+1}: Invalid protocol, skipping")
                     continue
-                
+
                 if any(image_url.lower().endswith(ext) for ext in REJECTED_EXTENSIONS):
                     logger.warning(f"Candidate {i+1}: Unsupported format, skipping: {image_url[:60]}")
                     continue
-                
+
                 parsed = urlparse(image_url)
                 if any(domain in parsed.netloc for domain in REJECTED_DOMAINS):
                     logger.warning(f"Candidate {i+1}: Blocked domain '{parsed.netloc}', skipping")
                     continue
-                
+
                 logger.info(f"✓ Selected candidate {i+1}: {image_url[:60]}...")
                 return image_url
-            
+
             logger.warning(f"All candidates rejected for query: '{optimized_query[:40]}'")
             return ""
-            
+
         except requests.exceptions.Timeout:
-            logger.error(f"SerpAPI request timeout for '{optimized_query[:40]}'")
+            logger.error(f"Serper request timeout for '{optimized_query[:40]}'")
             return ""
         except requests.exceptions.RequestException as e:
-            logger.error(f"Network error calling SerpAPI: {e}")
+            logger.error(f"Network error calling Serper: {e}")
             return ""
         except Exception as e:
-            logger.error(f"Unexpected error calling SerpAPI: {e}", exc_info=True)
+            logger.error(f"Unexpected error calling Serper: {e}", exc_info=True)
             return ""
 
     def translate_caption(self, english_description: str) -> str:
@@ -244,24 +237,22 @@ class IllustratorAgent:
             if local_path:
                 vietnamese_caption = self.translate_caption(description)
 
-                # Use forward slashes for LaTeX compatibility on Windows
-                latex_path = local_path.replace("\\", "/")
+                # Convert to relative path from BASE_DIR (CWD at pipeline runtime).
+                # Pandoc resolves relative image paths from the process CWD, not from
+                # the .md file's parent dir. CWD = BASE_DIR when the pipeline runs.
+                # Result: outputs/images/img_xxx.png  ← correct for Pandoc + Typst.
+                rel_path = Path(local_path).relative_to(BASE_DIR)
+                img_path_for_markdown = str(rel_path).replace("\\", "/")
 
-                # LaTeX figure environment:
-                # - [H] forces image to appear HERE (not float to next page)
-                # - \centering centers both image and caption
-                # - width=0.7\textwidth fits A4 with margins while allowing caption space
-                # - \caption*{} renders caption without "Figure N:" prefix
-                latex_figure = (
+                # Pandoc Markdown figure — engine-agnostic (Typst, xelatex, etc.)
+                # Pandoc converts this to a native #figure() in Typst output.
+                # width=70% fits A4 with margins while leaving room for caption.
+                figure_block = (
                     "\n\n"
-                    "\\begin{figure}[H]\n"
-                    "\\centering\n"
-                    f"\\includegraphics[width=0.7\\textwidth]{{{latex_path}}}\n"
-                    f"\\caption*{{{vietnamese_caption}}}\n"
-                    "\\end{figure}\n\n"
+                    f"![{vietnamese_caption}]({img_path_for_markdown}){{width=70%}}\n\n"
                 )
 
-                new_content = new_content.replace(old_tag, latex_figure)
+                new_content = new_content.replace(old_tag, figure_block)
                 images_inserted += 1
                 logger.info(f"✓ Inserted image {images_inserted}/{len(matches)}: {local_path}")
             else:
@@ -308,9 +299,7 @@ Description: {description}"""
         Generate image via HF FLUX.1-schnell. Returns local path or "" on failure.
         Callers should treat "" as signal to fallback to SEARCH.
         """
-
-
-        HF_URL = "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell"
+        HF_URL = "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell"
         headers = {"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"}
         hf_prompt = f"Educational illustration, clear diagram, white background: {description}"
         payload = {"inputs": hf_prompt}
@@ -450,8 +439,8 @@ def illustrate_section(state: AgentState) -> dict:
     
     # Graceful degradation: remove tags only if BOTH APIs are unavailable
     from src.config import HUGGINGFACE_API_KEY
-    if not SERPAPI_API_KEY and not HUGGINGFACE_API_KEY:
-        logger.warning("No image API configured (SERPAPI + HUGGINGFACE both missing) — removing tags")
+    if not SERPER_API_KEY and not HUGGINGFACE_API_KEY:
+        logger.warning("No image API configured (SERPER + HUGGINGFACE both missing) — removing tags")
         cleaned_content = re.sub(r"> \[IMAGE SUGGESTION: .*?\]", "", current_content)
         return {"current_content": cleaned_content}
     

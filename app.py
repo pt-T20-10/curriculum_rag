@@ -169,26 +169,29 @@ with st.sidebar:
         help="Số lượng chương trong giáo trình. Nhiều chương hơn → thời gian tạo lâu hơn."
     )
     
-    min_words = st.slider(
+    min_words_ui = st.slider(
         "Số từ tối thiểu / mục",
-        min_value=200,
+        min_value=100,
         max_value=1000,
-        value=400,
+        value=300,
         step=50,
         help=(
-            "Ngưỡng từ tối thiểu áp dụng cho mọi loại mục. "
-            "Số từ thực tế sẽ tùy theo loại: intro/summary ít hơn, concept/example nhiều hơn."
+            "Số từ tối thiểu cho mỗi mục (1 từ = 1 âm tiết tiếng Việt). "
+            "Hệ thống tự động convert sang ký tự để đo chính xác hơn."
         )
     )
-    
-    # Hiển thị word target ước tính theo từng loại mục
+    # Convert words → characters internally (Vietnamese avg ≈ 5 chars/word incl. spaces)
+    # User sees intuitive "từ" unit; pipeline receives accurate char count
+    min_chars = min_words_ui * 5
+
     st.markdown(
         f"""<div class="config-info">
-        Ước tính số từ theo loại mục:<br>
-        • Giới thiệu: {max(min_words, 400)}–{max(min_words, 400) + 200} từ<br>
-        • Khái niệm: {max(min_words, 800)}–{max(min_words, 800) + 200} từ<br>
-        • Ví dụ: {max(min_words, 600)}–{max(min_words, 600) + 200} từ<br>
-        • Tóm tắt: {max(min_words, 300)}–{max(min_words, 300) + 200} từ
+        ≈ {min_chars} ký tự tối thiểu (tự động convert).<br>
+        Ước tính theo độ sâu nội dung:<br>
+        • light (tổng quan/tóm tắt): ~300–500 từ<br>
+        • medium (giải thích/minh họa): ~600–900 từ<br>
+        • deep (lý thuyết/phân tích): ~900–1300 từ<br>
+        • applied (bài tập/thực hành): ~500–700 từ
         </div>""",
         unsafe_allow_html=True
     )
@@ -212,7 +215,7 @@ with st.sidebar:
     enable_images = st.toggle(
         "Chèn hình ảnh minh họa",
         value=True,
-        help="Tìm và chèn hình ảnh từ Google Images vào giáo trình. Yêu cầu SERPAPI_API_KEY."
+        help="Tìm và chèn hình ảnh từ Google Images vào giáo trình. Yêu cầu SERPER_API_KEY."
     )
     
     if enable_images:
@@ -286,7 +289,7 @@ if topic:
     st.caption(
         f"Cấu hình: **{num_chapters} chương** · "
         f"**≤{max_subsections} mục/chương** · "
-        f"**≥{min_words} từ/mục** · "
+        f"**≥{min_words_ui} ký tự/mục** · "
         f"**{img_label}**"
     )
 
@@ -379,7 +382,7 @@ if start_btn and topic:
         # User configuration
         "num_chapters":                  num_chapters,
         "enable_images":                 enable_images,
-        "min_words_per_section":         min_words,
+        "min_chars_per_section":         min_chars,
         "max_subsections_per_chapter":   max_subsections,
         
         # Runtime state
@@ -388,6 +391,7 @@ if start_btn and topic:
         "current_subsection_index": 0,
         "revision_number":         0,
         "review_feedback":         "",
+        "chapter_header_written":  False,
         "messages":                [],
         "final_content":           "",
         "current_content":         ""

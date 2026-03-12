@@ -44,6 +44,7 @@ storage/
 outputs/
 logs/
 old_ver/
+tests/
 *.zip
 *.pdf
 *.db

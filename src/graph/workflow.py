@@ -109,6 +109,8 @@ def append_and_update_subsection(state: AgentState) -> dict:
     return {
         **content_update,
         "current_subsection_index": new_subsection,
+        "revision_number": 0,
+        "chapter_header_written": False,
         "messages": [
             f"✓ Completed: Chapter {current_chapter + 1}, Subsection {current_subsection + 1}"
         ]
@@ -143,6 +145,8 @@ def append_and_update_chapter(state: AgentState) -> dict:
         **content_update,
         "current_chapter_index": new_chapter,
         "current_subsection_index": 0,  # Reset to first subsection of new chapter
+        "revision_number": 0,
+        "chapter_header_written": False,
         "messages": [
             f"✓ Completed: Chapter {current_chapter + 1} (all subsections)"
         ]
