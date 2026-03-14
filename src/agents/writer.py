@@ -29,7 +29,7 @@ class WriterAgent:
     """
 
     def __init__(self) -> None:
-        """Initialize LLM with balanced creativity (temperature=0.4)."""
+        """Initialize LLM with balanced creativity."""
         self.llm = ChatOpenAI(model=LLM_MODEL_CHEAP, temperature=0.4)
 
     def write_section(

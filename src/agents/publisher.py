@@ -165,9 +165,12 @@ _TYPST_PAGEBREAK = "```{=typst}\n#pagebreak()\n```"
 #   • Rename "Contents" → "Mục lục" and center it
 #   • Insert a page break between the title page and the TOC
 # The existing _TYPST_PAGEBREAK that follows this block separates TOC from body.
+# TOC block — always present.
+# Contains global show/set rules + Mục lục page.
 _TYPST_TOC_BLOCK = (
     "```{=typst}\n"
     "#show heading.where(level: 1): it => align(center, it)\n"
+    "#set figure(numbering: none)\n"          # disable "Figure X:" prefix; captions carry "Hình X.Y.N:"
     "#pagebreak()\n"
     "#v(1em)\n"
     "#align(center)[\n"
@@ -175,6 +178,23 @@ _TYPST_TOC_BLOCK = (
     "]\n"
     "#v(0.5em)\n"
     "#outline(title: none, indent: auto)\n"
+    "```"
+)
+
+# Figure-list block — only included when enable_images=True.
+# Separate page (own #pagebreak()) so TOC and figure list never share a page.
+_TYPST_FIGURE_LIST_BLOCK = (
+    "```{=typst}\n"
+    "#pagebreak()\n"
+    "#v(1em)\n"
+    "#align(center)[\n"
+    '  #text(weight: "bold", size: 1.4em)[Danh mục hình]\n'
+    "]\n"
+    "#v(0.5em)\n"
+    "#outline(\n"
+    "  title: none,\n"
+    "  target: figure.where(kind: image),\n"
+    ")\n"
     "```"
 )
 
@@ -341,6 +361,136 @@ def fix_math_formatting(content: str) -> str:
 
     return content
 
+def build_references_section(cited_sources: list, num_chapters: int) -> str:
+    """
+    Build "Tài liệu tham khảo" section from accumulated cited_sources.
+
+    Deduplicates by URL, ranks by citation frequency, caps at min(15, num_chapters×2),
+    and formats APA 7 (author, year, title, venue, doi/url).
+
+    Returns Markdown string, or "" if no citable sources.
+    """
+    from collections import Counter
+
+    if not cited_sources:
+        logger.warning("No cited sources — skipping references section")
+        return ""
+
+    limit = min(15, max(8, num_chapters * 2))
+
+    freq = Counter(s["url"] for s in cited_sources if s.get("url"))
+    seen_urls: set = set()
+    ranked: list = []
+
+    for url, _ in freq.most_common():
+        if url in seen_urls:
+            continue
+        candidates = [s for s in cited_sources if s.get("url") == url]
+        best = max(
+            candidates,
+            key=lambda s: (
+                s.get("author") is not None,
+                s.get("year") is not None,
+                s.get("venue") is not None,
+            ),
+        )
+        ranked.append(best)
+        seen_urls.add(url)
+
+    selected = ranked[:limit]
+    logger.info(
+        f"References: {len(cited_sources)} raw → "
+        f"{len(ranked)} unique → {len(selected)} selected (limit={limit})"
+    )
+
+    lines: list = []
+    for i, src in enumerate(selected, 1):
+        author = src.get("author") or ""
+        year   = src.get("year") or "n.d."
+        title  = src.get("title") or "Không rõ tiêu đề"
+        venue  = src.get("venue") or ""
+        doi    = src.get("doi") or ""
+        url    = src.get("url") or ""
+
+        if author:
+            entry = f"{i}. {author} ({year}). *{title}*."
+        else:
+            entry = f"{i}. ({year}). *{title}*."
+
+        if venue:
+            entry += f" {venue}."
+        if doi:
+            entry += f" https://doi.org/{doi}"
+        elif url:
+            entry += f" Truy cập từ: {url}"
+
+        lines.append(entry)
+
+    body = "\n\n".join(lines)
+    # Level-1 heading → Typst show rule centers it automatically.
+    # fix_chapter_pagebreaks() inserts #pagebreak() before this heading.
+    return f"\n\n# Tài liệu tham khảo\n\n{body}\n"
+
+
+def add_figure_numbers(content: str) -> str:
+    """
+    Post-process assembled markdown to prefix image captions with section numbers.
+
+    Tracks ## X.Y and ### X.Y.Z headings; numbers images per-section starting at 1.
+    Format: "Hình X.Y.N: original caption" or "Hình X.Y.Z.N: original caption"
+
+    Idempotent — skips captions already starting with "Hình [digits]".
+    Images before the first ## heading are left unchanged.
+
+    Args:
+        content: Assembled markdown string.
+
+    Returns:
+        Content with captions numbered by section.
+    """
+    import re
+
+    lines = content.split('\n')
+    result = []
+    current_section = ""
+    section_img_count: dict = {}
+
+    for line in lines:
+        # Track ## section (X.Y)
+        m2 = re.match(r'^## (\d+\.\d+)', line)
+        if m2:
+            current_section = m2.group(1)
+            result.append(line)
+            continue
+
+        # Track ### subsection (X.Y.Z)
+        m3 = re.match(r'^### (\d+\.\d+\.\d+)', line)
+        if m3:
+            current_section = m3.group(1)
+            result.append(line)
+            continue
+
+        # Process image lines: ![caption](path){attrs}
+        img_match = re.match(r'^(!\[)(.*?)(\]\()(.+?)(\))(\{.*?\})?$', line)
+        if img_match and current_section:
+            caption = img_match.group(2)
+            path    = img_match.group(4)
+            attrs   = img_match.group(6) or ""
+
+            # Idempotent: skip if already has "Hình N..." prefix
+            if not re.match(r'^Hình \d[\d.]*:', caption):
+                section_img_count[current_section] = (
+                    section_img_count.get(current_section, 0) + 1
+                )
+                n = section_img_count[current_section]
+                caption = f"Hình {current_section}.{n}: {caption}"
+                line = f"![{caption}]({path}){attrs}"
+
+        result.append(line)
+
+    return '\n'.join(result)
+
+
 def publish_curriculum(state: AgentState) -> dict:
 
     """
@@ -388,6 +538,16 @@ def publish_curriculum(state: AgentState) -> dict:
         preface_block = "# Lời nói đầu\n\n" + preface_clean
         full_content = preface_block + "\n\n" + full_content
 
+    # Append references section (fix_chapter_pagebreaks below inserts pagebreak before it)
+    cited_sources = state.get("cited_sources", [])
+    num_chapters  = state.get("num_chapters", 5)
+    references_md = build_references_section(cited_sources, num_chapters)
+    if references_md:
+        full_content += references_md
+        logger.info("✓ References section appended")
+    else:
+        logger.warning("⚠️ References section empty — no citable sources found")
+
     # Prepare output paths
     raw_topic = state.get("request", "Textbook")
     request_topic = sanitize_filename(raw_topic)
@@ -415,10 +575,14 @@ mainfont: "Times New Roman"
     full_content = fix_inline_display_math(full_content)
     full_content = fix_math_formatting(full_content)
     full_content = fix_chapter_pagebreaks(full_content)
-    # Layout: title page → TOC (Mục lục, centered) → body
-    # _TYPST_TOC_BLOCK: show rule for level-1 heading centering + page break + custom TOC
-    # _TYPST_PAGEBREAK: separates TOC from body content
-    full_content = _TYPST_TOC_BLOCK + "\n\n" + _TYPST_PAGEBREAK + "\n\n" + full_content
+    full_content = add_figure_numbers(full_content)
+    logger.info("✓ Figure numbers added (Hình X.Y.N format)")
+    # Layout: title page → Mục lục (own page) → [Danh mục hình (own page)] → body
+    # Each block carries its own #pagebreak() so pages are always independent.
+    front_matter = _TYPST_TOC_BLOCK
+    if state.get("enable_images", True):
+        front_matter += "\n\n" + _TYPST_FIGURE_LIST_BLOCK
+    full_content = front_matter + "\n\n" + _TYPST_PAGEBREAK + "\n\n" + full_content
     logger.info("✓ Math formatting and page structure fixed")
 
     final_document = yaml_header + full_content
