@@ -13,7 +13,7 @@ import json
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 
-from src.log_config import setup_logger
+from src.log_config import setup_logger, setup_prompt_logger
 from src.graph.state import AgentState, CurriculumOutline, get_chapter_and_subsection
 from src.config import LLM_MODEL_CHEAP
 
@@ -37,6 +37,7 @@ class ReviewerAgent:
     def __init__(self) -> None:
         """Initialize LLM with low temperature for precise editing."""
         self.llm = ChatOpenAI(model=LLM_MODEL_CHEAP, temperature=0.1)
+        self.prompt_logger = setup_prompt_logger("reviewer")
 
     def should_revise(self, content: str) -> tuple[bool, str]:
         """
@@ -81,6 +82,12 @@ or
             ("user", "Content to evaluate:\n\n{content}")
         ])
         
+        self.prompt_logger.log(
+            system_prompt="[QUALITY GATE — see reviewer_prompts.log for full criteria]",
+            user_prompt=f"Content to evaluate (first 300 chars):\n{content[:300]}...",
+            context_label="QUALITY GATE",
+        )
+
         try:
             chain = prompt | self.llm
             response = chain.invoke({"content": content})
@@ -205,7 +212,7 @@ Execute these fixes IN ORDER before any other edits.
 </phase>
 
 <phase id="3" name="VISUALS">
-PRESERVE all existing > [IMAGE SUGGESTION: ...] tags — do NOT remove them.
+PRESERVE all existing > [IMAGE: ...] tags — do NOT remove them.
 
 ADD new suggestions only where a visual would genuinely aid understanding AND is still missing:
 - ADD when: architecture diagrams, flowcharts, process steps, scientific phenomena, data structures
@@ -216,7 +223,7 @@ Quantity rules (mirror the Writer's policy):
 - Summary or practice sections (inferable from title/description): max 1 total, prefer 0
 - All other sections: up to 3 total, scaled to content complexity — don't pad with weak suggestions
 
-Format: > [IMAGE SUGGESTION: Specific technical description of the required diagram]
+Format: > [IMAGE: Short caption title | Detailed English description for image generation]
 </phase>
 
 <phase id="4" name="FORMAT_CHECK">
@@ -243,6 +250,27 @@ Format: > [IMAGE SUGGESTION: Specific technical description of the required diag
 </output_format>"""
 
         user_template = "Here is the draft to review:\n\n{draft}"
+
+        # Log prompt before invoking LLM
+        try:
+            draft_preview = draft_content[:500] + "...[truncated]" if len(draft_content) > 500 else draft_content
+            formatted_reviewer = reviewer_template.format(
+                course_topic=course_topic,
+                chapter_num=chapter_num,
+                chapter_title=chapter_title,
+                section_num=section_num,
+                section_title=section_title,
+                section_description=section_description,
+                draft=draft_preview,
+                chap_cmd=chapter_cmd,
+            )
+        except Exception:
+            formatted_reviewer = reviewer_template
+        self.prompt_logger.log(
+            system_prompt=formatted_reviewer,
+            user_prompt=user_template.format(draft=draft_content[:200] + "...[truncated]"),
+            context_label=f"{section_num} {section_title} [POLISH]",
+        )
 
         prompt = ChatPromptTemplate.from_messages([
             ("system", reviewer_template),

@@ -12,7 +12,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 
 from src.config import LLM_MODEL_CHEAP
-from src.log_config import setup_logger
+from src.log_config import setup_logger, setup_prompt_logger
 
 logger = setup_logger(name="QueryExpansion", logfile="logs/agents.log")
 
@@ -31,6 +31,7 @@ class QueryExpansionAgent:
     def __init__(self) -> None:
         """Initialize LLM with moderate creativity (temperature=0.5)."""
         self.llm = ChatOpenAI(model=LLM_MODEL_CHEAP, temperature=0.5)
+        self.prompt_logger = setup_prompt_logger("query_expansion")
         
     def expand_query(self, user_input: str) -> list[str]:
         """
@@ -85,6 +86,12 @@ Example for input "Nấu ăn":
             "vi": [f"Giáo trình {user_input} cơ bản"],
             "en": [f"{user_input} fundamentals textbook"]
         }
+
+        self.prompt_logger.log(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            context_label=f"Expand | {user_input[:40]}",
+        )
 
         try:
             chain = prompt | self.llm

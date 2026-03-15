@@ -164,7 +164,7 @@ with st.sidebar:
     num_chapters = st.slider(
         "Số chương",
         min_value=1,
-        max_value=10,
+        max_value=20,
         value=3,
         help="Số lượng chương trong giáo trình. Nhiều chương hơn → thời gian tạo lâu hơn."
     )
@@ -172,7 +172,7 @@ with st.sidebar:
     min_words_ui = st.slider(
         "Số từ tối thiểu / mục",
         min_value=100,
-        max_value=1000,
+        max_value=1200,
         value=300,
         step=50,
         help=(
@@ -198,9 +198,9 @@ with st.sidebar:
     
     max_subsections = st.slider(
         "Số mục tối đa / chương",
-        min_value=3,
+        min_value=2,
         max_value=10,
-        value=5,
+        value=3,
         help=(
             "Giới hạn số mục con trong mỗi chương. "
             "Planner sẽ chọn cấu trúc phù hợp với chủ đề trong giới hạn này."
@@ -349,7 +349,7 @@ def render_workflow_status(stage, status, message):
         <div style="display: flex; justify-content: space-between; align-items: center;">
             <div>
                 <span style="font-size: 1.2rem; margin-right: 0.5rem;">{icon}</span>
-                <strong>{message}</strong>
+                <strong><p style="text-align: center; color: #adb5bd; font-size: 0.85rem;">{message}</p></strong>
             </div>
             <span class="status-badge {b_cls}">{badge}</span>
         </div>
@@ -618,12 +618,3 @@ if st.session_state.generated_file_path:
             st.code(file_path, language=None)
     else:
         st.error("⚠️ File đã bị xóa hoặc di chuyển")
-
-
-# Footer
-st.divider()
-st.markdown(
-    '<p style="text-align: center; color: #adb5bd; font-size: 0.85rem;">'
-    'Built with ❤️ using LangGraph, OpenAI & Streamlit</p>',
-    unsafe_allow_html=True
-)

@@ -26,7 +26,7 @@ pandas                # Handling tabular data for preprocessing
 numpy                 # Supporting numerical operations
 tiktoken              # Counting tokens for LLM requests
 tqdm                  # Displaying progress bar for long-running tasks
-
+pymupdf
 # --- Network & Media ---
 requests              # Sending HTTP request to external services (API calling, download pictures)
 google-genai          # Google GenAI SDK (Imagen 3 image generation)

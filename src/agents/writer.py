@@ -10,7 +10,7 @@ import re
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 
-from src.log_config import setup_logger
+from src.log_config import setup_logger, setup_prompt_logger
 from src.graph.state import AgentState, CurriculumOutline, Chapter, SubSection, get_chapter_and_subsection, get_char_target
 from src.config import LLM_MODEL_CHEAP
 
@@ -31,6 +31,7 @@ class WriterAgent:
     def __init__(self) -> None:
         """Initialize LLM with balanced creativity."""
         self.llm = ChatOpenAI(model=LLM_MODEL_CHEAP, temperature=0.4)
+        self.prompt_logger = setup_prompt_logger("writer")
 
     def write_section(
         self,
@@ -81,7 +82,7 @@ class WriterAgent:
             visual_rule = (
                 "Insert an image suggestion only if a diagram is truly essential.\n"
                 "Prefer 0 for this section type. Maximum: 1.\n"
-                "Format: > [IMAGE SUGGESTION: Specific technical description]"
+                "Format: > [IMAGE: Short caption title | Detailed English description for image generation]"
             )
         else:
             visual_rule = (
@@ -96,7 +97,21 @@ class WriterAgent:
                 "- Pure definition paragraphs with no visual component\n"
                 "- If a diagram adds no information beyond the surrounding text\n\n"
                 "Placement: insert the tag inline immediately AFTER the paragraph it illustrates.\n"
-                "Format: > [IMAGE SUGGESTION: Specific technical description of the required diagram]"
+                "Format: > [IMAGE: Short caption title | Detailed English description for image generation]\n\n"
+                "IMAGE FORMAT RULES:\n"
+                "- TITLE: 3-6 words max, can be Vietnamese or English, used directly as caption in PDF.\n"
+                "  Examples: 'Kiến trúc microservices', 'OSI Model layers', 'CI/CD pipeline flow'\n"
+                "- DESCRIPTION: 1-3 sentences in English. Include: visual structure (shapes, layout),\n"
+                "  key elements (number of components, connections), style (technical, clean, minimal).\n"
+                "  For DRAW (abstract/conceptual): describe atmosphere, metaphor, and style.\n"
+                "  For SEARCH (real entities): name the specific real-world subject clearly.\n"
+                "  Examples:\n"
+                "  > [IMAGE: Kiến trúc microservices | System architecture showing 5 independent service\n"
+                "    boxes connected via REST arrows, API gateway on left, message queue in center,\n"
+                "    each service has a database icon below, white background, clean technical style]\n"
+                "  > [IMAGE: DevOps culture | Illustrative scene of collaborative software development\n"
+                "    team working seamlessly across dev and ops, conveying speed and reliability]\n"
+                "  > [IMAGE: Docker logo | Official Docker whale logo on white background]"
             )
 
         # Inject revision instruction if this is a re-draft
@@ -208,6 +223,33 @@ RULE 7 — VISUALS:
 </output_format>"""
 
         user_prompt = f"Please write the content for section **{section_num}: {section_title}**."
+
+        # Log prompt before invoking LLM
+        try:
+            context_preview = context[:500] + "...[truncated]" if len(context) > 500 else context
+            formatted_system = system_prompt.format(
+                course_topic=course_topic,
+                chapter_num=chapter_num,
+                chapter_title=chapter_title,
+                section_num=section_num,
+                section_title=section_title,
+                section_description=section_description,
+                context=context_preview,
+                chapter_instruction=chapter_instruction,
+                revision_instruction=revision_instruction,
+                section_type=section_type,
+                char_min=char_target[0],
+                char_max=char_target[1],
+                visual_rule=visual_rule,
+            )
+        except Exception:
+            formatted_system = system_prompt
+        mode = "REVISION" if review_feedback else "DRAFT"
+        self.prompt_logger.log(
+            system_prompt=formatted_system,
+            user_prompt=user_prompt,
+            context_label=f"{section_num} {section_title} [{mode}]",
+        )
 
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),

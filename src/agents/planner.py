@@ -22,7 +22,7 @@ from src.config import get_embedding_model
 
 from src.graph.state import AgentState, CurriculumOutline
 from src.config import CHROMA_DB_DIR, LLM_MODEL_CHEAP
-from src.log_config import setup_logger
+from src.log_config import setup_logger, setup_prompt_logger
 
 logger = setup_logger(name="PlannerAgent", logfile="logs/agents.log")
 
@@ -49,14 +49,19 @@ class HybridPlanner:
             collection_name="dynamic_context"
         )
 
+        self.prompt_logger = setup_prompt_logger("planner")
+
         # Multilingual stopwords (Vietnamese + English)
         self.stop_words = [
             # Vietnamese
-            'là', 'của', 'và', 'các', 'những', 'cái', 'trong', 'khi', 'bằng', 'người', 
-            'được', 'thì', 'mà', 'này', 'nọ', 'với', 'như', 'có', 'cho', 'về', 'tại',
+            'là', 'của', 'và', 'các', 'những', 'cái', 'trong', 'khi', 'bằng', 'người', 'kèo', 'soi', 'bàn', 'city', 'united',
+            'được', 'thì', 'mà', 'này', 'nọ', 'với', 'như', 'có', 'cho', 'về', 'tại', 'ng', 'th', 'tr', 'nh', 'ch', 'ph', 'kh', 'gh', 'gi',
             # English
             'the', 'is', 'and', 'to', 'of', 'in', 'for', 'on', 'with', 'as', 'by', 'it',
-            'this', 'that', 'are', 'be', 'or', 'from', 'at'
+            'this', 'that', 'are', 'be', 'or', 'from', 'at', 'obj', 'endobj', 'stream', 'endstream', 'flatedecode',
+            'xobject', 'colorspace', 'length', 'filter', 'type',
+            'endstream', 'startxref', 'xref', 'trailer'
+
         ]
         
     def get_all_documents(self) -> List[str]:
@@ -97,7 +102,9 @@ class HybridPlanner:
             max_df=0.95,
             min_df=2,
             stop_words=self.stop_words,
-            max_features=2000
+            max_features=2000,
+            token_pattern=r'\b[a-zA-ZÀ-ỹ]{3,}\b',
+            ngram_range=(1, 2)
         )
         
         try:
@@ -123,7 +130,6 @@ class HybridPlanner:
             topics_summary.append(summary_line)
         
         result_text = "\n".join(topics_summary)
-        logger.info(f"Extracted topic clusters:\n{result_text}")
         return result_text
     
     @staticmethod
@@ -180,6 +186,12 @@ class HybridPlanner:
 
         MAX_RETRIES = 3
         for attempt in range(1, MAX_RETRIES + 1):
+            if attempt == 1:
+                self.prompt_logger.log(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    context_label=f"Chapter titles | {num_chapters} chapters | {topic_name[:40]}",
+                )
             try:
                 response = chain.invoke({})
                 raw = str(response.content).strip()  # type: ignore
@@ -279,6 +291,12 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
         MAX_RETRIES = 3
 
         for attempt in range(1, MAX_RETRIES + 1):
+            if attempt == 1:
+                self.prompt_logger.log(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    context_label=f"Ch{chapter_index+1} subsections | {chapter_title[:40]}",
+                )
             try:
                 response = chain.invoke({})
                 raw = str(response.content).strip()  # type: ignore
@@ -349,6 +367,11 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
             ))
         ])
         try:
+            self.prompt_logger.log(
+                system_prompt="[Title generator — formal Vietnamese academic title]",
+                user_prompt=f"Topic: {topic}\nChapters:\n{chapter_list}",
+                context_label="Textbook title generation",
+            )
             response = (prompt | self.llm).invoke({})
             title = str(response.content).strip().strip('"').strip("'")  # type: ignore
             logger.info(f"✓ Textbook title: {title}")
@@ -409,6 +432,11 @@ All output MUST be in formal Vietnamese."""
             ("human", user_prompt)
         ])
         try:
+            self.prompt_logger.log(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                context_label=f"Preface | {title[:40]}",
+            )
             response = (prompt | self.llm).invoke({})
             preface = str(response.content).strip()  # type: ignore
             logger.info("✓ Preface generated")

@@ -10,12 +10,9 @@ import requests
 import io
 import hashlib
 import uuid
-from src.config import HUGGINGFACE_API_KEY
-
-      
-
-from src.config import SERPER_API_KEY, BASE_DIR
-from src.log_config import setup_logger
+from openai import OpenAI
+from src.config import OPENAI_API_KEY, SERPER_API_KEY, BASE_DIR
+from src.log_config import setup_logger, setup_prompt_logger
 from src.graph.state import AgentState
 from urllib.parse import urlparse
 from PIL import Image
@@ -51,8 +48,9 @@ class IllustratorAgent:
         self.api_key = SERPER_API_KEY
         if not self.api_key:
             logger.warning("⚠️ SERPER_API_KEY is missing. Images will not be generated.")
-        if not HUGGINGFACE_API_KEY:
-            logger.warning("HUGGINGFACE_API_KEY not set — cannot generate image")
+        if not OPENAI_API_KEY:
+            logger.warning("OPENAI_API_KEY not set — DRAW mode disabled, SEARCH only.")
+        self.prompt_logger = setup_prompt_logger("illustrator")
 
     def build_image_query(self, description: str) -> str:
         """
@@ -69,6 +67,11 @@ class IllustratorAgent:
         
         try:
             llm = ChatOpenAI(model=LLM_MODEL_CHEAP, temperature=0)
+            self.prompt_logger.log(
+                system_prompt="Convert image description to 5-7 word Google Image search query",
+                user_prompt=f"Description: {description}",
+                context_label=f"Query builder | {description[:40]}",
+            )
             response = llm.invoke(
                 f"Convert this image description into a short, specific Google Image search query "
                 f"(5-7 words max, English, no quotes).\n"
@@ -87,83 +90,6 @@ class IllustratorAgent:
             logger.warning(f"Query optimization failed: {e}")
             return ' '.join(description.split()[:6])
 
-    def find_image_url(self, query: str) -> str:
-        """
-        Find the best image on Google Images for a given query.
-        Optimizes query, fetches top 3 candidates, validates each one.
-        
-        Args:
-            query: Search description (will be optimized internally)
-            
-        Returns:
-            Valid image URL, or empty string if not found or API error.
-        """
-        if not self.api_key:
-            logger.warning("SerpAPI key not configured - skipping image search")
-            return ""
-        
-        optimized_query = self.build_image_query(query)
-        logger.info(f"Searching Google Images for: '{optimized_query}'")
-        
-        # Serper API: POST to /images with X-API-KEY header
-        url = "https://google.serper.dev/images"
-        headers = {
-            "X-API-KEY": self.api_key,
-            "Content-Type": "application/json",
-        }
-        payload = {"q": optimized_query, "num": 3}
-
-        REJECTED_EXTENSIONS = ('.svg', '.shtml', '.html', '.php', '.webp', '.gif')
-        REJECTED_DOMAINS = ('wikipedia.org', 'wikimedia.org')
-
-        try:
-            response = requests.post(url, headers=headers, json=payload, timeout=10)
-            response.raise_for_status()
-
-            results = response.json()
-
-            images_results = results.get("images", [])
-
-            if not images_results:
-                logger.warning(f"No images found for '{optimized_query[:40]}'")
-                return ""
-
-            # Loop top 3 candidates, return first one that passes validation
-            for i, candidate in enumerate(images_results[:3]):
-                image_url = candidate.get("imageUrl", "")
-
-                if not image_url or not isinstance(image_url, str):
-                    logger.debug(f"Candidate {i+1}: Invalid or missing URL, skipping")
-                    continue
-
-                if not image_url.startswith(('http://', 'https://')):
-                    logger.debug(f"Candidate {i+1}: Invalid protocol, skipping")
-                    continue
-
-                if any(image_url.lower().endswith(ext) for ext in REJECTED_EXTENSIONS):
-                    logger.warning(f"Candidate {i+1}: Unsupported format, skipping: {image_url[:60]}")
-                    continue
-
-                parsed = urlparse(image_url)
-                if any(domain in parsed.netloc for domain in REJECTED_DOMAINS):
-                    logger.warning(f"Candidate {i+1}: Blocked domain '{parsed.netloc}', skipping")
-                    continue
-
-                logger.info(f"✓ Selected candidate {i+1}: {image_url[:60]}...")
-                return image_url
-
-            logger.warning(f"All candidates rejected for query: '{optimized_query[:40]}'")
-            return ""
-
-        except requests.exceptions.Timeout:
-            logger.error(f"Serper request timeout for '{optimized_query[:40]}'")
-            return ""
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Network error calling Serper: {e}")
-            return ""
-        except Exception as e:
-            logger.error(f"Unexpected error calling Serper: {e}", exc_info=True)
-            return ""
 
     def translate_caption(self, english_description: str) -> str:
         """
@@ -191,101 +117,412 @@ class IllustratorAgent:
             logger.warning(f"Caption translation failed: {e}")
             return english_description
 
+
+    def generate_image_openai(self, description: str) -> str:
+            """
+            Generate an educational diagram via OpenAI DALL-E 3.
+            Reuses the project-wide OPENAI_API_KEY (same key as Writer/Reviewer agents).
+
+            Flow:
+                1. Call DALL-E 3 → receive temporary CDN URL (TTL ~1 hour)
+                2. Download image bytes via requests.get (timeout=15s)
+                3. Resize to fit A4 (IMAGE_MAX_WIDTH x IMAGE_MAX_HEIGHT)
+                4. Save as PNG to IMAGE_OUTPUT_DIR
+                5. Return local path string, or "" on any failure → triggers SEARCH fallback
+
+            Args:
+                description: Image suggestion text from Writer (already in English)
+
+            Returns:
+                Absolute path string to saved PNG, or "" on failure.
+            """
+            if not OPENAI_API_KEY:
+                logger.warning("OPENAI_API_KEY not set — cannot generate image, triggering fallback")
+                return ""
+
+            try:
+                client = OpenAI(api_key=OPENAI_API_KEY)
+                sanitized = self.sanitize_description_for_dalle(description)
+                response = client.images.generate(
+                    model="dall-e-3",
+                    prompt=(
+                        f"An educational illustration for a university textbook. "
+                        f"Clean, professional style. White or very light background. "
+                        f"Conceptual and visually engaging — NOT a technical diagram with boxes and arrows. "
+                        f"No text, no labels, no captions inside the image. "
+                        f"Topic: {sanitized}"
+                    ),
+                    size="1024x1024",
+                    quality="standard",
+                    n=1,
+                )
+
+                image_url = response.data[0].url #type: ignore
+                if not image_url:
+                    logger.warning("DALL-E 3 returned empty URL — triggering fallback")
+                    return ""
+
+                # Download image — timeout=15s to handle CDN TTL safely
+                dl_response = requests.get(image_url, timeout=15)
+                if dl_response.status_code != 200:
+                    logger.warning(
+                        f"DALL-E 3 image download failed "
+                        f"({dl_response.status_code}) — triggering fallback"
+                    )
+                    return ""
+
+                img = Image.open(io.BytesIO(dl_response.content)).convert("RGB")
+                img.thumbnail((IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT))
+
+                uid = uuid.uuid4().hex[:12]
+                IMAGE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+                local_path: Path = IMAGE_OUTPUT_DIR / f"gen_{uid}.png"
+                img.save(local_path, "PNG")
+
+                logger.info(f"✓ DALL-E 3 image saved: {local_path.name}")
+                return str(local_path)
+
+            except Exception as e:
+                logger.warning(f"DALL-E 3 generation failed ({e}) — triggering fallback")
+                return ""
+
+
+    def sanitize_description_for_dalle(self, description: str) -> str:
+        """
+        Loại bỏ các enumeration label trong description trước khi gửi DALL-E.
+        Giữ lại ý nghĩa cấu trúc, bỏ tên cụ thể mà model sẽ cố render thành text.
+
+        Ví dụ:
+        "OSI model with layers (Physical, Data Link, Network, Transport,
+        Session, Presentation, Application)"
+        → "OSI model showing 7 distinct stacked layers with arrows"
+        """
+        from langchain_openai import ChatOpenAI
+        from src.config import LLM_MODEL_CHEAP
+
+        try:
+            llm = ChatOpenAI(model=LLM_MODEL_CHEAP, temperature=0)
+            self.prompt_logger.log(
+                system_prompt="Rewrite description: remove enumerations, keep structural info",
+                user_prompt=f"Original: {description}",
+                context_label=f"Sanitize | {description[:40]}",
+            )
+            response = llm.invoke(
+                f"Rewrite this image description for a diagram generator. "
+                f"REMOVE all specific names, labels, and enumerations (e.g. layer names, "
+                f"step names, node names). REPLACE them with structural descriptions "
+                f"(e.g. '7 stacked layers', '4 connected nodes', '3 recursive levels'). "
+                f"Keep the overall structure and flow. Return ONLY the rewritten description.\n\n"
+                f"Original: {description}"
+            )
+            sanitized = response.content.strip()  # type: ignore
+            logger.info(f"Description sanitized: '{description[:50]}' → '{sanitized[:50]}'")
+            return sanitized
+        except Exception as e:
+            logger.warning(f"Description sanitize failed ({e}), using original")
+            return description
+
+
+    def find_image_urls(self, query: str) -> list[str]:
+        """
+        Find all valid image URLs from Google Images for a given query.
+ 
+        Validates each candidate for format, protocol, extension, and domain
+        but does NOT attempt to download — callers handle retry on download failure.
+ 
+        Validation pipeline per candidate:
+        1. URL must be a non-empty string
+        2. Must start with http:// or https://
+        3. Extension must not be in REJECTED_EXTENSIONS
+        4. Domain must not be in REJECTED_DOMAINS
+ 
+        Args:
+            query: Raw image description (will be compressed internally via LLM)
+ 
+        Returns:
+            List of validated URLs in ranked order (Serper relevance rank preserved).
+            Empty list if API unavailable, no results, or all candidates rejected.
+        """
+        if not self.api_key:
+            logger.warning("SERPER_API_KEY not configured — skipping image search")
+            return []
+ 
+        optimized_query = self.build_image_query(query)
+        logger.info(f"Searching Google Images for: '{optimized_query}'")
+ 
+        url = "https://google.serper.dev/images"
+        headers = {
+            "X-API-KEY": self.api_key,
+            "Content-Type": "application/json",
+        }
+        payload = {"q": optimized_query, "num": 5}
+ 
+        # File extensions that cannot be rendered by Typst/Pandoc or cause parse errors
+        REJECTED_EXTENSIONS = (
+            '.svg',    # vector — Typst does not support SVG natively
+            '.webp',   # lossy format — inconsistent Pillow support across versions
+            '.gif',    # animated — only first frame usable, unexpected behavior
+            '.shtml',  # server-side HTML, not an image
+            '.html',   # HTML page returned as image URL
+            '.php',    # dynamic PHP page, rarely an actual image
+            '.asp',    # ASP page
+            '.aspx',   # ASPX page
+            '.cfm',    # ColdFusion page
+        )
+ 
+        # Domains that consistently block direct image downloads (403/401)
+        # or serve low-quality/watermarked images
+        REJECTED_DOMAINS = (
+            'wikipedia.org',       # images often redirect or require attribution
+            'wikimedia.org',       # same as above
+            'researchgate.net',    # 403 on all direct downloads
+            'shutterstock.com',    # watermarked
+            'gettyimages.com',     # watermarked
+            'istockphoto.com',     # watermarked
+            'alamy.com',           # watermarked
+            'dreamstime.com',      # watermarked
+            'stock.adobe.com',     # watermarked
+            'pond5.com',           # watermarked
+            'depositphotos.com',   # watermarked
+        )
+ 
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=10)
+            response.raise_for_status()
+ 
+            images_results = response.json().get("images", [])
+ 
+            if not images_results:
+                logger.warning(f"No images returned by Serper for '{optimized_query[:40]}'")
+                return []
+ 
+            valid_urls: list[str] = []
+ 
+            for i, candidate in enumerate(images_results[:5]):
+                image_url = candidate.get("imageUrl", "")
+ 
+                # Check 1: must be a non-empty string
+                if not image_url or not isinstance(image_url, str):
+                    logger.debug(f"Candidate {i+1}: missing or invalid URL — skipping")
+                    continue
+ 
+                # Check 2: must use http/https
+                if not image_url.startswith(('http://', 'https://')):
+                    logger.debug(f"Candidate {i+1}: unsupported protocol — skipping")
+                    continue
+ 
+                # Check 3: extension not in blocklist
+                if any(image_url.lower().endswith(ext) for ext in REJECTED_EXTENSIONS):
+                    logger.warning(
+                        f"Candidate {i+1}: rejected extension — {image_url[:60]}"
+                    )
+                    continue
+ 
+                # Check 4: domain not in blocklist
+                parsed = urlparse(image_url)
+                if any(domain in parsed.netloc for domain in REJECTED_DOMAINS):
+                    logger.warning(
+                        f"Candidate {i+1}: blocked domain '{parsed.netloc}' — skipping"
+                    )
+                    continue
+ 
+                valid_urls.append(image_url)
+                logger.debug(f"Candidate {i+1} validated: {image_url[:60]}")
+ 
+            logger.info(
+                f"Validation complete: {len(valid_urls)}/5 candidates passed "
+                f"for '{optimized_query[:40]}'"
+            )
+            return valid_urls
+ 
+        except requests.exceptions.Timeout:
+            logger.error(f"Serper request timed out for '{optimized_query[:40]}'")
+            return []
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Serper network error: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected error in find_image_urls: {e}", exc_info=True)
+            return []
+ 
+ 
+    def find_image_url(self, query: str) -> str:
+        """
+        Backward-compatible wrapper around find_image_urls().
+ 
+        Returns the first validated URL, or empty string if none found.
+        Prefer using find_image_urls() directly when retry-on-download is needed.
+ 
+        Args:
+            query: Raw image description
+ 
+        Returns:
+            First validated image URL, or "" if none available.
+        """
+        urls = self.find_image_urls(query)
+        return urls[0] if urls else ""
+    
     def illustrate_content(self, content: str) -> str:
         """
-        Scan content for image suggestion tags and replace with LaTeX figure blocks.
-        
-        Each image is:
-        - Downloaded and resized to max 800x500px
-        - Rendered as a centered LaTeX figure with Vietnamese caption
-        - Guaranteed to keep image and caption on the same page via [H] float
-        
+        Scan content for image tags and replace with Pandoc Markdown figure blocks.
+ 
+        Supported tag formats:
+            New:     > [IMAGE: Short title | Detailed English description]
+            Legacy:  > [IMAGE SUGGESTION: Description]  (auto-converted on-the-fly)
+ 
+        Processing pipeline per tag:
+        1. Parse title + description from tag
+        2. Route to DRAW / DIAGRAM / SEARCH via LLM router
+        3. DRAW  → DALL-E 3 generation, fallback to SEARCH on failure
+           DIAGRAM → SEARCH directly (no DALL-E attempt)
+           SEARCH  → Serper → download with retry across all validated candidates
+        4. Build Pandoc figure block with Vietnamese caption
+           Caption source: TITLE (preferred, short) → fallback translate DESCRIPTION
+ 
         Args:
-            content: Markdown content with `> [IMAGE SUGGESTION: ...]` tags
-            
+            content: Markdown content with image tags
+ 
         Returns:
-            Content with tags replaced by LaTeX figure blocks, or tags removed if failed.
+            Content with tags replaced by Pandoc figure blocks.
+            Tags with no successful image are removed (empty string replacement).
         """
-        pattern = r"> \[IMAGE SUGGESTION: (.*?)\]"
+        # ── Backward compat: convert legacy tags to new format ──────────────────
+        OLD_PATTERN = r"> \[IMAGE SUGGESTION: (.*?)\]"
+        old_matches = re.findall(OLD_PATTERN, content)
+        if old_matches:
+            logger.info(
+                f"Found {len(old_matches)} legacy IMAGE SUGGESTION tag(s) — converting"
+            )
+            for desc in old_matches:
+                old_tag = f"> [IMAGE SUGGESTION: {desc}]"
+                # Use same text for both title and description as best-effort fallback
+                content = content.replace(old_tag, f"> [IMAGE: {desc} | {desc}]")
+ 
+        # ── Find all new-format tags ─────────────────────────────────────────────
+        pattern = r"> \[IMAGE: (.*?)\]"
         matches = re.findall(pattern, content)
-        
+ 
         if not matches:
-            logger.debug("No image suggestion tags found in content")
+            logger.debug("No image tags found in content")
             return content
-
-        logger.info(f"Found {len(matches)} image suggestion(s)")
+ 
+        logger.info(f"Found {len(matches)} image tag(s) to process")
         new_content = content
         images_inserted = 0
-
-        for description in matches:
-            old_tag = f"> [IMAGE SUGGESTION: {description}]"
+ 
+        for match in matches:
+            old_tag = f"> [IMAGE: {match}]"
             local_path = ""
-
+ 
+            # ── Parse title | description ────────────────────────────────────────
+            # Format: "Short title | Detailed English description"
+            # Fallback (no pipe): treat entire match as description, title empty
+            if "|" in match:
+                title, description = match.split("|", 1)
+                title = title.strip()
+                description = description.strip()
+            else:
+                title = ""
+                description = match.strip()
+ 
+            label = title if title else description  # for logging
+ 
+            # ── Route: DRAW / DIAGRAM / SEARCH ───────────────────────────────────
             action = self.route_image_request(description)
-
+ 
+            # DRAW → DALL-E 3, fallback to SEARCH if generation fails
             if action == "DRAW":
-                local_path = self.generate_image_hf(description)
+                local_path = self.generate_image_openai(description)
                 if not local_path:
-                    logger.info(f"DRAW failed — falling back to SEARCH for: '{description[:50]}'")
+                    logger.info(
+                        f"DRAW failed — falling back to SEARCH for: '{label[:50]}'"
+                    )
                     action = "SEARCH"
-
-            if action == "SEARCH":
-                image_url = self.find_image_url(description)
-                if image_url:
+ 
+            # DIAGRAM and SEARCH (+ DRAW fallback) → Serper with retry-on-download
+            if action in ("SEARCH", "DIAGRAM"):
+                candidate_urls = self.find_image_urls(description)
+ 
+                for attempt, image_url in enumerate(candidate_urls, 1):
                     local_path = download_and_convert_image(image_url, IMAGE_OUTPUT_DIR)
-
+                    if local_path:
+                        logger.info(
+                            f"✓ Download succeeded on candidate "
+                            f"{attempt}/{len(candidate_urls)}: {image_url[:60]}"
+                        )
+                        break
+                    logger.warning(
+                        f"✗ Download failed candidate "
+                        f"{attempt}/{len(candidate_urls)}: {image_url[:60]}"
+                    )
+ 
+            # ── Build Pandoc figure block ─────────────────────────────────────────
             if local_path:
-                vietnamese_caption = self.translate_caption(description)
-
-                # Convert to relative path from BASE_DIR (CWD at pipeline runtime).
-                # Pandoc resolves relative image paths from the process CWD, not from
-                # the .md file's parent dir. CWD = BASE_DIR when the pipeline runs.
-                # Result: outputs/images/img_xxx.png  ← correct for Pandoc + Typst.
+                # Caption: use TITLE (short, already meaningful) if available.
+                # Translate to Vietnamese — title may already be Vietnamese.
+                if title:
+                    vietnamese_caption = self.translate_caption(title)
+                else:
+                    vietnamese_caption = self.translate_caption(description)
+ 
+                # Relative path from BASE_DIR — required by Pandoc when CWD = BASE_DIR.
+                # Typst sandbox reads images relative to the .md file's directory,
+                # so this must be a consistent relative path, not absolute.
                 rel_path = Path(local_path).relative_to(BASE_DIR)
                 img_path_for_markdown = str(rel_path).replace("\\", "/")
-
-                # Pandoc Markdown figure — engine-agnostic (Typst, xelatex, etc.)
-                # Pandoc converts this to a native #figure() in Typst output.
-                # width=70% fits A4 with margins while leaving room for caption.
+ 
+                # Pandoc Markdown figure syntax — engine-agnostic (Typst, xelatex).
+                # Pandoc converts this to #figure() in Typst output.
+                # width=70% fits within A4 margins and leaves room for the caption.
                 figure_block = (
                     "\n\n"
                     f"![{vietnamese_caption}]({img_path_for_markdown}){{width=70%}}\n\n"
                 )
-
+ 
                 new_content = new_content.replace(old_tag, figure_block)
                 images_inserted += 1
-                logger.info(f"✓ Inserted image {images_inserted}/{len(matches)}: {local_path}")
+                logger.info(
+                    f"✓ Inserted image {images_inserted}/{len(matches)}: "
+                    f"{Path(local_path).name}"
+                )
             else:
+                # All candidates exhausted — remove tag to avoid broken placeholder in PDF
                 new_content = new_content.replace(old_tag, "")
-                logger.warning(f"✗ No image for: '{description[:50]}'")
-
-        logger.info(f"Image insertion complete: {images_inserted}/{len(matches)} successful")
+                logger.warning(f"✗ No image found for: '{label[:50]}'")
+ 
+        logger.info(
+            f"Image insertion complete: {images_inserted}/{len(matches)} successful"
+        )
         return new_content
-
+ 
     def route_image_request(self, description: str) -> str:
         """Returns 'SEARCH' or 'DRAW' """
         from langchain_openai import ChatOpenAI
         from src.config import LLM_MODEL_CHEAP
         import json
 
-        PROMPT = """You are an image sourcing assistant for an educational textbook.
-Classify this image description as either SEARCH or DRAW.
+        PROMPT = """Classify this image description for an educational textbook.
 
-Rules:
-- SEARCH: real entities that exist — logos, UI screenshots, specific places,
-  real people, real products, maps, historical photos, datasets/charts from papers.
-- DRAW: abstract concepts, diagrams, flowcharts, educational art, metaphors,
-  illustrative scenarios that don't correspond to a single findable real image.
+            - SEARCH: real entities — logos, photos, maps, screenshots, real products
+            - DRAW: illustrative/artistic concept with no precise structure needed
+            (metaphors, abstract ideas, atmosphere, non-technical scenarios)
+            - DIAGRAM: any technical structure requiring precise layout
+            (flowcharts, architecture diagrams, layer models, graphs, trees, circuits)
 
-Respond with ONLY valid JSON: {{"action": "SEARCH"}} or {{"action": "DRAW"}}
+            Respond ONLY: {{"action": "SEARCH"}} or {{"action": "DRAW"}} or {{"action": "DIAGRAM"}}
 
-Description: {description}"""
+            Description: {description} """
         try:
             llm = ChatOpenAI(model=LLM_MODEL_CHEAP, temperature=0)
+            self.prompt_logger.log(
+                system_prompt=PROMPT.split("Description:")[0].strip(),
+                user_prompt=f"Description: {description}",
+                context_label=f"Router | {description[:50]}",
+            )
             response = llm.invoke(PROMPT.format(description=description))
             data = json.loads(response.content.strip())  # type: ignore
             action = data.get("action", "SEARCH").upper()
-            if action not in ("SEARCH", "DRAW"):
+            if action not in ("SEARCH", "DRAW", "DIAGRAM"):
                 action = "SEARCH"
             logger.info(f"Router -> {action}: '{description[:50]}...'")
             return action
@@ -294,43 +531,6 @@ Description: {description}"""
             logger.warning(f"Router failed ({e}), defaulting to SEARCH")
             return "SEARCH"
 
-    def generate_image_hf(self, description: str) -> str:
-        """
-        Generate image via HF FLUX.1-schnell. Returns local path or "" on failure.
-        Callers should treat "" as signal to fallback to SEARCH.
-        """
-        HF_URL = "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell"
-        headers = {"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"}
-        hf_prompt = f"Educational illustration, clear diagram, white background: {description}"
-        payload = {"inputs": hf_prompt}
-
-        RETRIABLE = {503, 429}
-        try:
-            response = requests.post(HF_URL, headers=headers, json=payload, timeout=60)
-
-            if response.status_code in RETRIABLE:
-                logger.warning(f"HF API returned {response.status_code} — triggering fallback")
-                return ""
-
-            response.raise_for_status()
-
-            img_bytes = io.BytesIO(response.content)
-            img = Image.open(img_bytes).convert("RGB")
-            img.thumbnail((IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT))
-
-            uid = uuid.uuid4().hex[:12]
-            IMAGE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-            local_path = IMAGE_OUTPUT_DIR / f"gen_{uid}.png"
-            img.save(local_path, "PNG")
-            logger.info(f"✓ Generated image saved: {local_path.name}")
-            return str(local_path)
-
-        except requests.exceptions.Timeout:
-            logger.warning("HF API timeout — triggering fallback")
-            return ""
-        except Exception as e:
-            logger.warning(f"HF generation failed ({e}) — triggering fallback")
-            return ""
 
 
 def download_and_convert_image(image_url: str, output_dir: Path) -> str:
@@ -433,20 +633,18 @@ def illustrate_section(state: AgentState) -> dict:
     enable_images = state.get("enable_images", True)
     
     if not enable_images:
-        logger.info("Images disabled by user — removing all image suggestion tags")
-        cleaned_content = re.sub(r"> \[IMAGE SUGGESTION: .*?\]", "", current_content)
+        logger.info("Images disabled by user — removing all image tags")
+        cleaned_content = re.sub(r"> \[IMAGE(?:\s+SUGGESTION)?: .*?\]", "", current_content)
         return {"current_content": cleaned_content}
-    
+
     # Graceful degradation: remove tags only if BOTH APIs are unavailable
-    from src.config import HUGGINGFACE_API_KEY
-    if not SERPER_API_KEY and not HUGGINGFACE_API_KEY:
-        logger.warning("No image API configured (SERPER + HUGGINGFACE both missing) — removing tags")
-        cleaned_content = re.sub(r"> \[IMAGE SUGGESTION: .*?\]", "", current_content)
+    if not SERPER_API_KEY and not OPENAI_API_KEY:
+        logger.warning("No image API configured (SERPER + OPENAI both missing) — removing tags")
+        cleaned_content = re.sub(r"> \[IMAGE(?:\s+SUGGESTION)?: .*?\]", "", current_content)
         return {"current_content": cleaned_content}
     
     agent = IllustratorAgent()
     illustrated_content = agent.illustrate_content(current_content)
     
     return {"current_content": illustrated_content}
-
 
