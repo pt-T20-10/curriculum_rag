@@ -299,6 +299,17 @@ def fix_math_formatting(content: str) -> str:
     return content
 
 
+def fix_typst_deprecated_symbols(content: str) -> str:
+    """
+    Replace deprecated Typst math symbols with their current equivalents.
+    Applied before Pandoc conversion to prevent compiler warnings.
+    
+    Replacements:
+        times.circle → times.o  (tensor product ⊗, deprecated in Typst ≥ 0.12)
+    """
+    content = content.replace("times.circle", "times.o")
+    return content
+
 def add_figure_numbers(content: str) -> str:
     """
     Post-process assembled markdown to prefix image captions with section numbers.
@@ -397,11 +408,32 @@ def publish_curriculum(state: AgentState) -> dict:
     # Prepend preface (Lời nói đầu) if available
     preface = state.get("preface_content", "")
     if preface:
+        # Strip \newpage / \clearpage commands
         preface_clean = re.sub(
             r'^\s*\\(new|clear)page\s*', '', preface, count=1
         ).lstrip()
+
+        # Strip LaTeX environments: \begin{...}...\end{...}
+        preface_clean = re.sub(
+            r'\\begin\{[^}]+\}.*?\\end\{[^}]+\}',
+            '',
+            preface_clean,
+            flags=re.DOTALL,
+        )
+
+        # Strip remaining LaTeX commands: \command{args} or \command
+        preface_clean = re.sub(
+            r'\\[A-Za-z]+(?:\{[^}]*\})*',
+            '',
+            preface_clean,
+        )
+
+        # Collapse multiple blank lines left by stripping
+        preface_clean = re.sub(r'\n{3,}', '\n\n', preface_clean).strip()
+
         preface_block = "# Lời nói đầu\n\n" + preface_clean
         full_content = preface_block + "\n\n" + full_content
+        logger.info("✓ Preface cleaned and prepended")
 
     # Prepare output paths
     raw_topic    = state.get("request", "Textbook")
@@ -417,11 +449,16 @@ def publish_curriculum(state: AgentState) -> dict:
     title = state.get("textbook_title") or state.get("request", "Giáo trình")
     yaml_header = f'---\ntitle: "{title}"\nfontsize: 12pt\nmainfont: "Times New Roman"\n---\n\n'
 
+    # Normalize line endings — LLM responses may contain CRLF (\r\n).
+    # All fix_* passes and regex patterns assume Unix LF (\n) only.
+    full_content = full_content.replace('\r\n', '\n').replace('\r', '\n')
+
     # Apply fix passes
     full_content = fix_unicode_math(full_content)
     full_content = fix_markdown_headings(full_content)
     full_content = fix_inline_display_math(full_content)
     full_content = fix_math_formatting(full_content)
+    full_content = fix_typst_deprecated_symbols(full_content)
     full_content = fix_chapter_pagebreaks(full_content)
     full_content = add_figure_numbers(full_content)
     logger.info("✓ Figure numbers added (Hình X.Y.N format)")

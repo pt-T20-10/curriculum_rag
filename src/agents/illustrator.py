@@ -11,7 +11,8 @@ import io
 import hashlib
 import uuid
 from openai import OpenAI
-from src.config import OPENAI_API_KEY, SERPER_API_KEY, BASE_DIR
+from langchain_openai import ChatOpenAI
+from src.config import OPENAI_API_KEY, SERPER_API_KEY, BASE_DIR, LLM_MODEL_CHEAP
 from src.log_config import setup_logger, setup_prompt_logger
 from src.graph.state import AgentState
 from urllib.parse import urlparse
@@ -51,6 +52,7 @@ class IllustratorAgent:
         if not OPENAI_API_KEY:
             logger.warning("OPENAI_API_KEY not set — DRAW mode disabled, SEARCH only.")
         self.prompt_logger = setup_prompt_logger("illustrator")
+        self.llm = ChatOpenAI(model=LLM_MODEL_CHEAP, temperature=0)
 
     def build_image_query(self, description: str) -> str:
         """
@@ -62,17 +64,13 @@ class IllustratorAgent:
         Returns:
             Short, specific search query optimized for image search.
         """
-        from langchain_openai import ChatOpenAI
-        from src.config import LLM_MODEL_CHEAP
-        
         try:
-            llm = ChatOpenAI(model=LLM_MODEL_CHEAP, temperature=0)
             self.prompt_logger.log(
                 system_prompt="Convert image description to 5-7 word Google Image search query",
                 user_prompt=f"Description: {description}",
                 context_label=f"Query builder | {description[:40]}",
             )
-            response = llm.invoke(
+            response = self.llm.invoke(
                 f"Convert this image description into a short, specific Google Image search query "
                 f"(5-7 words max, English, no quotes).\n"
                 f"Focus on the KEY VISUAL ELEMENT only.\n\n"
@@ -101,12 +99,8 @@ class IllustratorAgent:
         Returns:
             Vietnamese caption string, or original on error.
         """
-        from langchain_openai import ChatOpenAI
-        from src.config import LLM_MODEL_CHEAP
-        
         try:
-            llm = ChatOpenAI(model=LLM_MODEL_CHEAP, temperature=0)
-            response = llm.invoke(
+            response = self.llm.invoke(
                 f"Translate this image caption to Vietnamese. "
                 f"Return ONLY the translation, no explanation:\n\n{english_description}"
             )
@@ -197,17 +191,13 @@ class IllustratorAgent:
         Session, Presentation, Application)"
         → "OSI model showing 7 distinct stacked layers with arrows"
         """
-        from langchain_openai import ChatOpenAI
-        from src.config import LLM_MODEL_CHEAP
-
         try:
-            llm = ChatOpenAI(model=LLM_MODEL_CHEAP, temperature=0)
             self.prompt_logger.log(
                 system_prompt="Rewrite description: remove enumerations, keep structural info",
                 user_prompt=f"Original: {description}",
                 context_label=f"Sanitize | {description[:40]}",
             )
-            response = llm.invoke(
+            response = self.llm.invoke(
                 f"Rewrite this image description for a diagram generator. "
                 f"REMOVE all specific names, labels, and enumerations (e.g. layer names, "
                 f"step names, node names). REPLACE them with structural descriptions "
@@ -497,8 +487,6 @@ class IllustratorAgent:
  
     def route_image_request(self, description: str) -> str:
         """Returns 'SEARCH' or 'DRAW' """
-        from langchain_openai import ChatOpenAI
-        from src.config import LLM_MODEL_CHEAP
         import json
 
         PROMPT = """Classify this image description for an educational textbook.
@@ -513,13 +501,12 @@ class IllustratorAgent:
 
             Description: {description} """
         try:
-            llm = ChatOpenAI(model=LLM_MODEL_CHEAP, temperature=0)
             self.prompt_logger.log(
                 system_prompt=PROMPT.split("Description:")[0].strip(),
                 user_prompt=f"Description: {description}",
                 context_label=f"Router | {description[:50]}",
             )
-            response = llm.invoke(PROMPT.format(description=description))
+            response = self.llm.invoke(PROMPT.format(description=description))
             data = json.loads(response.content.strip())  # type: ignore
             action = data.get("action", "SEARCH").upper()
             if action not in ("SEARCH", "DRAW", "DIAGRAM"):

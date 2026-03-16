@@ -102,7 +102,7 @@ def is_quality_chunk(text: str) -> bool:
 
 def compute_relevance_scores(
     chunks: List[Document],
-    topic: str,
+    topic_embedding: np.ndarray,
     embedding_model,
 ) -> List[float]:
     """
@@ -113,7 +113,8 @@ def compute_relevance_scores(
 
     Args:
         chunks:          List of Document chunks to score
-        topic:           User topic string used as the reference embedding
+        topic_embedding: Pre-computed topic embedding vector (np.ndarray).
+                         Compute once in the caller and reuse across calls.
         embedding_model: HuggingFaceEmbeddings instance from get_embedding_model()
 
     Returns:
@@ -121,11 +122,11 @@ def compute_relevance_scores(
         Returns list of 1.0 (pass-through) on any embedding error.
     """
     try:
-        topic_emb = np.array(embedding_model.embed_query(topic))
+        topic_emb = topic_embedding
         topic_norm = np.linalg.norm(topic_emb)
 
         if topic_norm == 0:
-            logger.warning("Topic embedding is zero vector — skipping relevance filter")
+            logger.warning("Pre-computed topic embedding is zero vector — skipping relevance filter")
             return [1.0] * len(chunks)
 
         # Batch embed all chunks
@@ -184,7 +185,7 @@ def extract_pdf_text(url: str) -> str:
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
             pages_text = []
             for page in doc:
-                page_text = page.get_text() # type: ignore
+                page_text = page.get_text()
                 if page_text.strip(): # type: ignore
                     pages_text.append(page_text)
             doc.close()
@@ -472,7 +473,11 @@ def ingest_dynamic_data(
         f"(threshold={MIN_RELEVANCE_SCORE})..."
     )
     embedding_model = get_embedding_model()
-    scores = compute_relevance_scores(quality_chunks, topic, embedding_model)
+
+    topic_emb = np.array(embedding_model.embed_query(topic))
+    logger.info("✓ Topic embedding computed (1 time, reused for all chunks)")
+
+    scores = compute_relevance_scores(quality_chunks, topic_emb, embedding_model)
 
     relevant_chunks = [
         chunk for chunk, score in zip(quality_chunks, scores)

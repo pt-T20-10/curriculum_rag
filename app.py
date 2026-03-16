@@ -172,7 +172,7 @@ with st.sidebar:
     min_words_ui = st.slider(
         "Số từ tối thiểu / mục",
         min_value=100,
-        max_value=1200,
+        max_value=1000,
         value=300,
         step=50,
         help=(

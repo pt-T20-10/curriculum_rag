@@ -30,19 +30,19 @@ logger = setup_logger(name="PlannerAgent", logfile="logs/agents.log")
 class HybridPlanner:
     """
     Hybrid planning agent combining unsupervised ML with LLM refinement.
-    
+
     Architecture:
     - Phase 1 (NMF): Extract topic clusters from vector DB documents
     - Phase 2 (LLM): Refine clusters into structured curriculum with proper schema
-    
+
     The output is a Pydantic CurriculumOutline object that enforces type safety
     and provides JSON schema for downstream nodes.
     """
-    
+
     def __init__(self) -> None:
         """Initialize LLM, vector DB connection, and stopwords."""
         self.llm = ChatOpenAI(model=LLM_MODEL_CHEAP, temperature=0.3)
-        
+
         self.vector_db = Chroma(
             persist_directory=str(CHROMA_DB_DIR),
             embedding_function=get_embedding_model(),
@@ -54,20 +54,21 @@ class HybridPlanner:
         # Multilingual stopwords (Vietnamese + English)
         self.stop_words = [
             # Vietnamese
-            'là', 'của', 'và', 'các', 'những', 'cái', 'trong', 'khi', 'bằng', 'người', 'kèo', 'soi', 'bàn', 'city', 'united',
-            'được', 'thì', 'mà', 'này', 'nọ', 'với', 'như', 'có', 'cho', 'về', 'tại', 'ng', 'th', 'tr', 'nh', 'ch', 'ph', 'kh', 'gh', 'gi',
+            'là', 'của', 'và', 'các', 'những', 'cái', 'trong', 'khi', 'bằng', 'người',
+            'kèo', 'soi', 'bàn', 'city', 'united',
+            'được', 'thì', 'mà', 'này', 'nọ', 'với', 'như', 'có', 'cho', 'về', 'tại',
+            'ng', 'th', 'tr', 'nh', 'ch', 'ph', 'kh', 'gh', 'gi',
             # English
             'the', 'is', 'and', 'to', 'of', 'in', 'for', 'on', 'with', 'as', 'by', 'it',
-            'this', 'that', 'are', 'be', 'or', 'from', 'at', 'obj', 'endobj', 'stream', 'endstream', 'flatedecode',
-            'xobject', 'colorspace', 'length', 'filter', 'type',
-            'endstream', 'startxref', 'xref', 'trailer'
-
+            'this', 'that', 'are', 'be', 'or', 'from', 'at', 'obj', 'endobj', 'stream',
+            'endstream', 'flatedecode', 'xobject', 'colorspace', 'length', 'filter', 'type',
+            'endstream', 'startxref', 'xref', 'trailer',
         ]
-        
+
     def get_all_documents(self) -> List[str]:
         """
         Retrieve all document chunks from ChromaDB.
-        
+
         Returns:
             List of text chunks for topic modeling, or empty list on error.
         """
@@ -79,59 +80,114 @@ class HybridPlanner:
         except Exception as e:
             logger.error(f"Failed to fetch documents from vector DB: {e}", exc_info=True)
             return []
-        
+
+    # =========================================================================
+    # FIX 1 — NMF signal quality
+    #
+    # BEFORE: min_df=2 hardcoded → accepted hapax-legomena noise on small corpora,
+    #         near-identical clusters were passed directly to the LLM.
+    #
+    # AFTER:
+    #   1. min_df is computed adaptively from corpus size:
+    #      corpus < 50 docs  → min_df=2 (lenient, small corpus)
+    #      corpus 50-200     → min_df=3
+    #      corpus > 200      → min_df=5 (strict, large corpus)
+    #   2. max_df lowered 0.95 → 0.90 to cut ultra-common domain terms that
+    #      appear in almost every chunk (e.g. "mạng nơ-ron" in a DL corpus).
+    #   3. After NMF, deduplicate near-identical topic clusters by computing
+    #      Jaccard similarity on their top-5 keyword sets. If two clusters share
+    #      ≥ 3 keywords they are considered duplicates; only the first is kept.
+    #      This prevents the LLM from receiving 8 variations of "gradient descent"
+    #      and generating the same chapter content in every slot.
+    # =========================================================================
+
     def extract_topics_with_nmf(self, docs: List[str], num_topics: int = 8) -> str:
         """
         Phase 1: Extract topic clusters using Non-negative Matrix Factorization (NMF).
-        
+
         Pipeline:
-        1. TF-IDF vectorization (term importance weighting)
+        1. TF-IDF vectorization (term importance weighting, adaptive min_df)
         2. NMF decomposition (dimensionality reduction to topics)
         3. Keyword extraction (top-N terms per topic)
-        
+        4. Near-duplicate cluster deduplication (Jaccard on top-5 keywords)
+
         Args:
             docs: List of document chunks
             num_topics: Number of topic clusters to extract
-            
+
         Returns:
-            Formatted string of topic clusters with keywords, or empty string on failure.
+            Formatted string of unique topic clusters with keywords, or "" on failure.
         """
         logger.info(f"Phase 1 (NMF): Extracting {num_topics} topic clusters...")
-        
+
+        # FIX 1a — adaptive min_df based on corpus size
+        n_docs = len(docs)
+        if n_docs < 50:
+            min_df = 2
+        elif n_docs < 200:
+            min_df = 3
+        else:
+            min_df = 5
+        logger.info(f"NMF adaptive min_df={min_df} for corpus size={n_docs}")
+
         vectorizer = TfidfVectorizer(
-            max_df=0.95,
-            min_df=2,
+            max_df=0.90,       # FIX 1b — was 0.95; cut ultra-common domain terms
+            min_df=min_df,     # FIX 1a — adaptive instead of hardcoded 2
             stop_words=self.stop_words,
             max_features=2000,
             token_pattern=r'\b[a-zA-ZÀ-ỹ]{3,}\b',
             ngram_range=(1, 2)
         )
-        
+
         try:
             tfidf_matrix = vectorizer.fit_transform(docs)
         except ValueError as e:
             logger.warning(f"Insufficient data for TF-IDF vectorization: {e}")
             return ""
-        
+
         nmf = NMF(
             n_components=num_topics,
             random_state=42,
             init='nndsvd'
         )
         nmf.fit(tfidf_matrix)
-        
+
         feature_names = vectorizer.get_feature_names_out()
-        
-        topics_summary = []
-        for topic_idx, topic in enumerate(nmf.components_):
+
+        # Extract top-10 keywords per cluster
+        raw_clusters: List[List[str]] = []
+        for topic in nmf.components_:
             top_indices = topic.argsort()[:-11:-1]
             keywords = [str(feature_names[i]) for i in top_indices]
-            summary_line = f"- Topic Cluster {topic_idx + 1}: {', '.join(keywords)}"
-            topics_summary.append(summary_line)
-        
-        result_text = "\n".join(topics_summary)
-        return result_text
-    
+            raw_clusters.append(keywords)
+
+        # FIX 1c — deduplicate near-identical clusters via Jaccard on top-5 keywords
+        def jaccard(a: List[str], b: List[str]) -> float:
+            sa, sb = set(a[:5]), set(b[:5])
+            if not sa and not sb:
+                return 1.0
+            return len(sa & sb) / len(sa | sb)
+
+        JACCARD_THRESHOLD = 0.60  # ≥ 3 of 5 shared keywords → duplicate
+        unique_clusters: List[List[str]] = []
+        for candidate in raw_clusters:
+            is_dup = any(
+                jaccard(candidate, kept) >= JACCARD_THRESHOLD
+                for kept in unique_clusters
+            )
+            if not is_dup:
+                unique_clusters.append(candidate)
+
+        removed = len(raw_clusters) - len(unique_clusters)
+        if removed:
+            logger.info(f"NMF dedup: removed {removed} near-identical clusters → {len(unique_clusters)} unique")
+
+        topics_summary = [
+            f"- Topic Cluster {i + 1}: {', '.join(kws)}"
+            for i, kws in enumerate(unique_clusters)
+        ]
+        return "\n".join(topics_summary)
+
     @staticmethod
     def _extract_json(raw: str) -> Any:
         """
@@ -150,6 +206,22 @@ class HybridPlanner:
                 content = content[start:end + 1]
         return json.loads(content)
 
+    # =========================================================================
+  
+    #
+    # BEFORE: Prompt asked for N chapter titles with no structural guidance.
+    #         LLM produced titles that sounded different but covered the same
+    #         content space (e.g. 3 "intro to MLP" chapters in a DL book).
+    #
+    # AFTER:  System prompt now enforces a 3-zone progressive arc:
+    #           Zone A (first ~third):  foundations, concepts, terminology
+    #           Zone B (middle ~third): core techniques, mechanisms, analysis
+    #           Zone C (last ~third):   applications, advanced topics, integration
+    #         Each title must cover a DISTINCT aspect not covered by any other.
+    #         The prompt also explicitly forbids repeating the same concept
+    #         across multiple chapter slots.
+    # =========================================================================
+
     def _plan_chapter_titles(
         self,
         topic_name: str,
@@ -157,25 +229,41 @@ class HybridPlanner:
         num_chapters: int
     ) -> Optional[List[str]]:
         """
-        Phase 2a: Generate ONLY chapter titles — tiny JSON output (~300 tokens).
-        
+        Phase 2a: Generate chapter titles with progressive structural constraint.
+
         Returns:
             List of chapter title strings, or None on failure.
         """
         logger.info(f"Phase 2a: Planning {num_chapters} chapter titles...")
 
+        # FIX 2 — compute zone sizes for the progressive arc instruction
+        zone_a = max(1, num_chapters // 3)
+        zone_b = max(1, num_chapters // 3)
+        zone_c = num_chapters - zone_a - zone_b
+
         system_prompt = (
-            "You are a curriculum designer. "
-            "Given a subject and topic clusters, output ONLY a JSON array of chapter titles in Vietnamese. "
-            f"You MUST output EXACTLY {num_chapters} titles. "
-            "No explanation, no markdown, no extra keys — just the JSON array.\n\n"
-            'Example output: ["Chương 1 title", "Chương 2 title"]'
-        )
+            "You are a curriculum designer building a Vietnamese university textbook.\n\n"
+            f"Generate EXACTLY {num_chapters} chapter titles for the subject below.\n\n"
+            "CRITICAL RULES:\n"
+            "1. Every chapter must cover a DISTINCT aspect of the subject — no two chapters "
+            "may overlap in their primary topic.\n"
+            "2. Follow a progressive learning arc:\n"
+            f"   - Chapters 1–{zone_a}: Foundations (concepts, definitions, basic theory)\n"
+            f"   - Chapters {zone_a + 1}–{zone_a + zone_b}: Core techniques and mechanisms\n"
+            f"   - Chapters {zone_a + zone_b + 1}–{num_chapters}: Applications, advanced topics, integration\n"
+            "3. DO NOT repeat or rephrase the same concept in different chapters.\n"
+            "4. Titles should be specific and descriptive (e.g. 'Mạng nơ-ron tích chập CNN' "
+            "not just 'Học sâu').\n\n"
+            "OUTPUT: A JSON array of exactly {n} Vietnamese chapter titles. "
+            "No explanation, no markdown — ONLY the JSON array.\n"
+            'Example: ["Tiêu đề chương 1", "Tiêu đề chương 2"]'
+        ).format(n=num_chapters)
+
         user_prompt = (
             f"Subject: {topic_name}\n"
             f"Number of chapters: {num_chapters}\n\n"
-            f"Topic clusters:\n{raw_topics}\n\n"
-            f"Output a JSON array of exactly {num_chapters} chapter titles:"
+            f"Topic clusters discovered from course materials:\n{raw_topics}\n\n"
+            f"Output a JSON array of exactly {num_chapters} distinct, progressive chapter titles:"
         )
 
         prompt = ChatPromptTemplate.from_messages([
@@ -196,7 +284,6 @@ class HybridPlanner:
                 response = chain.invoke({})
                 raw = str(response.content).strip()  # type: ignore
 
-                # Extract JSON array
                 start = raw.find("[")
                 end   = raw.rfind("]")
                 if start == -1 or end == -1:
@@ -211,9 +298,7 @@ class HybridPlanner:
                         f"Got {len(titles)} titles instead of {num_chapters} — "
                         f"padding/trimming to match"
                     )
-                    # Trim if too many
                     titles = titles[:num_chapters]
-                    # Pad if too few
                     while len(titles) < num_chapters:
                         titles.append(f"Chương {len(titles) + 1}: {topic_name}")
 
@@ -226,6 +311,23 @@ class HybridPlanner:
         logger.error("Phase 2a: Failed to generate chapter titles after all retries")
         return None
 
+    # =========================================================================
+    # FIX 3 — Pass already-assigned chapter context into subsection generation
+    #
+    # BEFORE: Each chapter's subsections were generated in isolation. The LLM
+    #         had no awareness of what other chapters covered, causing every
+    #         chapter to independently produce MLP → Backprop → Optimizer.
+    #
+    # AFTER:  _generate_chapter_subsections now accepts `assigned_chapters`
+    #         (a list of {title, subsection_titles} dicts for all chapters
+    #         generated so far). This context is injected into the user prompt
+    #         so the LLM can see what's already been covered and deliberately
+    #         generate non-overlapping subsections for the current chapter.
+    #
+    #         refine_plan_with_llm accumulates this list after each chapter
+    #         and passes it forward.
+    # =========================================================================
+
     def _generate_chapter_subsections(
         self,
         topic_name: str,
@@ -234,19 +336,33 @@ class HybridPlanner:
         num_chapters: int,
         raw_topics: str,
         max_subsections: int = 5,
+        assigned_chapters: Optional[List[Dict[str, Any]]] = None,  # FIX 3
     ) -> Optional[List[Dict[str, Any]]]:
         """
-        Phase 2b: Generate subsections for ONE chapter — small focused JSON output.
+        Phase 2b: Generate subsections for ONE chapter.
 
-        Each call produces ~400-600 tokens output → never truncated.
-        The structure adapts to the subject domain; section_type controls word count.
+        FIX 3: accepts `assigned_chapters` — a list of already-generated
+        chapters with their subsection titles. This is injected into the
+        prompt so the LLM avoids generating duplicate content.
 
         Args:
-            max_subsections: Upper bound on subsections (from user depth control)
+            assigned_chapters: Chapters already planned (title + subsection titles).
+                               None or [] on the first chapter.
 
         Returns:
             List of subsection dicts, or None on failure.
         """
+        # FIX 3 — build "already covered" context string
+        already_covered_block = ""
+        if assigned_chapters:
+            lines = ["ALREADY COVERED in previous chapters (DO NOT repeat these topics):"]
+            for prev in assigned_chapters:
+                sub_titles = ", ".join(
+                    s.get("title", "") for s in prev.get("subsections", [])
+                )
+                lines.append(f"  • {prev['title']}: {sub_titles}")
+            already_covered_block = "\n".join(lines)
+
         system_prompt = f"""You are an expert curriculum designer.
 Generate between 3 and {max_subsections} subsections for ONE chapter of a Vietnamese textbook.
 Choose as many subsections as the chapter NATURALLY needs — do not pad unnecessarily.
@@ -265,20 +381,27 @@ DEPTH LEVEL GUIDE (controls character count — pick what fits the content):
 
 IMPORTANT: Choose depth based on HOW MUCH analytical work the section requires,
 NOT based on a rigid intro→concept→practice→summary template.
-Adapt freely to the subject domain — a cooking chapter differs from a philosophy chapter.
+Adapt freely to the subject domain.
 
 STRUCTURE GUIDANCE:
-- Adapt the section structure to the SUBJECT DOMAIN — a history chapter differs from a coding chapter
-- Choose an order and mix of depth levels that makes pedagogical sense for THIS chapter
-- Subsection titles should reflect actual content (e.g. "Bối cảnh lịch sử", "Phân tích học thuyết")
+- Adapt the section structure to the SUBJECT DOMAIN
+- Each subsection title must reflect UNIQUE content specific to THIS chapter
+- DO NOT generate subsections that duplicate topics already covered in other chapters
 
 OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
+
+        # FIX 3 — inject already_covered_block into user_prompt when present
+        already_covered_section = (
+            f"\n\n{already_covered_block}" if already_covered_block else ""
+        )
 
         user_prompt = (
             f"Textbook topic: {topic_name}\n"
             f"This is Chapter {chapter_index + 1} of {num_chapters}: \"{chapter_title}\"\n\n"
-            f"Relevant topic clusters:\n{raw_topics}\n\n"
-            f"Generate 3–{max_subsections} subsections appropriate for this chapter:"
+            f"Relevant topic clusters:\n{raw_topics}"
+            f"{already_covered_section}\n\n"
+            f"Generate 3–{max_subsections} subsections that are UNIQUE to this chapter "
+            f"and not covered by any previous chapter:"
         )
 
         prompt = ChatPromptTemplate.from_messages([
@@ -301,7 +424,6 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
                 response = chain.invoke({})
                 raw = str(response.content).strip()  # type: ignore
 
-                # Extract JSON array
                 start = raw.find("[")
                 end   = raw.rfind("]")
                 if start == -1 or end == -1:
@@ -311,7 +433,6 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
                 if not isinstance(subsections, list) or len(subsections) == 0:
                     raise ValueError("Empty subsection list")
 
-                # Enforce max limit (trim if LLM exceeded it)
                 if len(subsections) > max_subsections:
                     logger.warning(
                         f"Chapter {chapter_index + 1}: LLM returned {len(subsections)} subsections "
@@ -319,7 +440,6 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
                     )
                     subsections = subsections[:max_subsections]
 
-                # Normalize and validate each subsection
                 for sub in subsections:
                     sub.setdefault("title", "Untitled")
                     sub.setdefault("description", "")
@@ -384,7 +504,7 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
         self, topic: str, title: str, curriculum: CurriculumOutline
     ) -> str:
         """
-        Generate a Lời nói đầu (preface) page as raw Markdown with LaTeX header.
+        Generate a Lời nói đầu (preface) page as raw Markdown.
 
         Covers: target audience, purpose, chapter structure, unique features, usage guide.
         Returns empty string on failure (preface is optional).
@@ -394,19 +514,15 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
             f"  - Chương {i + 1}: {ch.title}"
             for i, ch in enumerate(curriculum.chapters)
         )
+
+        # NOTE: Preface prompt deliberately uses plain Markdown formatting now
+        # (no LaTeX \begin{center} etc.) because publisher.py strips LaTeX
+        # artifacts. The Publisher prepends "# Lời nói đầu" heading itself.
         system_prompt = """You are the author of a Vietnamese university textbook writing the "Lời nói đầu" (Preface).
 
-Write a natural, flowing academic preface. Output raw Markdown — no outer code fences.
+Write a natural, flowing academic preface in plain Markdown — no LaTeX commands, no outer code fences, no \\begin or \\end tags.
 
-REQUIRED — start with exactly these LaTeX commands:
-
-\\begin{{center}}
-\\Large\\textbf{{LỜI NÓI ĐẦU}}
-\\end{{center}}
-
-\\vspace{{0.5cm}}
-
-Then write 4-6 paragraphs that naturally cover these aspects (in any order, without rigid labels):
+Write 4-6 paragraphs that naturally cover these aspects (in any order, without rigid labels):
 - Who the textbook is intended for and what prerequisite knowledge is assumed
 - The purpose and learning objectives of the textbook
 - How the content is structured across chapters (reference the provided chapter list)
@@ -418,6 +534,7 @@ Style rules:
 - Each paragraph 3-5 sentences, flowing naturally without bolded section labels
 - No conversational filler or generic phrases
 - Tailor the content specifically to the topic and chapter structure provided
+- Output starts directly with the first paragraph — no title, no heading
 
 All output MUST be in formal Vietnamese."""
 
@@ -457,14 +574,8 @@ All output MUST be in formal Vietnamese."""
 
         Phase 2a — 1 small LLM call → chapter titles list  (~300 tokens output)
         Phase 2b — N small LLM calls → subsections per chapter (~500 tokens/call)
-
-        Total output tokens = 300 + (N × 500) — never truncated regardless of N.
-
-        Args:
-            topic_name: Main subject/topic from user request
-            raw_topics: NMF-extracted topic clusters
-            num_chapters: Exact number of chapters to generate
-            max_subsections: Upper bound on subsections per chapter
+                   FIX 3: each call receives list of already-assigned chapters
+                   to prevent subsection overlap across chapters.
 
         Returns:
             Dictionary conforming to CurriculumOutline schema, or None on failure.
@@ -474,16 +585,17 @@ All output MUST be in formal Vietnamese."""
             f"({num_chapters + 1} total LLM calls, max {max_subsections} subsections/chapter)"
         )
 
-        # Phase 2a: Get chapter titles
+        # Phase 2a: chapter titles
         chapter_titles = self._plan_chapter_titles(topic_name, raw_topics, num_chapters)
         if not chapter_titles:
             return None
 
-        # Phase 2b: Generate subsections for each chapter independently
-        chapters = []
+        # Phase 2b: subsections — accumulate context as we go (FIX 3)
+        chapters: List[Dict[str, Any]] = []
         failed_chapters = 0
 
         for idx, title in enumerate(chapter_titles):
+            # FIX 3 — pass all chapters generated so far as already-assigned context
             subsections = self._generate_chapter_subsections(
                 topic_name=topic_name,
                 chapter_title=title,
@@ -491,13 +603,15 @@ All output MUST be in formal Vietnamese."""
                 num_chapters=num_chapters,
                 raw_topics=raw_topics,
                 max_subsections=max_subsections,
+                assigned_chapters=chapters,  # FIX 3: grows with each iteration
             )
+
             if subsections:
                 chapters.append({"title": title, "subsections": subsections})
             else:
                 failed_chapters += 1
                 logger.warning(f"Skipping chapter {idx + 1} due to generation failure")
-                # Add minimal fallback chapter so curriculum is not broken
+                # FIX 4 — use "light" not "intro" (invalid section_type)
                 chapters.append({
                     "title": title,
                     "subsections": [
@@ -505,7 +619,7 @@ All output MUST be in formal Vietnamese."""
                             "title": f"Giới thiệu về {title}",
                             "description": f"Tổng quan về {title}",
                             "search_query": f"{topic_name} {title} introduction",
-                            "section_type": "intro"
+                            "section_type": "light",   # FIX 4: was "intro"
                         }
                     ]
                 })
@@ -522,7 +636,7 @@ All output MUST be in formal Vietnamese."""
         )
 
         return {"topic": topic_name, "chapters": chapters}
-    
+
     def create_curriculum(
         self,
         topic: str,
@@ -532,33 +646,30 @@ All output MUST be in formal Vietnamese."""
     ) -> Optional[CurriculumOutline]:
         """
         Main orchestration: Run hybrid planning pipeline.
-        
+
         Pipeline:
         1. Fetch all documents from vector DB
-        2. Extract topic clusters via NMF
-        3. Refine into structured curriculum via LLM (with num_chapters constraint)
+        2. Extract topic clusters via NMF (adaptive min_df + dedup)
+        3. Refine into structured curriculum via LLM (progressive + non-overlapping)
         4. Parse into Pydantic CurriculumOutline object
-        
+
         Args:
             topic: User's requested subject
             num_chapters: Number of chapters to generate (from user config)
-            num_topics: Number of NMF topic clusters to extract (auto-scaled to num_chapters)
-            
+            num_topics: Number of NMF topic clusters to extract (auto-scaled)
+
         Returns:
             CurriculumOutline Pydantic object, or None on failure.
         """
-        # Scale NMF topics to at least cover the requested chapters
-        # More chapters → need more topic clusters for variety
         effective_num_topics = max(num_topics, num_chapters + 2)
-        
-        # Step 1: Get corpus
+
+        # Step 1: corpus
         docs = self.get_all_documents()
         if not docs:
             logger.error("No documents found in vector DB. Run ingestion first.")
             return None
-        
-        # Step 2: NMF topic extraction
-        # If corpus is too small for the requested num_topics, scale down gracefully
+
+        # Step 2: NMF topic extraction with adaptive fallback
         raw_topics = ""
         for n_topics in [effective_num_topics, max(3, effective_num_topics // 2), 3]:
             raw_topics = self.extract_topics_with_nmf(docs, num_topics=n_topics)
@@ -573,14 +684,16 @@ All output MUST be in formal Vietnamese."""
         if not raw_topics:
             logger.error("Topic extraction failed at all fallback levels - insufficient data")
             return None
-        
-        # Step 3: LLM refinement — refine_plan_with_llm already retries internally
-        plan_dict = self.refine_plan_with_llm(topic, raw_topics, num_chapters=num_chapters, max_subsections=max_subsections)
+
+        # Step 3: LLM refinement
+        plan_dict = self.refine_plan_with_llm(
+            topic, raw_topics, num_chapters=num_chapters, max_subsections=max_subsections
+        )
         if not plan_dict:
             logger.error("LLM refinement failed after all retries")
             return None
-        
-        # Step 4: Parse into Pydantic model
+
+        # Step 4: Pydantic parse
         try:
             curriculum = CurriculumOutline(**plan_dict)
             logger.info(
@@ -597,22 +710,22 @@ All output MUST be in formal Vietnamese."""
 def plan_curriculum(state: AgentState) -> dict:
     """
     Planner node: Generate curriculum outline from user request.
-    
+
     Reads user config from state:
     - num_chapters: exact number of chapters to generate
-    
+
     Args:
         state: Current workflow state
-        
+
     Returns:
         Partial state update with curriculum and initialized tracking fields.
     """
     logger.info("=" * 60)
     logger.info("NODE: Planner - Building curriculum outline")
     logger.info("=" * 60)
-    
-    user_request   = state["request"]
-    num_chapters   = state.get("num_chapters", 3)             # type: ignore[call-overload]
+
+    user_request    = state["request"]
+    num_chapters    = state.get("num_chapters", 3)                 # type: ignore[call-overload]
     max_subsections = state.get("max_subsections_per_chapter", 5)  # type: ignore[call-overload]
 
     logger.info(f"User request       : {user_request}")
@@ -623,13 +736,16 @@ def plan_curriculum(state: AgentState) -> dict:
     curriculum = planner.create_curriculum(
         user_request, num_chapters=num_chapters, max_subsections=max_subsections
     )
-    
+
     if not curriculum:
         raise ValueError("Planner failed: Could not generate curriculum")
-    
+
     total_subsections = sum(len(ch.subsections) for ch in curriculum.chapters)
 
-    textbook_title = planner._generate_textbook_title(user_request, curriculum) or f"Giáo trình {user_request}"
+    textbook_title = (
+        planner._generate_textbook_title(user_request, curriculum)
+        or f"Giáo trình {user_request}"
+    )
     preface_content = planner._generate_preface(user_request, textbook_title, curriculum)
 
     return {
