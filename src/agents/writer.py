@@ -3,6 +3,12 @@ Writer Agent for AI Textbook Generator.
 
 This agent synthesizes retrieved RAG context into high-quality academic content,
 with standard Markdown formatting for PDF compilation via Typst.
+
+Responsibilities:
+- Draft new sections from RAG context + curriculum metadata
+- Re-draft sections when Reviewer returns feedback (revision mode)
+- Enforce chapter header ownership (emit / suppress # CHƯƠNG heading)
+- Apply post-processing to guarantee blank-line compliance before returning content
 """
 
 import re
@@ -11,25 +17,117 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 
 from src.log_config import setup_logger, setup_prompt_logger
-from src.graph.state import AgentState, CurriculumOutline, Chapter, SubSection, get_chapter_and_subsection, get_char_target
+from src.graph.state import (
+    AgentState,
+    Chapter,
+    SubSection,
+    get_chapter_and_subsection,
+    get_char_target,
+    clean_section_title,
+)
 from src.config import LLM_MODEL_CHEAP
 
 logger = setup_logger(name="WriterAgent", logfile="logs/agents.log")
 
+# ============================================================================
+# RULE 2.5 CALIBRATION DATA
+#
+# Per (section_type, content_level) → (block_range, para_range, sent_range)
+# Used by _build_length_rule() to generate dynamic RULE 2.5 prompt text.
+# Tuple: (blocks, paragraphs_per_block, sentences_per_paragraph)
+# ============================================================================
 
+_LENGTH_CALIBRATION: dict[str, dict[str, tuple[str, str, str]]] = {
+    "light": {
+        "Ngắn":       ("1–2", "2–3", "3"),
+        "Trung Bình": ("2–3", "3–4", "4–5"),
+        "Dài":        ("3",   "4–5", "5"),
+        "Rất Dài":    ("4",   "5",   "6"),
+    },
+    "medium": {
+        "Ngắn":       ("2–3", "3",   "3–4"),
+        "Trung Bình": ("3–4", "4",   "5"),
+        "Dài":        ("4–5", "5–6", "6"),
+        "Rất Dài":    ("5–6", "6–7", "7"),
+    },
+    "deep": {
+        "Ngắn":       ("3",   "3–4", "4"),
+        "Trung Bình": ("4–5", "5",   "5–6"),
+        "Dài":        ("5–6", "6",   "6–7"),
+        "Rất Dài":    ("6–7", "7–8", "7–8"),
+    },
+    "applied": {
+        "Ngắn":       ("2",   "brief worked steps",    ""),
+        "Trung Bình": ("3",   "full worked steps",     ""),
+        "Dài":        ("3–4", "detailed worked steps", ""),
+        "Rất Dài":    ("4–5", "comprehensive worked examples with edge cases", ""),
+    },
+}
+
+
+def _build_length_rule(
+    section_type: str,
+    content_level: str,
+    char_min: int,
+    char_max: int,
+) -> str:
+    """
+    Build RULE 2.5 prompt text scaled to the user's chosen content_level.
+
+    Generates concrete structural guidance (blocks × paragraphs × sentences)
+    calibrated to the actual char_min so the LLM can self-check accurately.
+    """
+    level_key  = content_level if content_level in _LENGTH_CALIBRATION.get(
+        section_type, {}
+    ) else "Trung Bình"
+    type_key   = section_type if section_type in _LENGTH_CALIBRATION else "medium"
+    cal        = _LENGTH_CALIBRATION[type_key][level_key]
+    blocks, paras, sents = cal
+
+    if type_key == "applied":
+        calibration_line = (
+            f"- applied  (~{char_min} chars min): "
+            f"{blocks} ### blocks with {paras}"
+        )
+    else:
+        calibration_line = (
+            f"- {type_key:<8} (~{char_min} chars min): "
+            f"{blocks} ### blocks × {paras} paragraphs × {sents} sentences each"
+        )
+
+    return (
+        f"RULE 2.5 — LENGTH ENFORCEMENT (NON-NEGOTIABLE):\n"
+        f"Your output MUST contain at least {char_min} characters. "
+        f"This is a hard floor — do NOT stop before reaching it.\n\n"
+        f"Calibration for this section ({section_type} / {content_level}):\n"
+        f"{calibration_line}\n\n"
+        f"Self-check before finishing: mentally estimate your paragraph count.\n"
+        f"If you have not reached {char_min} characters, continue writing —\n"
+        f"add more explanation, a worked example, or deeper analysis. Do NOT stop early."
+    )
 class WriterAgent:
     """
-    Writer Agent: Generates textbook content from RAG context.
+    Writer Agent: Generates textbook section content from RAG context.
 
     Specialized in:
-    - Academic writing in Vietnamese
-    - Markdown formatting for PDF compilation
-    - Structured content with proper headers
-    - Revision support: accepts feedback from Reviewer for re-drafting
+    - Academic writing in Vietnamese (văn phong học thuật)
+    - Markdown formatting compatible with Pandoc → Typst → PDF pipeline
+    - Structured content with numbered headers (## X.Y, ### X.Y.Z)
+    - Revision support: accepts Reviewer feedback and rewrites from scratch
+
+    LLM is initialized once in __init__ and reused across all write_section calls
+    within the same agent lifetime (BUG-05 fix — no per-call instantiation).
     """
 
     def __init__(self) -> None:
-        """Initialize LLM with balanced creativity."""
+        """
+        Initialize LLM with temperature=0.4 (balanced creativity vs consistency).
+
+        temperature=0.4 is chosen to:
+        - Allow natural variation in prose across sections
+        - Avoid excessive creativity that breaks structural rules
+        - Remain deterministic enough for consistent formatting compliance
+        """
         self.llm = ChatOpenAI(model=LLM_MODEL_CHEAP, temperature=0.4)
         self.prompt_logger = setup_prompt_logger("writer")
 
@@ -46,84 +144,145 @@ class WriterAgent:
         review_feedback: str = "",
         section_type: str = "medium",
         char_target: tuple[int, int] = (3000, 4500),
-        enable_images: bool = True
+        enable_images: bool = True,
+        content_level: str = "Trung Bình",
     ) -> str:
         """
-        Generate content for a specific section using RAG context.
+        Generate or revise content for a single textbook section.
+
+        This method builds the full system prompt, invokes the LLM, then applies
+        deterministic post-processing to enforce blank-line rules that the LLM
+        sometimes violates under token pressure.
 
         Args:
-            course_topic: Main topic of the textbook
-            chapter_num: Chapter number (1-indexed)
-            chapter_title: Title of the current chapter
-            section_num: Section number (e.g., "1.2")
-            section_title: Title of the current section
-            section_description: Description of what to cover
-            context: Retrieved RAG context
-            chapter_instruction: Explicit directive for chapter header handling.
-                Non-empty with "# CHƯƠNG" → emit that heading first.
-                Non-empty with "DO NOT" → explicitly prohibited from emitting any # heading.
-            review_feedback: Feedback from Reviewer (non-empty means this is a revision)
-            section_type: Content purpose — controls tone and depth expectations
-            char_target: (min_chars, max_chars) tuple derived from section_type depth level
+            course_topic:        Main topic of the textbook (e.g. "Học máy").
+            chapter_num:         1-indexed chapter number.
+            chapter_title:       Title of the current chapter.
+            section_num:         Dot-notation section number (e.g. "2.3").
+            section_title:       Title of the current section.
+            section_description: 1-2 sentence description of what to cover.
+            context:             RAG-retrieved text chunks relevant to this section.
+            chapter_instruction: Directive controlling # CHƯƠNG header behaviour.
+                                 Two forms:
+                                   - "Output EXACTLY this line ... # CHƯƠNG N"
+                                     → LLM must emit the chapter heading first.
+                                   - "DO NOT output any # (level-1) heading"
+                                     → LLM is explicitly prohibited from emitting one.
+            review_feedback:     Non-empty string → revision mode; LLM rewrites from
+                                 scratch addressing the listed issues.
+            section_type:        Depth level controlling prose density and structure.
+                                 One of: "light" | "medium" | "deep" | "applied".
+            char_target:         (min_chars, max_chars) derived from section_type.
+                                 The LLM is instructed to reach min_chars before stopping.
+            enable_images:       When False, all image suggestion rules are suppressed.
 
         Returns:
-            Generated Markdown content, or error message on failure.
+            Generated Markdown string ready for the Reviewer node.
+            Returns an error sentinel string on LLM or formatting failure.
         """
         logger.info(f"Composing: {section_num} {section_title}")
 
         if review_feedback:
             logger.info(f"Revision mode — feedback: {review_feedback[:80]}")
 
-        # Build visual rule based on enable_images flag and section type
-        LOW_VISUAL_TYPES = ("summary", "practice")
+        # ------------------------------------------------------------------
+        # Visual rule — controls image tag injection in the LLM output.
+        #
+        # Mapped directly to the 4 valid section_type values:
+        #   light   → minimal (orientation/recap sections don't benefit from images)
+        #   applied → moderate (diagrams that illustrate exercises are welcome)
+        #   medium / deep → full guidance (1–3 images based on content complexity)
+        #
+        # Previously used LOW_VISUAL_TYPES = ("summary", "practice") which never
+        # matched any valid section_type and caused the branch to be dead code.
+        # ------------------------------------------------------------------
         if not enable_images:
             visual_rule = "Do NOT add any image suggestions."
-        elif section_type in LOW_VISUAL_TYPES:
+
+        elif section_type == "light":
             visual_rule = (
-                "Insert an image suggestion only if a diagram is truly essential.\n"
-                "Prefer 0 for this section type. Maximum: 1.\n"
-                "Format: > [IMAGE: Short caption title | Detailed English description for image generation]"
-            )
-        else:
-            visual_rule = (
-                "Insert image suggestions where they genuinely enhance understanding.\n"
-                "Aim for 1–3 images per section based on content complexity.\n\n"
-                "WHEN to add:\n"
-                "- System architecture, flowcharts, process steps, data structures\n"
-                "- Scientific diagrams: circuits, biological processes, physics phenomena\n"
-                "- Comparisons: before/after, A vs B visual contrast\n"
-                "- Spatial structures: layouts, 3D models, hierarchies\n\n"
-                "WHEN to skip:\n"
-                "- Pure definition paragraphs with no visual component\n"
-                "- If a diagram adds no information beyond the surrounding text\n\n"
-                "Placement: insert the tag inline immediately AFTER the paragraph it illustrates.\n"
-                "Format: > [IMAGE: Short caption title | Detailed English description for image generation]\n\n"
-                "IMAGE FORMAT RULES:\n"
-                "- TITLE: 3-6 words max, can be Vietnamese or English, used directly as caption in PDF.\n"
-                "  Examples: 'Kiến trúc microservices', 'OSI Model layers', 'CI/CD pipeline flow'\n"
-                "- DESCRIPTION: 1-3 sentences in English. Include: visual structure (shapes, layout),\n"
-                "  key elements (number of components, connections), style (technical, clean, minimal).\n"
-                "  For DRAW (abstract/conceptual): describe atmosphere, metaphor, and style.\n"
-                "  For SEARCH (real entities): name the specific real-world subject clearly.\n"
-                "  Examples:\n"
-                "  > [IMAGE: Kiến trúc microservices | System architecture showing 5 independent service\n"
-                "    boxes connected via REST arrows, API gateway on left, message queue in center,\n"
-                "    each service has a database icon below, white background, clean technical style]\n"
-                "  > [IMAGE: DevOps culture | Illustrative scene of collaborative software development\n"
-                "    team working seamlessly across dev and ops, conveying speed and reliability]\n"
-                "  > [IMAGE: Docker logo | Official Docker whale logo on white background]"
+                "This is an orientation or recap section — 1 image is appropriate\n"
+                "if it sets the scene or establishes the visual context for the chapter.\n"
+                "Insert exactly 1 image suggestion if a diagram or photo would orient\n"
+                "the reader. Prefer a real-world photo or overview diagram.\n"
+                "Format: > [IMAGE: Short caption title | Detailed English description]"
             )
 
-        # Inject revision instruction if this is a re-draft
+        elif section_type == "applied":
+            visual_rule = (
+                "This is a hands-on section — diagrams and photos that illustrate\n"
+                "the task, tool, material, or expected result are strongly encouraged.\n"
+                "Insert 2–3 image suggestions: one near the start to show the goal or\n"
+                "setup, and one after each major worked step that has a visual output.\n"
+                "Format: > [IMAGE: Short caption title | Detailed English description]"
+            )
+
+        else:
+            # medium / deep — full visual guidance for richer sections
+             visual_rule = (
+                "Images are EXPECTED in this section — the default is to ADD, not skip.\n"
+                "Target: at least 2 images per section, up to 4 for complex content.\n\n"
+                "ADD an image after any paragraph that involves:\n"
+                "- A process, sequence, or workflow (flowchart or step diagram)\n"
+                "- A system, architecture, or structure with multiple components\n"
+                "- A scientific or physical phenomenon (diagram or photo)\n"
+                "- A real-world object, person, place, or artifact being discussed\n"
+                "- A comparison, contrast, or before/after scenario\n"
+                "- A concept that is easier to grasp visually than in prose\n\n"
+                "SKIP only when the paragraph is a pure abstract definition with zero\n"
+                "visual component — e.g. a philosophical statement or a list of dates.\n"
+                "If in doubt, ADD the image.\n\n"
+                "Placement: insert the tag immediately AFTER the paragraph it illustrates.\n"
+                "Format: > [IMAGE: Short caption title | Detailed English description]\n\n"
+                "IMAGE FORMAT RULES:\n"
+                "- TITLE: 3-6 words max, Vietnamese or English, used directly as PDF caption.\n"
+                "  Examples: 'Kiến trúc microservices', 'OSI Model layers', 'CI/CD pipeline flow'\n"
+                "- DESCRIPTION: 2-3 sentences in English. Specify: visual structure (shapes,\n"
+                "  layout), key elements (number of components, connections, labels),\n"
+                "  style (technical diagram / photograph / illustration, clean white background).\n"
+                "  For abstract/conceptual: describe metaphor, atmosphere, and style.\n"
+                "  For real entities: name the specific subject clearly.\n"
+                "  Examples:\n"
+                "  > [IMAGE: Kiến trúc microservices | System architecture diagram showing 5 independent\n"
+                "    service boxes connected via REST arrows, API gateway on left, message queue in center,\n"
+                "    each service with a database icon below, white background, clean technical style]\n"
+                "  > [IMAGE: Vụ nổ Big Bang | Abstract illustration of the Big Bang: a bright point\n"
+                "    of light exploding outward into colourful expanding matter, dark space background,\n"
+                "    dramatic and scientific style]\n"
+                "  > [IMAGE: Kính viễn vọng Hubble | Photograph of the Hubble Space Telescope\n"
+                "    orbiting Earth, solar panels extended, blue Earth visible below]"
+            )
+        # ------------------------------------------------------------------
+        # Revision instruction block — injected into system prompt only when
+        # the Reviewer has rejected the previous draft. Placed prominently so
+        # the LLM addresses all feedback items before writing new content.
+        # ------------------------------------------------------------------
         revision_instruction = ""
         if review_feedback:
-            revision_instruction = f"""<revision_required>
-PREVIOUS DRAFT REJECTED. You MUST fix ALL issues below before writing.
-FEEDBACK: {review_feedback}
-ACTION: Rewrite from scratch. Do NOT repeat previous mistakes.
-</revision_required>"""
-
-        # System prompt — XML-structured for strict LLM compliance
+            revision_instruction = (
+                "<revision_required>\n"
+                "PREVIOUS DRAFT REJECTED. You MUST fix ALL issues below before writing.\n"
+                f"FEEDBACK: {review_feedback}\n"
+                "ACTION: Rewrite from scratch. Do NOT repeat previous mistakes.\n"
+                "</revision_required>"
+            )
+        length_rule = _build_length_rule(
+            section_type, content_level, char_target[0], char_target[1]
+        )
+        # ------------------------------------------------------------------
+        # System prompt — XML-structured for strict LLM rule compliance.
+        #
+        # Rule ordering is intentional:
+        #   RULE 1  Language & tone
+        #   RULE 2  Depth level behaviour (structure guidance)
+        #   RULE 2.5 Length enforcement — placed immediately after depth guide
+        #            so the LLM has calibration context when reading the floor
+        #   RULE 3  Chapter header (critical — must come before RULE 4)
+        #   RULE 4  Document structure (headers, numbering)
+        #   RULE 5  Sub-section depth
+        #   RULE 6  Content requirements (bold, examples, tone)
+        #   RULE 7  Visual guidance
+        # ------------------------------------------------------------------
         system_prompt = """<role>
 You are an expert academic content writer specializing in Vietnamese university textbooks.
 Your sole output is the final Markdown content — no preamble, no explanations, no meta-commentary.
@@ -157,6 +316,8 @@ Adapt writing depth and length based on the <section_type> value:
 - applied → Tasks or exercises: step-by-step guidance, problems with worked solutions
 Each paragraph: 3–5 sentences. Output MUST reach the <char_target> minimum.
 
+{length_rule}
+
 RULE 3 — CHAPTER HEADER (STRICTLY OBEY):
 {chapter_instruction}
 
@@ -177,8 +338,8 @@ PREFER FEWER, DEEPER ### blocks over MANY, SHALLOW ones.
 
 Guideline by section_type:
 - light   → 2–3 ### blocks max, each 3+ paragraphs
-- medium  → 3–4 ### blocks, each 3–5 paragraphs
-- deep    → 3–5 ### blocks, each 4–6 paragraphs with analysis, evidence, examples
+- medium  → 3–4 ### blocks, each 4–5 paragraphs
+- deep    → 3–5 ### blocks, each 5–6 paragraphs with analysis, evidence, examples
 - applied → 2–4 ### blocks, each containing full worked steps or complete problems
 
 ❌ WRONG: 5 sub-sections, each with 1–2 short paragraphs
@@ -224,7 +385,11 @@ RULE 7 — VISUALS:
 
         user_prompt = f"Please write the content for section **{section_num}: {section_title}**."
 
-        # Log prompt before invoking LLM
+        # ------------------------------------------------------------------
+        # Prompt logging — logs a preview (context truncated to 500 chars)
+        # to avoid bloating the prompt log file with full RAG context.
+        # Falls back to the unformatted template string on format error.
+        # ------------------------------------------------------------------
         try:
             context_preview = context[:500] + "...[truncated]" if len(context) > 500 else context
             formatted_system = system_prompt.format(
@@ -244,6 +409,7 @@ RULE 7 — VISUALS:
             )
         except Exception:
             formatted_system = system_prompt
+
         mode = "REVISION" if review_feedback else "DRAFT"
         self.prompt_logger.log(
             system_prompt=formatted_system,
@@ -271,7 +437,8 @@ RULE 7 — VISUALS:
                 "section_type": section_type,
                 "char_min": char_target[0],
                 "char_max": char_target[1],
-                "visual_rule": visual_rule
+                "visual_rule": visual_rule,
+                "length_rule": length_rule, 
             })
 
             raw_content = response.content
@@ -281,56 +448,89 @@ RULE 7 — VISUALS:
 
             content: str = raw_content
 
-            # POST-PROCESSING: Ensure blank lines before headers
+            # ------------------------------------------------------------------
+            # Post-processing — deterministic fixups applied after every LLM call.
+            #
+            # These are safety nets for known LLM formatting failures:
+            #   Pass 1: Missing blank line BEFORE a heading
+            #           Pattern: any non-newline char followed immediately by \n##
+            #   Pass 2: Missing blank line AFTER a heading
+            #           Pattern: heading line followed by non-empty line with no gap
+            #   Pass 3: Missing blank line BETWEEN prose paragraphs
+            #           Heuristic: sentence-ending punctuation + next line starts
+            #           with uppercase or digit. Skips lines that start with
+            #           special Markdown tokens to avoid false positives on lists,
+            #           blockquotes, code blocks, and math blocks.
+            # ------------------------------------------------------------------
+
+            # Pass 1 — blank line before headings
             content = re.sub(
                 r'([^\n])\n(#{1,3} )',
                 r'\1\n\n\2',
-                content
+                content,
             )
 
-            # Ensure blank lines after headers
+            # Pass 2 — blank line after headings
             content = re.sub(
                 r'(^#{1,3} .+)$\n(?!\n)',
                 r'\1\n\n',
                 content,
-                flags=re.MULTILINE
+                flags=re.MULTILINE,
             )
 
-            # Fix paragraphs without blank lines between them
+            # Pass 3 — blank line between prose paragraphs
             lines = content.split('\n')
-            fixed_lines = []
+            fixed_lines: list[str] = []
 
             for i, line in enumerate(lines):
                 fixed_lines.append(line)
 
-                if i < len(lines) - 1:
-                    current_line = line.rstrip()
-                    next_line = lines[i + 1].strip()
+                if i >= len(lines) - 1:
+                    continue
 
-                    if not current_line or not next_line:
-                        continue
+                current_line = line.rstrip()
+                next_line    = lines[i + 1].strip()
 
-                    current_is_special = current_line.startswith(('#', '-', '*', '>', '```', '$$'))
-                    next_is_special = next_line.startswith(('#', '-', '*', '>', '```', '$$'))
+                # Skip if either line is already blank — gap already present
+                if not current_line or not next_line:
+                    continue
 
-                    if current_is_special or next_is_special:
-                        continue
+                # Skip lines that start with Markdown special tokens — inserting
+                # a blank line inside a list, blockquote, or code block would
+                # break the structure.
+                SPECIAL_PREFIXES = ('#', '-', '*', '>', '```', '$$')
+                if current_line.startswith(SPECIAL_PREFIXES):
+                    continue
+                if next_line.startswith(SPECIAL_PREFIXES):
+                    continue
 
-                    if current_line and current_line[-1] in '.!?;:':
-                        if next_line[0].isupper() or next_line[0].isdigit():
-                            fixed_lines.append('')
+                # Insert blank line when current line ends a sentence and next
+                # line begins a new one (uppercase or digit start).
+                if current_line[-1] in '.!?;:':
+                    if next_line[0].isupper() or next_line[0].isdigit():
+                        fixed_lines.append('')
 
             content = '\n'.join(fixed_lines)
-            # Post-generation length enforcement
+
+            # ------------------------------------------------------------------
+            # Length check — warn if output is significantly below target.
+            # The Reviewer quality gate will request a revision if needed;
+            # this log line gives early visibility in the pipeline logs.
+            # ------------------------------------------------------------------
             actual_chars = len(content)
             if actual_chars < char_target[0] * 0.7:
                 logger.warning(
                     f"⚠️  Content too short: {actual_chars} chars "
-                    f"(target {char_target[0]}–{char_target[1]}) for {section_num} '{section_title}'. "
+                    f"(target {char_target[0]}–{char_target[1]}) "
+                    f"for {section_num} '{section_title}'. "
                     f"Reviewer quality gate will handle revision if needed."
                 )
             else:
-                logger.info(f"✓ Content length OK: {actual_chars} chars (target {char_target[0]}–{char_target[1]})")
+                logger.info(
+                    f"✓ Content length OK: {actual_chars} chars "
+                    f"(target {char_target[0]}–{char_target[1]})"
+                )
+
             logger.info(f"✓ Content generated ({len(content)} chars)")
             return content
 
@@ -341,67 +541,111 @@ RULE 7 — VISUALS:
 
 def write_section(state: AgentState) -> dict:
     """
-    Writer node: Generate content for current subsection.
+    Writer node: Generate or revise content for the current subsection.
+
+    Reads curriculum position from state indexes, constructs the full context
+    for the WriterAgent, then applies two additional deterministic layers:
+
+    Layer 1 — Prompt instruction:
+        Controls whether the LLM emits a # CHƯƠNG heading.
+        Only the first subsection of each chapter (sub_idx == 0) that has not
+        yet written its chapter header is instructed to emit it.
+        All other subsections receive an explicit prohibition.
+
+    Layer 2 — Post-processing strip:
+        If the LLM emitted a level-1 heading despite the prohibition (hallucination
+        under token pressure), all `# ...` lines are stripped from the output.
+
+    Layer 3 — State flag:
+        Returns chapter_header_written=True only when the header was actually
+        emitted. The flag is never reset here — that is owned by the checkpoint
+        nodes (append_and_update_chapter).
 
     Workflow integration:
-    - Input: state["curriculum"], indexes, rag_context, review_feedback
-    - Output: state["current_content"] with generated content
-
-    If review_feedback is non-empty, this is a revision pass —
-    the Writer will address Reviewer's feedback in the new draft.
+        Input:  state["curriculum"], state["current_chapter_index"],
+                state["current_subsection_index"], state["rag_context"],
+                state["review_feedback"]
+        Output: state["current_content"] with generated Markdown content
+                state["chapter_header_written"] = True  (only on first subsection)
 
     Args:
-        state: Current workflow state
+        state: Current LangGraph workflow state (AgentState TypedDict).
 
     Returns:
-        Partial state update with generated content.
+        Partial state update dict with "current_content" and optionally
+        "chapter_header_written".
     """
     logger.info("=" * 60)
     logger.info("NODE: Writer - Drafting content")
     logger.info("=" * 60)
 
-    curriculum = state["curriculum"]
-    chap_idx = state["current_chapter_index"]
-    sub_idx = state["current_subsection_index"]
+    curriculum      = state["curriculum"]
+    chap_idx        = state["current_chapter_index"]
+    sub_idx         = state["current_subsection_index"]
     review_feedback = state.get("review_feedback", "")
 
     if review_feedback:
         logger.info(f"Revision requested by Reviewer: '{review_feedback[:80]}...'")
 
     try:
-        # Unified curriculum access (Pydantic or dict) via DRY helper
+        # Unified curriculum access — handles both Pydantic CurriculumOutline
+        # and plain dict formats for testing/compatibility.
         chapter, subsection = get_chapter_and_subsection(curriculum, chap_idx, sub_idx)
 
-        chap_title = chapter.title if isinstance(chapter, Chapter) else chapter.get('title', 'Unknown Chapter')
-        sec_title = subsection.title if isinstance(subsection, SubSection) else subsection.get('title', 'Unknown Section')
-        sec_desc = subsection.description if isinstance(subsection, SubSection) else subsection.get('description', '')
-        sec_type = subsection.section_type if isinstance(subsection, SubSection) else subsection.get('section_type', 'medium')
+        chap_title = (
+            chapter.title if isinstance(chapter, Chapter)
+            else chapter.get('title', 'Unknown Chapter')
+        )
+        sec_title = (
+            subsection.title if isinstance(subsection, SubSection)
+            else subsection.get('title', 'Unknown Section')
+        )
+        sec_desc = (
+            subsection.description if isinstance(subsection, SubSection)
+            else subsection.get('description', '')
+        )
+        sec_type = (
+            subsection.section_type if isinstance(subsection, SubSection)
+            else subsection.get('section_type', 'medium')
+        )
 
-        # Compute char target: start from section_type defaults, then apply user min floor
+        # ------------------------------------------------------------------
+        # Char target computation:
+        #   1. Get (min, max) from section_type defaults via get_char_target()
+        #   2. Apply user-configured global floor (min_chars_per_section)
+        #   3. Ensure max > min with a meaningful gap (at least +500)
+        # ------------------------------------------------------------------
+        content_level = state.get("content_level", "Trung Bình")
+        base_min, base_max = get_char_target(sec_type, content_level)
         min_chars_floor = state.get("min_chars_per_section", 0)   # type: ignore[call-overload]
-        base_min, base_max = get_char_target(sec_type)
         effective_min = max(base_min, min_chars_floor)
-        effective_max = max(base_max, effective_min + 500)  # ensure max > min with meaningful gap
-        char_target = (effective_min, effective_max)
+        effective_max = max(base_max, effective_min + 500)
+        char_target   = (effective_min, effective_max)
 
-        logger.info(f"Section type: '{sec_type}' → char target: {effective_min}–{effective_max} chars")
+        logger.info(
+            f"Section type: '{sec_type}' → char target: {effective_min}–{effective_max} chars"
+        )
 
-        # Clean section title
-        if ":" in sec_title and any(prefix in sec_title for prefix in ["Mục", "Phần", "Bài"]):
-            sec_title = sec_title.split(":", 1)[1].strip()
+        # Clean section title — strips structured prefixes like "Mục 1.2: ..."
+        # using the shared helper from state.py to avoid duplicating the regex.
+        sec_title = clean_section_title(sec_title)
 
         display_chap = str(chap_idx + 1)
-        display_sec = f"{display_chap}.{sub_idx + 1}"
+        display_sec  = f"{display_chap}.{sub_idx + 1}"
 
-        # Determine whether this subsection is the chapter-open position.
-        # Use sub_idx == 0 (integer comparison) instead of string endswith(".1")
-        # to avoid false matches on section numbers like "1.11", "2.21", etc.
-        is_chapter_open = (sub_idx == 0)
+        # ------------------------------------------------------------------
+        # Chapter header ownership logic.
+        #
+        # Uses sub_idx == 0 (integer) instead of display_sec.endswith(".1")
+        # to avoid false matches on section numbers like "1.11" or "2.21".
+        #
+        # emit_header=True  → LLM is instructed to output # CHƯƠNG N as first line
+        # emit_header=False → LLM is explicitly prohibited from any # heading
+        # ------------------------------------------------------------------
+        is_chapter_open      = (sub_idx == 0)
         header_already_written = state.get("chapter_header_written", False)
 
-        # --- LAYER 1: Prompt instruction (tells LLM what to do) ---
         if is_chapter_open and not header_already_written:
-            # Positive instruction: emit the chapter heading
             chapter_instruction_text = (
                 f"This is the opening section of Chapter {display_chap}.\n"
                 f"Output EXACTLY this line as the very first line of your response "
@@ -411,7 +655,6 @@ def write_section(state: AgentState) -> dict:
             )
             emit_header = True
         else:
-            # Explicit prohibition: LLM must not emit any level-1 heading
             chapter_instruction_text = (
                 f"This section is NOT the start of a new chapter.\n"
                 f"DO NOT output any # (level-1) heading under ANY circumstances.\n"
@@ -425,12 +668,12 @@ def write_section(state: AgentState) -> dict:
             f"(sub_idx={sub_idx}, header_already_written={header_already_written})"
         )
 
-        # Get RAG context from dedicated field (not messages)
-        context = state.get("rag_context", "") or "No specific context available."
+        # RAG context is stored in a dedicated state field (not messages list)
+        # to keep it cleanly separated from workflow log messages.
+        context      = state.get("rag_context", "") or "No specific context available."
         enable_images = state.get("enable_images", True)   # type: ignore[call-overload]
 
-        # Generate content (with optional revision feedback)
-        agent = WriterAgent()
+        agent   = WriterAgent()
         content = agent.write_section(
             course_topic=state.get("request", "General Topic"),
             chapter_num=int(display_chap),
@@ -443,14 +686,21 @@ def write_section(state: AgentState) -> dict:
             review_feedback=review_feedback,
             section_type=sec_type,
             char_target=char_target,
-            enable_images=enable_images
+            enable_images=enable_images,
+            content_level=content_level,
+            
         )
 
-        # --- LAYER 2: Deterministic post-processing strip ---
-        # If the LLM was prohibited from emitting a level-1 header but did so anyway
-        # (hallucination under load), strip ALL `# ` lines from the output.
+        # ------------------------------------------------------------------
+        # Layer 2 — Deterministic hallucination guard (suppress direction).
+        #
+        # If the LLM was prohibited from emitting a level-1 heading but did so
+        # anyway (rare but observed under high token pressure), strip all lines
+        # matching `# ...` from the output. This is a safety net — the prompt
+        # prohibition in chapter_instruction_text is the primary control.
+        # ------------------------------------------------------------------
         if not emit_header:
-            before = content
+            before  = content
             content = re.sub(r'^# [^\n]*\n?', '', content, flags=re.MULTILINE)
             content = content.lstrip('\n')
             if content != before:
@@ -459,9 +709,35 @@ def write_section(state: AgentState) -> dict:
                     f"— LLM ignored prohibition instruction"
                 )
 
-        # --- LAYER 3: State flag (gates future subsections in same chapter) ---
-        # Only return chapter_header_written=True when we actually emitted the header.
-        # Never return False here — let the checkpoint nodes own the reset.
+        # ------------------------------------------------------------------
+        # Layer 2b — Deterministic chapter heading enforcement (emit direction).
+        #
+        # Mirror của Layer 2: nếu LLM được instructed emit # CHƯƠNG nhưng bỏ
+        # qua (non-compliance dưới token pressure), prepend heading từ các giá
+        # trị đã có sẵn — không cần LLM call, không tốn thêm token.
+        #
+        # Detection dùng re.MULTILINE thay vì startswith() vì LLM đôi khi emit
+        # blank line hoặc ký tự lạ trước heading, gây false negative với
+        # startswith check.
+        # ------------------------------------------------------------------
+        if emit_header:
+            if not re.search(r'^# CHƯƠNG', content, flags=re.MULTILINE):
+                expected_heading = (
+                    f"# CHƯƠNG {display_chap}: {chap_title.upper()}"
+                )
+                content = expected_heading + "\n\n" + content.lstrip('\n')
+                logger.warning(
+                    f"⚠️  LLM omitted # CHƯƠNG heading — prepended deterministically: "
+                    f"'{expected_heading}'"
+                )
+
+        # ------------------------------------------------------------------
+        # Layer 3 — State flag update.
+        #
+        # Only set chapter_header_written=True when this call actually emitted
+        # the header. Never set it to False here — the checkpoint nodes
+        # (append_and_update_chapter) own the reset responsibility.
+        # ------------------------------------------------------------------
         result: dict = {"current_content": content}
         if emit_header:
             result["chapter_header_written"] = True

@@ -1,68 +1,175 @@
 """
 Illustrator Agent for AI Textbook Generator.
 
-This agent searches for real images from Google Images via SerpAPI
-and replaces image suggestion placeholders with actual image URLs.
+This agent processes `> [IMAGE: title | description]` tags injected by the
+Writer and replaces them with locally-saved PNG images embedded as Pandoc
+Markdown figure blocks.
+
+Tag processing pipeline per tag:
+    1. Parse title + description from `> [IMAGE: title | description]`
+    2. Route to DRAW / DIAGRAM / SEARCH via LLM classifier
+    3. Acquire image:
+         DRAW    → DALL-E 3 generation (fallback to SEARCH on failure)
+         DIAGRAM → Serper Google Images search
+         SEARCH  → Serper Google Images search
+    4. Download + resize + convert to PNG (saved locally under outputs/images/)
+    5. Replace tag with Pandoc figure block:
+         ![Vietnamese caption](relative/path.png){width=70%}
+
+Images are saved locally rather than referenced by URL so that Pandoc does
+not need to fetch remote resources at compile time, and the Typst sandbox
+has guaranteed access to every image file.
+
+Legacy `> [IMAGE SUGGESTION: description]` tags from older Writer versions
+are auto-converted to the current format on-the-fly.
 """
 
+import json
 import re
-import requests
 import io
 import hashlib
 import uuid
+import textwrap
+import requests
+
 from openai import OpenAI
 from langchain_openai import ChatOpenAI
+from urllib.parse import urlparse
+from pathlib import Path
+from PIL import Image
+
 from src.config import OPENAI_API_KEY, SERPER_API_KEY, BASE_DIR, LLM_MODEL_CHEAP
 from src.log_config import setup_logger, setup_prompt_logger
 from src.graph.state import AgentState
-from urllib.parse import urlparse
-from PIL import Image
-from pathlib import Path
 
 logger = setup_logger(name="IllustratorAgent", logfile="logs/agents.log")
 
-# Image size constraints for A4 textbook
-# Max 800px width (~14cm at 150dpi) and 500px height ensures caption stays on same page
-IMAGE_MAX_WIDTH = 800
+# ---------------------------------------------------------------------------
+# A4 image size constraints
+# Max 800px width (~14cm at 150dpi) and 500px height ensures the caption
+# stays on the same page as the image without forced page breaks.
+# ---------------------------------------------------------------------------
+IMAGE_MAX_WIDTH  = 800
 IMAGE_MAX_HEIGHT = 500
 
-# Output directory for downloaded images (relative to BASE_DIR)
+# Output directory for downloaded/generated images (relative to BASE_DIR).
+# Cleaned up by Publisher after PDF export.
 IMAGE_OUTPUT_DIR = BASE_DIR / "outputs" / "images"
+
+# ---------------------------------------------------------------------------
+# BUG-19 FIX — module-level constants (were re-created on every method call)
+#
+# _REJECTED_EXTENSIONS: file types that Typst/Pandoc cannot render or that
+#   cause parse errors in the compilation pipeline.
+# _REJECTED_DOMAINS: domains that consistently block direct downloads (403/401)
+#   or serve watermarked / low-quality images.
+# ---------------------------------------------------------------------------
+_REJECTED_EXTENSIONS: tuple[str, ...] = (
+    '.svg',    # vector — Typst does not support SVG natively
+    '.webp',   # lossy format — inconsistent Pillow support across versions
+    '.gif',    # animated — only first frame usable, unexpected behavior
+    '.shtml',  # server-side HTML, not an image
+    '.html',   # HTML page returned as image URL
+    '.php',    # dynamic PHP page, rarely an actual image
+    '.asp',    # ASP page
+    '.aspx',   # ASPX page
+    '.cfm',    # ColdFusion page
+)
+
+_REJECTED_DOMAINS: tuple[str, ...] = (
+    'wikipedia.org',       # images often redirect or require attribution
+    'wikimedia.org',       # same as above
+    'researchgate.net',    # 403 on all direct downloads
+    'shutterstock.com',    # watermarked
+    'gettyimages.com',     # watermarked
+    'istockphoto.com',     # watermarked
+    'alamy.com',           # watermarked
+    'dreamstime.com',      # watermarked
+    'stock.adobe.com',     # watermarked
+    'pond5.com',           # watermarked
+    'depositphotos.com',   # watermarked
+)
+
+# ---------------------------------------------------------------------------
+# Vietnamese character detection helper (BUG-09 fix)
+#
+# Used by translate_caption() to skip the LLM call when the title is already
+# in Vietnamese — Writer generates titles in Vietnamese by default.
+# ---------------------------------------------------------------------------
+_VIETNAMESE_CHARS: frozenset[str] = frozenset(
+    'àáảãạăắằẳẵặâấầẩẫậèéẻẽẹêếềểễệìíỉĩị'
+    'òóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵđ'
+)
+
+
+def _is_vietnamese(text: str) -> bool:
+    """
+    Return True if `text` contains at least one Vietnamese diacritic character.
+
+    Used as a fast heuristic to skip unnecessary LLM translation calls when
+    the caption title is already in Vietnamese.
+    """
+    return any(c in _VIETNAMESE_CHARS for c in text.lower())
 
 
 class IllustratorAgent:
     """
-    Illustrator Agent: Finds real images to enhance content.
-    
-    Uses SerpAPI to search Google Images and replace
-    `> [IMAGE SUGGESTION: ...]` tags with actual images.
-    
-    Images are:
-    - Downloaded locally (avoids Pandoc fetching URLs at compile time)
-    - Resized to fit A4 page (max 800x500px)
-    - Converted to PNG
-    - Rendered as a Pandoc Markdown figure (engine-agnostic, works with Typst)
+    Illustrator Agent: resolves `> [IMAGE: title | description]` tags into
+    locally-saved PNG figures embedded as Pandoc Markdown figure blocks.
+
+    Image acquisition strategy (per tag):
+        DRAW    → DALL-E 3 (conceptual/artistic illustrations)
+        DIAGRAM → Serper Google Images (technical diagrams requiring precise layout)
+        SEARCH  → Serper Google Images (real entities: logos, photos, screenshots)
+
+    All acquired images are:
+        - Downloaded and saved locally (Typst sandbox compatibility)
+        - Resized to fit A4 margins (max 800×500px, aspect ratio preserved)
+        - Converted to PNG (eliminates RGBA/palette modes that break rendering)
+        - Referenced via relative path from BASE_DIR
+
+    The LLM client (self.llm) is instantiated once in __init__ and reused
+    across all method calls — no per-call instantiation overhead.
     """
-    
+
     def __init__(self) -> None:
-        """Initialize with SerpAPI key."""
+        """
+        Initialize API keys, LLM client, and prompt logger.
+
+        Warns at startup if SERPER_API_KEY or OPENAI_API_KEY are missing so
+        degraded mode (tags stripped without replacement) is visible in logs
+        rather than silently failing per-image later.
+        """
         self.api_key = SERPER_API_KEY
         if not self.api_key:
-            logger.warning("⚠️ SERPER_API_KEY is missing. Images will not be generated.")
+            logger.warning("⚠️ SERPER_API_KEY is missing — image search disabled.")
         if not OPENAI_API_KEY:
             logger.warning("OPENAI_API_KEY not set — DRAW mode disabled, SEARCH only.")
+
         self.prompt_logger = setup_prompt_logger("illustrator")
+        # temperature=0 for classification and query tasks — determinism is
+        # preferred over creativity for routing and short-form outputs.
         self.llm = ChatOpenAI(model=LLM_MODEL_CHEAP, temperature=0)
+
+    # ------------------------------------------------------------------
+    # LLM helper methods
+    # ------------------------------------------------------------------
 
     def build_image_query(self, description: str) -> str:
         """
-        Compress verbose description into a focused 5-7 word image search query.
-        
+        Compress a verbose image description into a focused 5-7 word search query.
+
+        The description from the Writer is often 20-30 words with structural
+        detail useful for DALL-E but too verbose for Serper's image search.
+        This method extracts the key visual element as a short English query.
+
+        Falls back to the first 6 words of the description on LLM error.
+
         Args:
-            description: Full IMAGE SUGGESTION description (often 20-30 words)
-            
+            description: Full image description from the IMAGE tag.
+
         Returns:
-            Short, specific search query optimized for image search.
+            Short English search query (5-7 words, no quotes, no Vietnamese).
         """
         try:
             self.prompt_logger.log(
@@ -71,125 +178,80 @@ class IllustratorAgent:
                 context_label=f"Query builder | {description[:40]}",
             )
             response = self.llm.invoke(
-                f"Convert this image description into a short, specific Google Image search query "
-                f"(5-7 words max, English, no quotes).\n"
-                f"Focus on the KEY VISUAL ELEMENT only.\n\n"
-                f"Description: {description}\n\n"
-                f"Examples:\n"
-                f"- 'Diagram showing chess piece movements on board' → 'chess pieces movement diagram'\n"
-                f"- 'Heisenberg uncertainty principle position momentum relationship' → "
-                f"'Heisenberg uncertainty principle diagram physics'\n\n"
-                f"Query:"
+                "Convert this image description into a short, specific Google Image "
+                "search query (5-7 words max, English only, no quotes).\n"
+                "Focus on the KEY VISUAL ELEMENT only — ignore structural details.\n\n"
+                "Description: " + description + "\n\n"
+                "Good examples:\n"
+                "  'Diagram showing chess piece movements on board' → 'chess pieces movement diagram'\n"
+                "  'Heisenberg uncertainty principle relationship' → 'Heisenberg uncertainty principle physics'\n"
+                "  'Kiến trúc microservices với API gateway' → 'microservices architecture API gateway'\n\n"
+                "Bad examples (do NOT do this):\n"
+                "  Adding quotes around the query\n"
+                "  Including Vietnamese words\n"
+                "  Repeating the full description verbatim\n\n"
+                "Query:"
             )
-            query = response.content.strip()  # type: ignore
+            query = str(response.content).strip()
             logger.info(f"Optimized query: '{description[:40]}...' → '{query}'")
             return query
         except Exception as e:
             logger.warning(f"Query optimization failed: {e}")
             return ' '.join(description.split()[:6])
 
+    def translate_caption(self, caption: str) -> str:
+        """
+        Translate an image caption to Vietnamese for use in the PDF figure block.
 
-    def translate_caption(self, english_description: str) -> str:
-        """
-        Translate image description from English to Vietnamese for caption.
-        
+        Skips the LLM call if the caption already contains Vietnamese diacritic
+        characters (BUG-09 fix) — Writer generates titles in Vietnamese by default,
+        so translation is only needed for purely English descriptions.
+
         Args:
-            english_description: Original English description from IMAGE SUGGESTION tag
-            
+            caption: Caption string (may be Vietnamese or English).
+
         Returns:
-            Vietnamese caption string, or original on error.
+            Vietnamese caption string, or the original on error.
         """
+        # Fast path — skip LLM call if already Vietnamese
+        if _is_vietnamese(caption):
+            logger.debug(f"Caption already Vietnamese — skipping translation: '{caption[:40]}'")
+            return caption
+
         try:
             response = self.llm.invoke(
-                f"Translate this image caption to Vietnamese. "
-                f"Return ONLY the translation, no explanation:\n\n{english_description}"
+                "Translate this image caption to Vietnamese. "
+                "Return ONLY the translation, no explanation:\n\n" + caption
             )
-            translated = response.content.strip()  # type: ignore
-            logger.info(f"Caption translated: '{english_description[:40]}' → '{translated[:40]}'")
+            translated = str(response.content).strip()
+            logger.info(f"Caption translated: '{caption[:40]}' → '{translated[:40]}'")
             return translated
         except Exception as e:
             logger.warning(f"Caption translation failed: {e}")
-            return english_description
-
-
-    def generate_image_openai(self, description: str) -> str:
-            """
-            Generate an educational diagram via OpenAI DALL-E 3.
-            Reuses the project-wide OPENAI_API_KEY (same key as Writer/Reviewer agents).
-
-            Flow:
-                1. Call DALL-E 3 → receive temporary CDN URL (TTL ~1 hour)
-                2. Download image bytes via requests.get (timeout=15s)
-                3. Resize to fit A4 (IMAGE_MAX_WIDTH x IMAGE_MAX_HEIGHT)
-                4. Save as PNG to IMAGE_OUTPUT_DIR
-                5. Return local path string, or "" on any failure → triggers SEARCH fallback
-
-            Args:
-                description: Image suggestion text from Writer (already in English)
-
-            Returns:
-                Absolute path string to saved PNG, or "" on failure.
-            """
-            if not OPENAI_API_KEY:
-                logger.warning("OPENAI_API_KEY not set — cannot generate image, triggering fallback")
-                return ""
-
-            try:
-                client = OpenAI(api_key=OPENAI_API_KEY)
-                sanitized = self.sanitize_description_for_dalle(description)
-                response = client.images.generate(
-                    model="dall-e-3",
-                    prompt=(
-                        f"An educational illustration for a university textbook. "
-                        f"Clean, professional style. White or very light background. "
-                        f"Conceptual and visually engaging — NOT a technical diagram with boxes and arrows. "
-                        f"No text, no labels, no captions inside the image. "
-                        f"Topic: {sanitized}"
-                    ),
-                    size="1024x1024",
-                    quality="standard",
-                    n=1,
-                )
-
-                image_url = response.data[0].url #type: ignore
-                if not image_url:
-                    logger.warning("DALL-E 3 returned empty URL — triggering fallback")
-                    return ""
-
-                # Download image — timeout=15s to handle CDN TTL safely
-                dl_response = requests.get(image_url, timeout=15)
-                if dl_response.status_code != 200:
-                    logger.warning(
-                        f"DALL-E 3 image download failed "
-                        f"({dl_response.status_code}) — triggering fallback"
-                    )
-                    return ""
-
-                img = Image.open(io.BytesIO(dl_response.content)).convert("RGB")
-                img.thumbnail((IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT))
-
-                uid = uuid.uuid4().hex[:12]
-                IMAGE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-                local_path: Path = IMAGE_OUTPUT_DIR / f"gen_{uid}.png"
-                img.save(local_path, "PNG")
-
-                logger.info(f"✓ DALL-E 3 image saved: {local_path.name}")
-                return str(local_path)
-
-            except Exception as e:
-                logger.warning(f"DALL-E 3 generation failed ({e}) — triggering fallback")
-                return ""
-
+            return caption
 
     def sanitize_description_for_dalle(self, description: str) -> str:
         """
-        Loại bỏ các enumeration label trong description trước khi gửi DALL-E.
-        Giữ lại ý nghĩa cấu trúc, bỏ tên cụ thể mà model sẽ cố render thành text.
+        Rewrite an image description for DALL-E by removing specific enumeration
+        labels while preserving structural meaning.
 
-        Ví dụ:
-        "OSI model with layers (Physical, Data Link, Network, Transport,
-        Session, Presentation, Application)"
-        → "OSI model showing 7 distinct stacked layers with arrows"
+        DALL-E attempts to render text labels it recognises in the image, which
+        produces cluttered outputs with visible text artifacts. Replacing named
+        items (layer names, node labels, step titles) with structural counts
+        (e.g. "7 stacked layers") avoids this while keeping the diagram intent.
+
+        Example:
+            "OSI model with layers (Physical, Data Link, Network, Transport,
+             Session, Presentation, Application)"
+            → "OSI model showing 7 distinct stacked layers with directional arrows"
+
+        Falls back to the original description on LLM error.
+
+        Args:
+            description: Raw image description from the IMAGE tag.
+
+        Returns:
+            Rewritten description safe for DALL-E prompt injection.
         """
         try:
             self.prompt_logger.log(
@@ -198,133 +260,239 @@ class IllustratorAgent:
                 context_label=f"Sanitize | {description[:40]}",
             )
             response = self.llm.invoke(
-                f"Rewrite this image description for a diagram generator. "
-                f"REMOVE all specific names, labels, and enumerations (e.g. layer names, "
-                f"step names, node names). REPLACE them with structural descriptions "
-                f"(e.g. '7 stacked layers', '4 connected nodes', '3 recursive levels'). "
-                f"Keep the overall structure and flow. Return ONLY the rewritten description.\n\n"
-                f"Original: {description}"
+                "Rewrite this image description for DALL-E. "
+                "Replace all specific names, labels, and enumerations with structural "
+                "counts (e.g. '7 stacked layers', '4 connected nodes', '3 steps'). "
+                "Keep overall structure and flow. Return ONLY the rewritten description.\n\n"
+                "Original: " + description
             )
-            sanitized = response.content.strip()  # type: ignore
+            sanitized = str(response.content).strip()
             logger.info(f"Description sanitized: '{description[:50]}' → '{sanitized[:50]}'")
             return sanitized
         except Exception as e:
             logger.warning(f"Description sanitize failed ({e}), using original")
             return description
 
+    def route_image_request(self, description: str) -> str:
+        """
+        Classify an image description into one of three acquisition routes.
+
+        Classification categories:
+            SEARCH  — real-world entities that exist as photographs or official
+                      assets: logos, product photos, maps, UI screenshots.
+            DRAW    — illustrative or artistic concepts with no precise structure:
+                      metaphors, abstract ideas, atmosphere, non-technical scenes.
+            DIAGRAM — technical structures requiring precise spatial layout:
+                      flowcharts, architecture diagrams, layer models, graphs,
+                      decision trees, circuit schematics.
+
+        Defaults to 'SEARCH' on JSON parse error or unexpected LLM output.
+
+        Args:
+            description: English image description from the IMAGE tag.
+
+        Returns:
+            One of: 'SEARCH', 'DRAW', 'DIAGRAM'.
+        """
+        # Prompt defined at call site (not module level) because it contains
+        # a {description} placeholder that must be formatted per call.
+        # textwrap.dedent removes the method-body indentation from the string.
+        prompt = textwrap.dedent("""
+            Classify this image description for an educational textbook.
+            Choose the category that best matches the PRIMARY visual intent.
+
+            SEARCH — real entities with an authoritative visual form:
+              e.g. "Docker whale logo", "IBM quantum computer photo", "Vietnam map"
+
+            DRAW — illustrative/artistic concept, no precise layout needed:
+              e.g. "DevOps culture collaboration scene", "abstract neural network art",
+                   "metaphor of data flowing like water"
+
+            DIAGRAM — technical structure requiring precise spatial layout:
+              e.g. "OSI 7-layer model", "microservices architecture", "binary search tree",
+                   "gradient descent loss curve", "CNN convolution layer diagram"
+
+            Respond ONLY with one of these JSON objects — no extra text:
+              {{"action": "SEARCH"}}
+              {{"action": "DRAW"}}
+              {{"action": "DIAGRAM"}}
+
+            Description: {description}
+        """).strip()
+
+        try:
+            self.prompt_logger.log(
+                system_prompt=prompt.split("Description:")[0].strip(),
+                user_prompt=f"Description: {description}",
+                context_label=f"Router | {description[:50]}",
+            )
+            response = self.llm.invoke(prompt.format(description=description))
+            data   = json.loads(str(response.content).strip())
+            action = data.get("action", "SEARCH").upper()
+            if action not in ("SEARCH", "DRAW", "DIAGRAM"):
+                action = "SEARCH"
+            logger.info(f"Router → {action}: '{description[:50]}'")
+            return action
+
+        except Exception as e:
+            logger.warning(f"Router failed ({e}), defaulting to SEARCH")
+            return "SEARCH"
+
+    # ------------------------------------------------------------------
+    # Image acquisition methods
+    # ------------------------------------------------------------------
+
+    def generate_image_openai(self, description: str) -> str:
+        """
+        Generate an educational illustration via OpenAI DALL-E 3.
+
+        Uses the project-wide OPENAI_API_KEY (same key as Writer/Reviewer).
+
+        Flow:
+            1. Sanitize description (remove enumeration labels)
+            2. Call DALL-E 3 → receive temporary CDN URL (TTL ~1 hour)
+            3. Download image bytes (timeout=15s)
+            4. Resize to A4 constraints and save as PNG
+            5. Return absolute local path, or "" on any failure
+
+        An empty string return triggers automatic fallback to SEARCH in
+        illustrate_content().
+
+        Args:
+            description: English image description from the IMAGE tag.
+
+        Returns:
+            Absolute path string to the saved PNG, or "" on any failure.
+        """
+        if not OPENAI_API_KEY:
+            logger.warning("OPENAI_API_KEY not set — cannot generate image, triggering fallback")
+            return ""
+
+        try:
+            client    = OpenAI(api_key=OPENAI_API_KEY)
+            sanitized = self.sanitize_description_for_dalle(description)
+
+            response = client.images.generate(
+                model="dall-e-3",
+                prompt=(
+                    "An educational illustration for a university textbook. "
+                    "Clean, professional style. White or very light background. "
+                    "Conceptual and visually engaging — NOT a technical diagram with boxes and arrows. "
+                    "No text, no labels, no captions inside the image. "
+                    "Topic: " + sanitized
+                ),
+                size="1024x1024",
+                quality="standard",
+                n=1,
+            )
+
+            image_url = response.data[0].url  # type: ignore
+            if not image_url:
+                logger.warning("DALL-E 3 returned empty URL — triggering fallback")
+                return ""
+
+            # Download — timeout=15s to handle CDN TTL safely
+            dl_response = requests.get(image_url, timeout=15)
+            if dl_response.status_code != 200:
+                logger.warning(
+                    f"DALL-E 3 image download failed "
+                    f"({dl_response.status_code}) — triggering fallback"
+                )
+                return ""
+
+            img = Image.open(io.BytesIO(dl_response.content)).convert("RGB")
+            img.thumbnail((IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT))
+
+            uid        = uuid.uuid4().hex[:12]
+            IMAGE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+            local_path: Path = IMAGE_OUTPUT_DIR / f"gen_{uid}.png"
+            img.save(local_path, "PNG")
+
+            logger.info(f"✓ DALL-E 3 image saved: {local_path.name}")
+            return str(local_path)
+
+        except Exception as e:
+            logger.warning(f"DALL-E 3 generation failed ({e}) — triggering fallback")
+            return ""
 
     def find_image_urls(self, query: str) -> list[str]:
         """
-        Find all valid image URLs from Google Images for a given query.
- 
-        Validates each candidate for format, protocol, extension, and domain
-        but does NOT attempt to download — callers handle retry on download failure.
- 
+        Search Google Images via Serper and return a list of validated URLs.
+
+        Validates each candidate URL for protocol, file extension, and domain
+        without downloading — callers handle per-URL download retry.
+
         Validation pipeline per candidate:
-        1. URL must be a non-empty string
-        2. Must start with http:// or https://
-        3. Extension must not be in REJECTED_EXTENSIONS
-        4. Domain must not be in REJECTED_DOMAINS
- 
+            1. Must be a non-empty string
+            2. Must start with http:// or https://
+            3. Extension must not be in _REJECTED_EXTENSIONS
+            4. Domain must not be in _REJECTED_DOMAINS
+
         Args:
-            query: Raw image description (will be compressed internally via LLM)
- 
+            query: Raw image description — compressed internally via
+                   build_image_query() before sending to Serper.
+
         Returns:
-            List of validated URLs in ranked order (Serper relevance rank preserved).
+            List of validated URLs in Serper relevance rank order.
             Empty list if API unavailable, no results, or all candidates rejected.
         """
         if not self.api_key:
             logger.warning("SERPER_API_KEY not configured — skipping image search")
             return []
- 
+
         optimized_query = self.build_image_query(query)
         logger.info(f"Searching Google Images for: '{optimized_query}'")
- 
-        url = "https://google.serper.dev/images"
-        headers = {
-            "X-API-KEY": self.api_key,
-            "Content-Type": "application/json",
-        }
-        payload = {"q": optimized_query, "num": 5}
- 
-        # File extensions that cannot be rendered by Typst/Pandoc or cause parse errors
-        REJECTED_EXTENSIONS = (
-            '.svg',    # vector — Typst does not support SVG natively
-            '.webp',   # lossy format — inconsistent Pillow support across versions
-            '.gif',    # animated — only first frame usable, unexpected behavior
-            '.shtml',  # server-side HTML, not an image
-            '.html',   # HTML page returned as image URL
-            '.php',    # dynamic PHP page, rarely an actual image
-            '.asp',    # ASP page
-            '.aspx',   # ASPX page
-            '.cfm',    # ColdFusion page
-        )
- 
-        # Domains that consistently block direct image downloads (403/401)
-        # or serve low-quality/watermarked images
-        REJECTED_DOMAINS = (
-            'wikipedia.org',       # images often redirect or require attribution
-            'wikimedia.org',       # same as above
-            'researchgate.net',    # 403 on all direct downloads
-            'shutterstock.com',    # watermarked
-            'gettyimages.com',     # watermarked
-            'istockphoto.com',     # watermarked
-            'alamy.com',           # watermarked
-            'dreamstime.com',      # watermarked
-            'stock.adobe.com',     # watermarked
-            'pond5.com',           # watermarked
-            'depositphotos.com',   # watermarked
-        )
- 
+
+        url     = "https://google.serper.dev/images"
+        headers = {"X-API-KEY": self.api_key, "Content-Type": "application/json"}
+        payload = {"q": optimized_query, "num": 6}
+
         try:
             response = requests.post(url, headers=headers, json=payload, timeout=10)
             response.raise_for_status()
- 
+
             images_results = response.json().get("images", [])
- 
             if not images_results:
                 logger.warning(f"No images returned by Serper for '{optimized_query[:40]}'")
                 return []
- 
+
             valid_urls: list[str] = []
- 
-            for i, candidate in enumerate(images_results[:5]):
+
+            for i, candidate in enumerate(images_results[:6]):
                 image_url = candidate.get("imageUrl", "")
- 
-                # Check 1: must be a non-empty string
+
+                # Check 1 — non-empty string
                 if not image_url or not isinstance(image_url, str):
                     logger.debug(f"Candidate {i+1}: missing or invalid URL — skipping")
                     continue
- 
-                # Check 2: must use http/https
+
+                # Check 2 — http/https protocol
                 if not image_url.startswith(('http://', 'https://')):
                     logger.debug(f"Candidate {i+1}: unsupported protocol — skipping")
                     continue
- 
-                # Check 3: extension not in blocklist
-                if any(image_url.lower().endswith(ext) for ext in REJECTED_EXTENSIONS):
-                    logger.warning(
-                        f"Candidate {i+1}: rejected extension — {image_url[:60]}"
-                    )
+
+                # Check 3 — extension blocklist
+                if any(image_url.lower().endswith(ext) for ext in _REJECTED_EXTENSIONS):
+                    logger.warning(f"Candidate {i+1}: rejected extension — {image_url[:60]}")
                     continue
- 
-                # Check 4: domain not in blocklist
+
+                # Check 4 — domain blocklist
                 parsed = urlparse(image_url)
-                if any(domain in parsed.netloc for domain in REJECTED_DOMAINS):
+                if any(domain in parsed.netloc for domain in _REJECTED_DOMAINS):
                     logger.warning(
                         f"Candidate {i+1}: blocked domain '{parsed.netloc}' — skipping"
                     )
                     continue
- 
+
                 valid_urls.append(image_url)
                 logger.debug(f"Candidate {i+1} validated: {image_url[:60]}")
- 
+
             logger.info(
                 f"Validation complete: {len(valid_urls)}/5 candidates passed "
                 f"for '{optimized_query[:40]}'"
             )
             return valid_urls
- 
+
         except requests.exceptions.Timeout:
             logger.error(f"Serper request timed out for '{optimized_query[:40]}'")
             return []
@@ -334,105 +502,103 @@ class IllustratorAgent:
         except Exception as e:
             logger.error(f"Unexpected error in find_image_urls: {e}", exc_info=True)
             return []
- 
- 
+
     def find_image_url(self, query: str) -> str:
         """
-        Backward-compatible wrapper around find_image_urls().
- 
-        Returns the first validated URL, or empty string if none found.
-        Prefer using find_image_urls() directly when retry-on-download is needed.
- 
+        Backward-compatible wrapper: return the first validated URL or "".
+
+        Prefer find_image_urls() directly when retry-on-download-failure is needed.
+
         Args:
-            query: Raw image description
- 
+            query: Raw image description.
+
         Returns:
             First validated image URL, or "" if none available.
         """
         urls = self.find_image_urls(query)
         return urls[0] if urls else ""
-    
+
+    # ------------------------------------------------------------------
+    # Main orchestration
+    # ------------------------------------------------------------------
+
     def illustrate_content(self, content: str) -> str:
         """
-        Scan content for image tags and replace with Pandoc Markdown figure blocks.
- 
-        Supported tag formats:
-            New:     > [IMAGE: Short title | Detailed English description]
-            Legacy:  > [IMAGE SUGGESTION: Description]  (auto-converted on-the-fly)
- 
-        Processing pipeline per tag:
-        1. Parse title + description from tag
-        2. Route to DRAW / DIAGRAM / SEARCH via LLM router
-        3. DRAW  → DALL-E 3 generation, fallback to SEARCH on failure
-           DIAGRAM → SEARCH directly (no DALL-E attempt)
-           SEARCH  → Serper → download with retry across all validated candidates
-        4. Build Pandoc figure block with Vietnamese caption
-           Caption source: TITLE (preferred, short) → fallback translate DESCRIPTION
- 
+        Process all image tags in `content` and replace them with figure blocks.
+
+        Supported input formats:
+            Current:  > [IMAGE: Short title | Detailed English description]
+            Legacy:   > [IMAGE SUGGESTION: Description]  (auto-converted on-the-fly)
+
+        Per-tag pipeline:
+            1. Parse title and description from the tag
+            2. Route to DRAW / DIAGRAM / SEARCH via route_image_request()
+            3. Acquire image (DALL-E or Serper + download with candidate retry)
+            4. Translate title to Vietnamese (skip if already Vietnamese)
+            5. Build Pandoc Markdown figure block with relative path
+
+        Tags for which no image could be acquired are silently removed to
+        prevent broken `> [IMAGE: ...]` placeholders appearing in the PDF.
+
         Args:
-            content: Markdown content with image tags
- 
+            content: Markdown section content containing image tags.
+
         Returns:
-            Content with tags replaced by Pandoc figure blocks.
-            Tags with no successful image are removed (empty string replacement).
+            Content with all image tags replaced by figure blocks (or removed).
         """
-        # ── Backward compat: convert legacy tags to new format ──────────────────
+        # -- Backward compatibility: convert legacy tags to current format ------
         OLD_PATTERN = r"> \[IMAGE SUGGESTION: (.*?)\]"
         old_matches = re.findall(OLD_PATTERN, content)
         if old_matches:
-            logger.info(
-                f"Found {len(old_matches)} legacy IMAGE SUGGESTION tag(s) — converting"
-            )
+            logger.info(f"Found {len(old_matches)} legacy IMAGE SUGGESTION tag(s) — converting")
             for desc in old_matches:
                 old_tag = f"> [IMAGE SUGGESTION: {desc}]"
-                # Use same text for both title and description as best-effort fallback
+                # Use the description as both title and description (best-effort)
                 content = content.replace(old_tag, f"> [IMAGE: {desc} | {desc}]")
- 
-        # ── Find all new-format tags ─────────────────────────────────────────────
+
+        # -- Find all current-format tags --------------------------------------
         pattern = r"> \[IMAGE: (.*?)\]"
         matches = re.findall(pattern, content)
- 
+
         if not matches:
             logger.debug("No image tags found in content")
             return content
- 
+
         logger.info(f"Found {len(matches)} image tag(s) to process")
-        new_content = content
+        new_content     = content
         images_inserted = 0
- 
+
         for match in matches:
-            old_tag = f"> [IMAGE: {match}]"
+            old_tag    = f"> [IMAGE: {match}]"
             local_path = ""
- 
-            # ── Parse title | description ────────────────────────────────────────
-            # Format: "Short title | Detailed English description"
-            # Fallback (no pipe): treat entire match as description, title empty
+
+            # -- Parse title | description -------------------------------------
+            # Format: "Short Vietnamese/English title | Detailed English description"
+            # Fallback when no pipe: treat entire match as description, title empty.
             if "|" in match:
                 title, description = match.split("|", 1)
-                title = title.strip()
+                title       = title.strip()
                 description = description.strip()
             else:
-                title = ""
+                title       = ""
                 description = match.strip()
- 
-            label = title if title else description  # for logging
- 
-            # ── Route: DRAW / DIAGRAM / SEARCH ───────────────────────────────────
+
+            label = title if title else description  # used only for log messages
+
+            # -- Route ---------------------------------------------------------
             action = self.route_image_request(description)
- 
-            # DRAW → DALL-E 3, fallback to SEARCH if generation fails
+
+            # DRAW → DALL-E 3, with automatic fallback to SEARCH on failure
             if action == "DRAW":
                 local_path = self.generate_image_openai(description)
                 if not local_path:
-                    logger.info(
-                        f"DRAW failed — falling back to SEARCH for: '{label[:50]}'"
-                    )
+                    logger.info(f"DRAW failed — falling back to SEARCH: '{label[:50]}'")
                     action = "SEARCH"
- 
-            # DIAGRAM and SEARCH (+ DRAW fallback) → Serper with retry-on-download
+
+            # DIAGRAM and SEARCH (including DRAW fallback) → Serper + download retry
             if action in ("SEARCH", "DIAGRAM"):
                 candidate_urls = self.find_image_urls(description)
- 
+
                 for attempt, image_url in enumerate(candidate_urls, 1):
                     local_path = download_and_convert_image(image_url, IMAGE_OUTPUT_DIR)
                     if local_path:
@@ -445,30 +611,35 @@ class IllustratorAgent:
                         f"✗ Download failed candidate "
                         f"{attempt}/{len(candidate_urls)}: {image_url[:60]}"
                     )
- 
-            # ── Build Pandoc figure block ─────────────────────────────────────────
+
+                # All Serper candidates exhausted — fall back to DALL-E DRAW.
+                # This covers two cases: Serper returned no valid URLs at all,
+                # or every downloaded URL failed content-type / Pillow checks.
+                if not local_path:
+                    logger.info(
+                        f"All Serper candidates failed for '{label[:50]}' "
+                        f"— falling back to DALL-E DRAW"
+                    )
+                    local_path = self.generate_image_openai(description)
+            # -- Build figure block --------------------------------------------
             if local_path:
-                # Caption: use TITLE (short, already meaningful) if available.
-                # Translate to Vietnamese — title may already be Vietnamese.
-                if title:
-                    vietnamese_caption = self.translate_caption(title)
-                else:
-                    vietnamese_caption = self.translate_caption(description)
- 
-                # Relative path from BASE_DIR — required by Pandoc when CWD = BASE_DIR.
-                # Typst sandbox reads images relative to the .md file's directory,
-                # so this must be a consistent relative path, not absolute.
-                rel_path = Path(local_path).relative_to(BASE_DIR)
+                # Caption: prefer TITLE (short, often already Vietnamese).
+                # translate_caption() skips the LLM call when already Vietnamese.
+                vietnamese_caption = self.translate_caption(title if title else description)
+
+                # Relative path from BASE_DIR — Typst sandbox requires paths
+                # relative to the document root, not absolute system paths.
+                rel_path             = Path(local_path).relative_to(BASE_DIR)
                 img_path_for_markdown = str(rel_path).replace("\\", "/")
- 
-                # Pandoc Markdown figure syntax — engine-agnostic (Typst, xelatex).
-                # Pandoc converts this to #figure() in Typst output.
-                # width=70% fits within A4 margins and leaves room for the caption.
+
+                # Pandoc Markdown figure syntax — Pandoc converts this to
+                # #figure() in Typst output. width=70% fits A4 margins and
+                # leaves room for the caption without overflow.
                 figure_block = (
                     "\n\n"
                     f"![{vietnamese_caption}]({img_path_for_markdown}){{width=70%}}\n\n"
                 )
- 
+
                 new_content = new_content.replace(old_tag, figure_block)
                 images_inserted += 1
                 logger.info(
@@ -476,162 +647,147 @@ class IllustratorAgent:
                     f"{Path(local_path).name}"
                 )
             else:
-                # All candidates exhausted — remove tag to avoid broken placeholder in PDF
+                # All candidates exhausted — remove tag rather than leaving a
+                # broken placeholder that would appear verbatim in the PDF.
                 new_content = new_content.replace(old_tag, "")
                 logger.warning(f"✗ No image found for: '{label[:50]}'")
- 
-        logger.info(
-            f"Image insertion complete: {images_inserted}/{len(matches)} successful"
-        )
+
+        logger.info(f"Image insertion complete: {images_inserted}/{len(matches)} successful")
         return new_content
- 
-    def route_image_request(self, description: str) -> str:
-        """Returns 'SEARCH' or 'DRAW' """
-        import json
-
-        PROMPT = """Classify this image description for an educational textbook.
-
-            - SEARCH: real entities — logos, photos, maps, screenshots, real products
-            - DRAW: illustrative/artistic concept with no precise structure needed
-            (metaphors, abstract ideas, atmosphere, non-technical scenarios)
-            - DIAGRAM: any technical structure requiring precise layout
-            (flowcharts, architecture diagrams, layer models, graphs, trees, circuits)
-
-            Respond ONLY: {{"action": "SEARCH"}} or {{"action": "DRAW"}} or {{"action": "DIAGRAM"}}
-
-            Description: {description} """
-        try:
-            self.prompt_logger.log(
-                system_prompt=PROMPT.split("Description:")[0].strip(),
-                user_prompt=f"Description: {description}",
-                context_label=f"Router | {description[:50]}",
-            )
-            response = self.llm.invoke(PROMPT.format(description=description))
-            data = json.loads(response.content.strip())  # type: ignore
-            action = data.get("action", "SEARCH").upper()
-            if action not in ("SEARCH", "DRAW", "DIAGRAM"):
-                action = "SEARCH"
-            logger.info(f"Router -> {action}: '{description[:50]}...'")
-            return action
-            
-        except Exception as e:
-            logger.warning(f"Router failed ({e}), defaulting to SEARCH")
-            return "SEARCH"
 
 
+# ---------------------------------------------------------------------------
+# Module-level image processing function
+# ---------------------------------------------------------------------------
 
 def download_and_convert_image(image_url: str, output_dir: Path) -> str:
     """
-    Download remote image, resize to fit A4 page, convert to PNG, save locally.
-    
-    Resize constraints (IMAGE_MAX_WIDTH x IMAGE_MAX_HEIGHT):
-    - Ensures image fits within A4 page margins
-    - Ensures caption stays on same page as image
-    - Uses thumbnail() which preserves aspect ratio
-    
+    Download a remote image, resize to A4 constraints, convert to PNG, save locally.
+
+    Processing pipeline:
+        1. HTTP GET with stream=True (headers-only check before body download)
+        2. Reject non-image Content-Type and SVG (not supported by Typst)
+        3. Open with Pillow and resize via thumbnail() (preserves aspect ratio)
+        4. Convert to RGB if needed (eliminates RGBA/palette render failures)
+        5. Save as PNG with MD5-hash filename (deduplication across sections)
+
     Args:
-        image_url: Remote image URL
-        output_dir: Local directory to save the processed image
-        
+        image_url:  Remote image URL to download.
+        output_dir: Local directory to save the processed PNG.
+
     Returns:
-        Local file path (str) if success, empty string if failed.
+        Absolute path string to the saved PNG, or "" on any failure.
     """
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (compatible; TextbookBot/1.0)'
-        }
+        headers  = {'User-Agent': 'Mozilla/5.0 (compatible; TextbookBot/1.0)'}
         response = requests.get(image_url, headers=headers, timeout=10, stream=True)
-        
+
         if response.status_code != 200:
             logger.warning(f"Image download failed ({response.status_code}): {image_url[:60]}")
             return ""
-        
-        # Reject non-image content types
+
+        # Reject non-image content types (e.g. HTML error pages returned as 200)
         content_type = response.headers.get('Content-Type', '')
         if not content_type.startswith('image/'):
-            logger.warning(f"URL returned non-image content-type '{content_type}': {image_url[:60]}")
+            logger.warning(
+                f"URL returned non-image content-type '{content_type}': {image_url[:60]}"
+            )
             return ""
-        
-        # Reject SVG (xelatex không hỗ trợ)
+
+        # Reject SVG — Typst does not support SVG natively; conversion at
+        # compile time is unreliable across platforms.
         if 'svg' in content_type or image_url.lower().endswith('.svg'):
-            logger.warning(f"SVG not supported by xelatex, skipping: {image_url[:60]}")
+            logger.warning(f"SVG not supported by Typst — skipping: {image_url[:60]}")
             return ""
-        
-        # Load image với Pillow
+
         img_bytes = io.BytesIO(response.content)
-        img = Image.open(img_bytes)
-        
+        img       = Image.open(img_bytes)
         original_size = img.size
-        
-       
+
+        # Resize if the image exceeds A4 margins.
+        # thumbnail() shrinks proportionally — never upscales.
         if img.width > IMAGE_MAX_WIDTH or img.height > IMAGE_MAX_HEIGHT:
-           
             try:
-                resample_filter = Image.Resampling.LANCZOS  
+                resample_filter = Image.Resampling.LANCZOS   # Pillow ≥ 9.1
             except AttributeError:
-                resample_filter = Image.ANTIALIAS  # type: ignore
+                resample_filter = Image.ANTIALIAS            # type: ignore  # Pillow < 9.1
             img.thumbnail((IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT), resample_filter)
             logger.info(
                 f"Resized image: {original_size} → {img.size} "
-                f"(max {IMAGE_MAX_WIDTH}x{IMAGE_MAX_HEIGHT})"
+                f"(max {IMAGE_MAX_WIDTH}×{IMAGE_MAX_HEIGHT})"
             )
-        
-        # Convert sang RGB PNG (loại bỏ RGBA, palette modes gây lỗi LaTeX)
+
+        # Convert to RGB PNG — eliminates RGBA alpha channels and palette modes
+        # that cause rendering failures in the Typst/Pandoc pipeline.
         if img.mode not in ('RGB', 'L'):
             img = img.convert('RGB')
-        
-        # Tên file từ hash URL — tránh trùng lặp
-        url_hash = hashlib.md5(image_url.encode()).hexdigest()[:12]
+
+        # Hash-based filename prevents re-downloading the same URL across sections
+        url_hash   = hashlib.md5(image_url.encode()).hexdigest()[:12]
         output_dir.mkdir(parents=True, exist_ok=True)
         local_path = output_dir / f"img_{url_hash}.png"
-        
+
         img.save(local_path, 'PNG')
-        logger.info(f"✓ Image saved: {local_path.name} ({img.size[0]}x{img.size[1]}px)")
+        logger.info(f"✓ Image saved: {local_path.name} ({img.size[0]}×{img.size[1]}px)")
         return str(local_path)
-        
+
     except Exception as e:
         logger.warning(f"Failed to download/convert image: {e}")
         return ""
 
 
+# ---------------------------------------------------------------------------
+# LangGraph node entry point
+# ---------------------------------------------------------------------------
+
 def illustrate_section(state: AgentState) -> dict:
     """
-    Illustrator node: Add images to content.
-    
+    Illustrator node: resolve image tags in the current subsection content.
+
+    Reads state["current_content"] (polished Markdown from Reviewer),
+    processes all `> [IMAGE: ...]` tags via IllustratorAgent.illustrate_content(),
+    and returns the updated content with Pandoc figure blocks.
+
+    Graceful degradation:
+        - enable_images=False → strip all image tags, return clean Markdown
+        - Both SERPER and OPENAI keys missing → strip tags, log warning
+        - Per-image failures → tag removed silently, other images unaffected
+
     Workflow integration:
-    - Input: state["current_content"] with image suggestion tags
-    - Output: state["current_content"] with LaTeX figure blocks (or tags removed if failed)
-    
+        Input:  state["current_content"] — polished content from Reviewer
+        Output: state["current_content"] — content with figure blocks
+
     Args:
-        state: Current workflow state
-        
+        state: Current LangGraph workflow state (AgentState TypedDict).
+
     Returns:
-        Partial state update with illustrated content.
+        Partial state update dict with "current_content".
     """
     logger.info("=" * 60)
     logger.info("NODE: Illustrator - Processing image suggestions")
     logger.info("=" * 60)
-    
+
     current_content = state.get("current_content", "")
-    
+
     if not current_content or len(current_content) < 50:
-        logger.info("Content too short - skipping illustration")
+        logger.info("Content too short — skipping illustration")
         return {"current_content": current_content}
+
     enable_images = state.get("enable_images", True)
-    
+
     if not enable_images:
         logger.info("Images disabled by user — removing all image tags")
-        cleaned_content = re.sub(r"> \[IMAGE(?:\s+SUGGESTION)?: .*?\]", "", current_content)
-        return {"current_content": cleaned_content}
+        cleaned = re.sub(r"> \[IMAGE(?:\s+SUGGESTION)?: .*?\]", "", current_content)
+        return {"current_content": cleaned}
 
-    # Graceful degradation: remove tags only if BOTH APIs are unavailable
+    # Graceful degradation when both image APIs are unavailable.
+    # Tags are stripped so the PDF does not contain broken placeholders.
     if not SERPER_API_KEY and not OPENAI_API_KEY:
         logger.warning("No image API configured (SERPER + OPENAI both missing) — removing tags")
-        cleaned_content = re.sub(r"> \[IMAGE(?:\s+SUGGESTION)?: .*?\]", "", current_content)
-        return {"current_content": cleaned_content}
-    
-    agent = IllustratorAgent()
-    illustrated_content = agent.illustrate_content(current_content)
-    
-    return {"current_content": illustrated_content}
+        cleaned = re.sub(r"> \[IMAGE(?:\s+SUGGESTION)?: .*?\]", "", current_content)
+        return {"current_content": cleaned}
 
+    agent               = IllustratorAgent()
+    illustrated_content = agent.illustrate_content(current_content)
+
+    return {"current_content": illustrated_content}

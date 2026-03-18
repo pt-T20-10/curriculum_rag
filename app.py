@@ -61,7 +61,7 @@ st.markdown("""
         color: #721c24;
         border: 1px solid #f5c6cb;
     }
-    
+
     /* Deep Search Style Cards */
     .workflow-card {
         padding: 1rem;
@@ -83,7 +83,7 @@ st.markdown("""
         background-color: #fafafa;
         opacity: 0.7;
     }
-    
+
     /* Curriculum Tree */
     .curriculum-tree {
         font-family: 'Courier New', monospace;
@@ -102,7 +102,7 @@ st.markdown("""
         color: #5f6368;
         padding-left: 1.5rem;
     }
-    
+
     /* Status badges */
     .status-badge {
         display: inline-block;
@@ -114,7 +114,7 @@ st.markdown("""
     .status-completed { background-color: #d4edda; color: #155724; }
     .status-active    { background-color: #fff3cd; color: #856404; }
     .status-pending   { background-color: #e9ecef; color: #6c757d; }
-    
+
     /* Config panel */
     .config-info {
         font-size: 0.82rem;
@@ -157,10 +157,10 @@ st.markdown(
 # ============================================================================
 with st.sidebar:
     st.header("⚙️ Cấu hình")
-    
+
     # --- Nội dung ---
     st.subheader("📖 Nội dung")
-    
+
     num_chapters = st.slider(
         "Số chương",
         min_value=1,
@@ -168,34 +168,37 @@ with st.sidebar:
         value=3,
         help="Số lượng chương trong giáo trình. Nhiều chương hơn → thời gian tạo lâu hơn."
     )
-    
-    min_words_ui = st.slider(
-        "Số từ tối thiểu / mục",
-        min_value=100,
-        max_value=1000,
-        value=300,
-        step=50,
+
+    # Độ dài nội dung — radio thay thế slider min_words.
+    # Mỗi level scale char targets của tất cả section_type theo CONTENT_LEVEL_SCALES
+    # trong state.py. Ước tính số từ dựa trên section type "medium" (phổ biến nhất):
+    #   base chars: 3000 min – 4500 max  |  4.8 chars/từ (tiếng Việt đơn âm tiết)
+    #   Ngắn:       3000×0.55/4.8 ≈ 344  →  4500×0.55/4.8 ≈ 516   → ~350–500 từ
+    #   Trung Bình: 3000×1.0 /4.8 ≈ 625  →  4500×1.0 /4.8 ≈ 938   → ~600–950 từ
+    #   Dài:        3000×1.6 /4.8 ≈ 1000 →  4500×1.6 /4.8 ≈ 1500  → ~1000–1500 từ
+    #   Rất Dài:    3000×2.3 /4.8 ≈ 1438 →  4500×2.3 /4.8 ≈ 2156  → ~1400–2200 từ
+    _level_desc = {
+        "Ngắn":       "~350–500 từ/mục · Trình bày cốt lõi, súc tích",
+        "Trung Bình": "~600–950 từ/mục · Cân bằng lý thuyết và ví dụ",
+        "Dài":        "~1000–1500 từ/mục · Phân tích sâu, nhiều ví dụ",
+        "Rất Dài":    "~1400–2200 từ/mục · Toàn diện, mức học thuật",
+    }
+
+    content_level = st.radio(
+        "Độ dài nội dung",
+        options=["Ngắn", "Trung Bình", "Dài", "Rất Dài"],
+        index=1,   # default: Trung Bình
+        horizontal=True,
         help=(
-            "Số từ tối thiểu cho mỗi mục (1 từ = 1 âm tiết tiếng Việt). "
-            "Hệ thống tự động convert sang ký tự để đo chính xác hơn."
+            "Kiểm soát độ dài và độ sâu của mỗi mục. "
+            "Áp dụng đồng nhất cho tất cả section types (light / medium / deep / applied)."
         )
     )
-    # Convert words → characters internally (Vietnamese avg ≈ 5 chars/word incl. spaces)
-    # User sees intuitive "từ" unit; pipeline receives accurate char count
-    min_chars = min_words_ui * 5
-
     st.markdown(
-        f"""<div class="config-info">
-        ≈ {min_chars} ký tự tối thiểu (tự động convert).<br>
-        Ước tính theo độ sâu nội dung:<br>
-        • light (tổng quan/tóm tắt): ~300–500 từ<br>
-        • medium (giải thích/minh họa): ~600–900 từ<br>
-        • deep (lý thuyết/phân tích): ~900–1300 từ<br>
-        • applied (bài tập/thực hành): ~500–700 từ
-        </div>""",
+        f'<div class="config-info">{_level_desc[content_level]}</div>',
         unsafe_allow_html=True
     )
-    
+
     max_subsections = st.slider(
         "Số mục tối đa / chương",
         min_value=2,
@@ -211,13 +214,13 @@ with st.sidebar:
 
     # --- Hình ảnh ---
     st.subheader("🖼️ Hình ảnh")
-    
+
     enable_images = st.toggle(
         "Chèn hình ảnh minh họa",
         value=True,
         help="Tìm và chèn hình ảnh từ Google Images vào giáo trình. Yêu cầu SERPER_API_KEY."
     )
-    
+
     if enable_images:
         st.markdown(
             '<div class="config-info">✓ Hình ảnh sẽ được tải về, resize và chèn tự động.</div>',
@@ -228,24 +231,23 @@ with st.sidebar:
             '<div class="config-info">✗ Bỏ qua bước tìm hình — giáo trình chỉ có text.</div>',
             unsafe_allow_html=True
         )
-    
+
     st.divider()
-    
+
     # --- Hệ thống ---
     st.subheader("🔧 Hệ thống")
-    
-    # recursion_limit được tính động sau khi biết số subsections thực tế.
-    # Công thức: ingestion(1) + planner(1) + subsections × 7 + publisher(1) + buffer(20%)
-    # 7 steps/subsection = researcher + writer + reviewer + illustrator +
-    #                      check_next_step + update_subsection + (update_chapter mỗi chương)
-    # Ước tính trước khi có curriculum: dùng max_subsections từ slider
-    _est_subs = num_chapters * max_subsections
-    _steps_per_sub = 7 if enable_images else 6
-    _auto_limit = int((2 + _est_subs * _steps_per_sub + 1) * 1.2)
-    
+
+    # recursion_limit tính động trước khi có curriculum thực tế.
+    # Công thức: ingestion(1) + planner(1) + subsections × steps + publisher(1) + buffer(25%)
+    # 9 steps/sub (with images) = researcher + writer + reviewer(×2 max) + illustrator +
+    #                             route_after_review + check_next_step + update_sub/chapter
+    _est_subs      = num_chapters * max_subsections
+    _steps_per_sub = 9 if enable_images else 8   # worst case với MAX_REVISIONS=2
+    _auto_limit    = int((3 + _est_subs * _steps_per_sub) * 1.25)
+
     st.markdown(
         f'<div class="config-info">Recursion limit tự động: <b>{_auto_limit}</b> '
-        f'(dựa trên ~{_est_subs} mục × {_steps_per_sub} steps + 20% buffer)</div>',
+        f'(dựa trên ~{_est_subs} mục × {_steps_per_sub} steps + 25% buffer)</div>',
         unsafe_allow_html=True
     )
     st.divider()
@@ -253,7 +255,7 @@ with st.sidebar:
     if st.session_state.curriculum_structure:
         st.metric("Số chương", st.session_state.current_progress['total_chapters'])
         st.metric("Tổng số mục", st.session_state.current_progress['total_subsections'])
-    
+
     st.divider()
     if st.button("🧹 Xóa Cache & Reset"):
         st.session_state.clear()
@@ -283,13 +285,13 @@ with col2:
             st.session_state.is_running = False
             st.rerun()
 
-# Show current config summary below input
+# Config summary caption below topic input
 if topic:
     img_label = "✓ Có hình ảnh" if enable_images else "✗ Không có hình"
     st.caption(
         f"Cấu hình: **{num_chapters} chương** · "
         f"**≤{max_subsections} mục/chương** · "
-        f"**≥{min_words_ui} ký tự/mục** · "
+        f"**{content_level}** ({_level_desc[content_level].split('·')[0].strip()}) · "
         f"**{img_label}**"
     )
 
@@ -304,22 +306,24 @@ def render_curriculum_tree(curriculum):
         f'<div style="color: #1a73e8; font-weight: 700; margin-bottom: 0.5rem;">'
         f'📘 {curriculum.topic}</div>'
     )
-    
+
     for idx, chapter in enumerate(curriculum.chapters, 1):
         tree_html += f'<div class="chapter-item">├─ Chương {idx}: {chapter.title}</div>'
-        
+
         for sub_idx, subsection in enumerate(chapter.subsections, 1):
-            is_last = sub_idx == len(chapter.subsections)
-            connector = "└─" if is_last else "├─"
-            # Show section_type badge if available
-            stype = getattr(subsection, 'section_type', '')
-            type_badge = f' <span style="color:#aaa;font-size:0.8em">[{stype}]</span>' if stype else ''
+            is_last    = sub_idx == len(chapter.subsections)
+            connector  = "└─" if is_last else "├─"
+            stype      = getattr(subsection, 'section_type', '')
+            type_badge = (
+                f' <span style="color:#aaa;font-size:0.8em">[{stype}]</span>'
+                if stype else ''
+            )
             tree_html += (
                 f'<div class="section-item">'
                 f'│  {connector} {idx}.{sub_idx} {subsection.title}{type_badge}'
                 f'</div>'
             )
-    
+
     tree_html += '</div>'
     return tree_html
 
@@ -327,23 +331,35 @@ def render_curriculum_tree(curriculum):
 def render_workflow_status(stage, status, message):
     """Render workflow stage card (Deep Search style)."""
     icons = {
-        "ingestion":  "🔍",
-        "planner":    "📋",
-        "researcher": "📚",
-        "writer":     "✍️",
-        "reviewer":   "👁️",
-        "illustrator":"🎨",
-        "publisher":  "📦"
+        "ingestion":   "🔍",
+        "planner":     "📋",
+        "researcher":  "📚",
+        "writer":      "✍️",
+        "reviewer":    "👁️",
+        "illustrator": "🎨",
+        "publisher":   "📦",
     }
-    badge_class = {"completed": "status-completed", "active": "status-active", "pending": "status-pending"}
-    badge_text  = {"completed": "✓ Hoàn tất", "active": "⏳ Đang xử lý", "pending": "⏸️ Chờ xử lý"}
-    card_class  = {"completed": "completed", "active": "active", "pending": "pending"}
-    
-    icon   = icons.get(stage, "📌")
-    c_cls  = card_class.get(status, "pending")
-    b_cls  = badge_class.get(status, "status-pending")
-    badge  = badge_text.get(status, "Pending")
-    
+    badge_class = {
+        "completed": "status-completed",
+        "active":    "status-active",
+        "pending":   "status-pending",
+    }
+    badge_text = {
+        "completed": "✓ Hoàn tất",
+        "active":    "⏳ Đang xử lý",
+        "pending":   "⏸️ Chờ xử lý",
+    }
+    card_class = {
+        "completed": "completed",
+        "active":    "active",
+        "pending":   "pending",
+    }
+
+    icon  = icons.get(stage, "📌")
+    c_cls = card_class.get(status, "pending")
+    b_cls = badge_class.get(status, "status-pending")
+    badge = badge_text.get(status, "Pending")
+
     return f'''
     <div class="workflow-card {c_cls}">
         <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -361,66 +377,66 @@ def render_workflow_status(stage, status, message):
 # WORKFLOW EXECUTION
 # ============================================================================
 if start_btn and topic:
-    # Reset session state
+    # Reset session state for new run
     st.session_state.generated_file_path = None
     st.session_state.curriculum_structure = None
     st.session_state.current_progress = {
         "chapter": 0, "subsection": 0,
-        "total_chapters": 0, "total_subsections": 0
+        "total_chapters": 0, "total_subsections": 0,
     }
-    
+
     st.session_state.stop_event.clear()
     stop_signal.clear()
     st.session_state.is_running = True
 
     app = create_workflow()
 
-    # Initial state now includes user config fields
     initial_state = {
         "request": topic,
-        
+
         # User configuration
-        "num_chapters":                  num_chapters,
-        "enable_images":                 enable_images,
-        "min_chars_per_section":         min_chars,
-        "max_subsections_per_chapter":   max_subsections,
-        
-        # Runtime state
-        "rag_context":             "",
-        "current_chapter_index":   0,
+        "num_chapters":                num_chapters,
+        "enable_images":               enable_images,
+        "content_level":               content_level,   # drives char targets via CONTENT_LEVEL_SCALES
+        "min_chars_per_section":       0,               # 0 = use content_level as sole floor
+        "max_subsections_per_chapter": max_subsections,
+
+        # Runtime state — all reset at workflow start
+        "rag_context":              "",
+        "current_chapter_index":    0,
         "current_subsection_index": 0,
-        "revision_number":         0,
-        "review_feedback":         "",
-        "chapter_header_written":  False,
-        "messages":                [],
-        "final_content":           "",
-        "current_content":         ""
+        "revision_number":          0,
+        "review_feedback":          "",
+        "chapter_header_written":   False,
+        "messages":                 [],
+        "final_content":            "",
+        "current_content":          "",
     }
 
     st.divider()
-    
-    progress_container  = st.container()
-    status_container    = st.container()
+
+    progress_container   = st.container()
+    status_container     = st.container()
     curriculum_container = st.container()
-    
+
     workflow_stages = {
         "ingestion":          {"status": "pending", "message": "Thu thập dữ liệu từ web"},
         "planner":            {"status": "pending", "message": "Lập dàn ý giáo trình"},
         "content_generation": {"status": "pending", "message": "Sinh nội dung"},
-        "publisher":          {"status": "pending", "message": "Xuất bản tài liệu"}
+        "publisher":          {"status": "pending", "message": "Xuất bản tài liệu"},
     }
-    
+
     try:
         with progress_container:
             progress_bar  = st.progress(0)
             progress_text = st.empty()
-        
-        step_count = 0
-        total_estimated_steps = 30  # Will be updated after planner completes
-        recursion_limit = _auto_limit   # Start with pre-planner estimate
-        content_started = False
 
-        # Run streaming loop in a background thread so the stop button stays responsive
+        step_count            = 0
+        total_estimated_steps = 30   # updated after planner completes
+        recursion_limit       = _auto_limit
+        content_started       = False
+
+        # Run streaming in a background thread so the stop button stays responsive
         event_q = _queue.Queue()
 
         def _stream_worker(rl=recursion_limit):
@@ -459,7 +475,7 @@ if start_btn and topic:
                 step_count += 1
                 progress = min(step_count / total_estimated_steps, 0.95)
                 progress_bar.progress(progress)
-                
+
                 # === INGESTION ===
                 if key == "ingestion":
                     workflow_stages["ingestion"]["status"] = "completed"
@@ -469,85 +485,75 @@ if start_btn and topic:
                             "ingestion", "completed",
                             f"Thu thập dữ liệu về '{topic}'"
                         ), unsafe_allow_html=True)
-                
+
                 # === PLANNER ===
                 elif key == "planner":
                     workflow_stages["planner"]["status"] = "completed"
                     progress_text.markdown("**Bước 2/4:** Lập dàn ý hoàn tất")
-                    
+
                     plan = value.get("curriculum")
                     if plan:
                         st.session_state.curriculum_structure = plan
-                        
-                        total_chapters     = len(plan.chapters)
-                        total_subsections  = sum(len(ch.subsections) for ch in plan.chapters)
+
+                        total_chapters    = len(plan.chapters)
+                        total_subsections = sum(len(ch.subsections) for ch in plan.chapters)
                         st.session_state.current_progress['total_chapters']    = total_chapters
                         st.session_state.current_progress['total_subsections'] = total_subsections
-                        
-                        # Recalculate with ACTUAL subsection count
-                        # 7 steps/sub = researcher+writer+reviewer+illustrator+check+update_sub+update_chap
-                        steps_per_sub = 7 if enable_images else 6
-                        total_estimated_steps = 3 + (total_subsections * steps_per_sub)
-                        recursion_limit = int(total_estimated_steps * 1.25)  # 25% safety buffer
-                        logger.info(
-                            f"Recursion limit updated: {total_subsections} subsections × "
-                            f"{steps_per_sub} steps × 1.25 = {recursion_limit}"
-                        )
-                        
+
                         with status_container:
                             st.markdown(render_workflow_status(
                                 "planner", "completed",
                                 f"Dàn ý: {plan.topic} ({total_chapters} chương, {total_subsections} mục)"
                             ), unsafe_allow_html=True)
-                        
+
                         with curriculum_container:
                             st.markdown("### 📚 Cấu trúc giáo trình")
                             st.markdown(render_curriculum_tree(plan), unsafe_allow_html=True)
-                
+
                 # === CONTENT GENERATION ===
                 elif key in ["researcher", "writer", "reviewer", "illustrator"]:
                     if not content_started:
                         workflow_stages["content_generation"]["status"] = "active"
                         content_started = True
-                    
+
                     current_state = value
                     chap_idx = current_state.get("current_chapter_index", 0)
                     sub_idx  = current_state.get("current_subsection_index", 0)
-                    
+
                     st.session_state.current_progress['chapter']    = chap_idx + 1
                     st.session_state.current_progress['subsection'] = sub_idx + 1
-                    
+
                     stage_label = {
-                        "researcher": "🔍 Tìm kiếm tài liệu",
-                        "writer":     "✍️ Viết nội dung",
-                        "reviewer":   "👁️ Kiểm tra chất lượng",
-                        "illustrator":"🎨 Chèn hình ảnh"
+                        "researcher":  "🔍 Tìm kiếm tài liệu",
+                        "writer":      "✍️ Viết nội dung",
+                        "reviewer":    "👁️ Kiểm tra chất lượng",
+                        "illustrator": "🎨 Chèn hình ảnh",
                     }.get(key, key)
-                    
+
                     progress_text.markdown(
                         f"**Bước 3/4:** {stage_label} — "
                         f"Chương {chap_idx + 1}, "
                         f"Mục {sub_idx + 1}/{st.session_state.current_progress['total_subsections']}"
                     )
-                
+
                 # === CHECKPOINT NODES ===
                 elif key in ["update_subsection", "update_chapter"]:
                     pass
-                
+
                 # === PUBLISHER ===
                 elif key == "publisher":
                     workflow_stages["content_generation"]["status"] = "completed"
                     workflow_stages["publisher"]["status"] = "active"
-                    
+
                     progress_bar.progress(1.0)
                     progress_text.markdown("**Bước 4/4:** Xuất bản tài liệu...")
-                    
+
                     raw_path = value.get("final_filepath")
-                    
+
                     if raw_path:
                         abs_md_path  = os.path.abspath(raw_path)
                         abs_pdf_path = abs_md_path.replace(".md", ".pdf")
-                        
+
                         if os.path.exists(abs_pdf_path):
                             st.session_state.generated_file_path = abs_pdf_path
                             workflow_stages["publisher"]["status"] = "completed"
@@ -556,7 +562,7 @@ if start_btn and topic:
                                     "publisher", "completed", "Xuất bản PDF thành công"
                                 ), unsafe_allow_html=True)
                             st.balloons()
-                            
+
                         elif os.path.exists(abs_md_path):
                             st.session_state.generated_file_path = abs_md_path
                             workflow_stages["publisher"]["status"] = "completed"
@@ -581,18 +587,18 @@ if start_btn and topic:
 # ============================================================================
 if st.session_state.generated_file_path:
     file_path = st.session_state.generated_file_path
-    
+
     if os.path.exists(file_path):
         st.divider()
         st.markdown(
             '<div class="success-box">🎉 <strong>Giáo trình của bạn đã sẵn sàng!</strong></div>',
             unsafe_allow_html=True
         )
-        
-        file_name  = os.path.basename(file_path)
-        mime_type  = "application/pdf" if file_path.endswith(".pdf") else "text/markdown"
-        file_size  = os.path.getsize(file_path) / 1024
-        
+
+        file_name = os.path.basename(file_path)
+        mime_type = "application/pdf" if file_path.endswith(".pdf") else "text/markdown"
+        file_size = os.path.getsize(file_path) / 1024
+
         col1, col2, col3 = st.columns([2, 2, 2])
         with col1:
             st.metric("📄 File", file_name.split('_')[0][:20] + "...")
@@ -600,9 +606,9 @@ if st.session_state.generated_file_path:
             st.metric("📦 Kích thước", f"{file_size:.1f} KB")
         with col3:
             st.metric("📑 Format", "PDF" if file_path.endswith(".pdf") else "Markdown")
-        
+
         st.divider()
-        
+
         col_download, col_path = st.columns([1, 2])
         with col_download:
             with open(file_path, "rb") as f:
