@@ -185,7 +185,7 @@ def extract_pdf_text(url: str) -> str:
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
             pages_text = []
             for page in doc:
-                page_text = page.get_text()
+                page_text = page.get_text() # type: ignore
                 if page_text.strip(): # type: ignore
                     pages_text.append(page_text)
             doc.close()

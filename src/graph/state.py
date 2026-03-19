@@ -308,6 +308,19 @@ class AgentState(TypedDict):
     section types via CONTENT_LEVEL_SCALES multiplier.
     One of: 'Ngắn', 'Trung Bình', 'Dài', 'Rất Dài'. Default: 'Trung Bình'.
     """
+    # ---- Export ----
+    export_formats: List[str]
+    """
+    List of output formats requested by user.
+    Valid values: "PDF", "Word". Both can be selected simultaneously.
+    Publisher generates only the formats present in this list.
+    """
+
+    final_docx_filepath: Optional[str]
+    """
+    Path to the generated .docx file, or None if Word export was not
+    requested or failed.
+    """
 
 # ============================================================================
 # HELPERS — shared utility functions used across multiple agent nodes
@@ -378,6 +391,7 @@ def build_initial_state(
     min_chars_per_section: int = 0,
     max_subsections_per_chapter: int = 5,
     content_level: str = "Trung Bình",
+    export_formats: list | None = None,
     
 ) -> dict:
     """
@@ -433,4 +447,6 @@ def build_initial_state(
         "messages": [],
         # Output — set by Publisher
         "final_filepath": None,
+        "export_formats":       export_formats or ["Word"],
+        "final_docx_filepath":  None,
     }

@@ -25,7 +25,7 @@ from src.graph.state import (
     get_char_target,
     clean_section_title,
 )
-from src.config import LLM_MODEL_CHEAP
+from src.config import LLM_MODEL_PREMIUM
 
 logger = setup_logger(name="WriterAgent", logfile="logs/agents.log")
 
@@ -128,7 +128,7 @@ class WriterAgent:
         - Avoid excessive creativity that breaks structural rules
         - Remain deterministic enough for consistent formatting compliance
         """
-        self.llm = ChatOpenAI(model=LLM_MODEL_CHEAP, temperature=0.4)
+        self.llm = ChatOpenAI(model=LLM_MODEL_PREMIUM, temperature=0.4)
         self.prompt_logger = setup_prompt_logger("writer")
 
     def write_section(

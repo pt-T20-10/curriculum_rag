@@ -445,10 +445,10 @@ class IllustratorAgent:
 
         url     = "https://google.serper.dev/images"
         headers = {"X-API-KEY": self.api_key, "Content-Type": "application/json"}
-        payload = {"q": optimized_query, "num": 6}
+        payload = {"q": optimized_query, "num": 20}
 
         try:
-            response = requests.post(url, headers=headers, json=payload, timeout=10)
+            response = requests.post(url, headers=headers, json=payload, timeout=20)
             response.raise_for_status()
 
             images_results = response.json().get("images", [])
@@ -458,7 +458,7 @@ class IllustratorAgent:
 
             valid_urls: list[str] = []
 
-            for i, candidate in enumerate(images_results[:6]):
+            for i, candidate in enumerate(images_results[:20]):
                 image_url = candidate.get("imageUrl", "")
 
                 # Check 1 — non-empty string

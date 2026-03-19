@@ -20,7 +20,7 @@ Page structure:
     Lời nói đầu   — page 1  ← numbering starts here
     CHƯƠNG 1 …    — continues from page 1
 """
-
+import textwrap
 import os
 import shutil
 from datetime import datetime
@@ -86,8 +86,6 @@ def sanitize_filename(name: str, max_length: int = 50) -> str:
     safe = safe.strip().replace(' ', '_')
     safe = safe[:max_length]
     return safe if safe else "Textbook"
-
-
 # ---------------------------------------------------------------------------
 # Unicode → math conversion maps
 #
@@ -105,8 +103,6 @@ SUPERSCRIPT_MAP: dict[str, str] = {
     '⁺': '+', '⁻': '-', '⁰': '0', '¹': '1', '²': '2', '³': '3',
     '⁴': '4', '⁵': '5', '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9', 'ⁿ': 'n',
 }
-
-
 # ---------------------------------------------------------------------------
 # fix_* pass functions
 # Applied in sequence inside publish_curriculum() after CRLF normalization.
@@ -152,15 +148,17 @@ def fix_unicode_math(content: str) -> str:
     if converted != content:
         logger.info("✓ Unicode math characters converted to Pandoc math notation")
     return converted
-
-
 # Regex matching complex LaTeX commands that must stay as display math.
 # Expressions matching this pattern are never converted to inline $ by
 # fix_inline_display_math().
 _COMPLEX_MATH_RE = re.compile(
     r'\\(?:frac|int|sum|prod|lim|begin|end|sqrt|left|right|binom|matrix|pmatrix|cases)'
 )
-
+_WORD_PAGEBREAK = (
+    '```{=openxml}\n'
+    '<w:p><w:r><w:br w:type="page"/></w:r></w:p>\n'
+    '```'
+)
 
 def fix_inline_display_math(content: str) -> str:
     """
@@ -175,7 +173,7 @@ def fix_inline_display_math(content: str) -> str:
         - The inner expression contains no complex LaTeX commands
         - The $$ delimiters are on their own lines (standard LLM output)
 
-    Leading/trailing whitespace on the content line is tolerated (BUG-12 fix).
+    Leading/trailing whitespace on the content line is tolerated
 
     Kept as display math (no conversion):
         $$\\n\\frac{a}{b}\\n$$   — complex command
@@ -193,7 +191,7 @@ def fix_inline_display_math(content: str) -> str:
             return m.group(0)
         return f'${expr}$'
 
-    # BUG-12 FIX: allow optional leading/trailing whitespace on the content line
+    
     return re.sub(
         r'\$\$\n[ \t]*([^\n]{1,40?})[ \t]*\n[ \t]*\$\$',
         maybe_inline,
@@ -212,9 +210,6 @@ def fix_math_formatting(content: str) -> str:
         4. Stray single $ command at line start → wrapped in $$
         5. Multiline inline $...\\n...$  → joined to single line
         6. Lone inline $var$ surrounded by blank lines → remove surrounding blanks
-
-    BUG-03 FIX: clean_display_block's while loop now has a max_iter=10 cap
-    to prevent infinite spin on pathological LaTeX input (e.g. unclosed $ chars).
     """
     def clean_display_block(m: re.Match) -> str:
         inner = m.group(1)
@@ -334,10 +329,6 @@ def add_figure_numbers(content: str) -> str:
         - Idempotent: captions already starting with "Hình [digits]" are skipped.
         - Images before the first ## heading are left unchanged.
         - Counter resets to 1 when the tracked section changes.
-
-    BUG-08 FIX: regex group 2 changed from `(.*?)` (non-greedy, breaks on
-    captions containing `](`) to `([^\\]]*?)` (excludes `]`, correct for
-    standard Pandoc Markdown figure syntax).
     """
     lines = content.split('\n')
     result: list[str] = []
@@ -357,7 +348,7 @@ def add_figure_numbers(content: str) -> str:
             result.append(line)
             continue
 
-        # BUG-08 FIX: use [^\]]* for caption group instead of non-greedy .*?
+       
         img_match = re.match(r'^(!\[)([^\]]*?)(\]\()(.+?)(\))(\{.*?\})?$', line)
         if img_match and current_section:
             caption = img_match.group(2)
@@ -377,6 +368,124 @@ def add_figure_numbers(content: str) -> str:
     return '\n'.join(result)
 
 
+def _prepare_word_md(md_content: str, title: str, enable_images: bool = True) -> str:
+    """
+    Transform MD content for Word (.docx) output.
+
+    Strategy:
+        - Page breaks: OpenXML <w:br w:type="page"/> — only reliable method for docx
+        - TOC: Pandoc --toc flag — native, no F9 needed
+        - Title: YAML title: — Pandoc renders before TOC automatically
+        - Figure list: extracted from existing captions, placed on own page
+          before first chapter
+
+    Pipeline:
+        1. Strip YAML front matter
+        2. Replace {=typst} #pagebreak() blocks → OpenXML page break
+        3. Strip remaining {=typst} blocks
+        4. Build figure list from existing image captions
+        5. Insert figure list before # Lời nói đầu (own page, with page break after)
+        6. Add OpenXML page break at body start (TOC → body separation)
+        7. Fix image width 70% → 85%
+        8. Collapse blank lines
+        9. Prepend YAML with title:
+    """
+    content = md_content
+
+    # Step 1 — Strip YAML front matter
+    content = re.sub(r'^---.*?---\n\n?', '', content, flags=re.DOTALL)
+
+    # Step 2 — Replace {=typst} #pagebreak() → OpenXML page break
+    content = re.sub(
+        r'```\{=typst\}\s*#pagebreak\(\)\s*```',
+        _WORD_PAGEBREAK,
+        content,
+        flags=re.DOTALL,
+    )
+
+    # Step 3 — Strip all remaining {=typst} blocks
+    content = re.sub(r'```\{=typst\}.*?```', '', content, flags=re.DOTALL)
+
+    # Step 4 — Extract figure list from captions already in MD.
+    # Captions format: "Hình X.Y.Z: Caption text" — already set by add_figure_numbers()
+    # No leading _WORD_PAGEBREAK — Step 5 manages page separation around this block.
+    figure_list_md = ""
+    if enable_images:
+        captions = re.findall(r'!\[(Hình [\d.]+:[^\]]+)\]', content)
+        if captions:
+            items = "\n".join(f"- {cap}" for cap in captions)
+            figure_list_md = "# Danh mục hình\n\n" + items
+    # Step 5 — Insert figure list before # Lời nói đầu.
+    # Desired Word page order: TOC → Danh mục hình → Lời nói đầu → Chapters
+    # _WORD_PAGEBREAK is injected AFTER figure list to separate it from preface.
+    # Step 6 below prepends another _WORD_PAGEBREAK at content start (TOC → Danh mục hình).
+    if figure_list_md:
+        match = re.search(r'# Lời nói đầu', content)
+        if match:
+            insert_pos = match.start()
+            content = (
+                content[:insert_pos]
+                + figure_list_md + "\n\n"
+                + _WORD_PAGEBREAK + "\n\n"
+                + content[insert_pos:]
+            )
+
+    # Step 6 — Add page break at start of body so TOC and body are separated.
+    # Pandoc places --toc between title block and $body$; without a break the
+    # TOC runs directly into the first body section (Danh mục hình or Lời nói đầu).
+    content = _WORD_PAGEBREAK + "\n\n" + content.lstrip()
+
+    # Step 7 — Fix image width: 70% (tuned for Typst) → 85% (better for Word)
+    content = re.sub(r'\{width=70%\}', '{width=85%}', content)
+
+    # Step 8 — Collapse stray blank lines left by stripping
+    content = re.sub(r'\n{3,}', '\n\n', content)
+    content = content.strip()
+
+    # Step 9 — Prepend YAML with title:
+    # Pandoc renders: title block → --toc TOC → $body$
+    safe_title = title.replace('"', '\\"')
+    yaml_block = f'---\ntitle: "{safe_title}"\n---\n\n'
+
+    return yaml_block + content
+
+
+def _get_word_reference_doc(pandoc_tmp: Path) -> Path | None:
+    """
+    Return path to Word reference .docx for --reference-doc flag.
+
+    Priority:
+        1. assets/reference.docx  — project-level custom template
+        2. Pandoc default          — generated once and cached in pandoc_tmp
+
+    The reference doc controls heading styles, fonts, margins, and TOC style.
+    To customise: run `pandoc --print-default-data-file reference.docx > assets/reference.docx`
+    then edit styles in Word.
+
+    Returns None on any failure — caller omits --reference-doc flag.
+    """
+    custom = BASE_DIR / "assets" / "reference.docx"
+    if custom.exists():
+        logger.info(f"Using custom Word reference doc: {custom}")
+        return custom
+
+    cached = pandoc_tmp / "reference.docx"
+    if cached.exists():
+        return cached
+
+    try:
+        import subprocess
+        with open(cached, "wb") as f:
+            subprocess.run(
+                ["pandoc", "--print-default-data-file", "reference.docx"],
+                stdout=f,
+                check=True,
+            )
+        logger.info("✓ Pandoc default reference.docx generated")
+        return cached
+    except Exception as e:
+        logger.warning(f"Could not generate reference.docx: {e} — using Pandoc built-in default")
+        return None
 # ---------------------------------------------------------------------------
 # Typst front-matter constants
 #
@@ -496,10 +605,10 @@ def publish_curriculum(state: AgentState) -> dict:
         4.  fix_unicode_math()          — Unicode sub/superscripts → $math$
         5.  fix_markdown_headings()     — headings on own lines
         6.  fix_inline_display_math()   — trivial $$ blocks → inline $
-        7.  fix_math_formatting()       — Typst-compatible math (BUG-03 fixed)
+        7.  fix_math_formatting()       — Typst-compatible math 
         8.  fix_typst_deprecated_symbols() — times.circle → times.o
-        9.  fix_chapter_pagebreaks()    — #pagebreak() before # CHƯƠNG (BUG-13)
-        10. add_figure_numbers()        — "Hình X.Y.N:" prefixes (BUG-08)
+        9.  fix_chapter_pagebreaks()    — #pagebreak() before # CHƯƠNG 
+        10. add_figure_numbers()        — "Hình X.Y.N:" 
         11. Assemble front matter:
                 _TYPST_SETUP_BLOCK
                 _build_title_block()   — vertically+horizontally centred title
@@ -592,7 +701,7 @@ def publish_curriculum(state: AgentState) -> dict:
     file_base     = f"{request_topic}_{timestamp}"
     md_filename   = output_dir / f"{file_base}.md"
     pdf_filename  = output_dir / f"{file_base}.pdf"
-
+    docx_filename = output_dir / f"{file_base}.docx"
     # ------------------------------------------------------------------
     # Step 4 — YAML header (metadata only — title rendered by Typst block)
     #
@@ -666,59 +775,140 @@ def publish_curriculum(state: AgentState) -> dict:
     # ------------------------------------------------------------------
     # Step 9 — Pandoc → Typst → PDF conversion
     # ------------------------------------------------------------------
-    result_filepath = str(md_filename)
+   # ------------------------------------------------------------------
+    # Step 9 — Export: PDF and/or Word based on state["export_formats"]
+    # ------------------------------------------------------------------
+    export_formats: list[str] = state.get("export_formats", ["PDF"])   # type: ignore
+    want_pdf  = "PDF"  in export_formats
+    want_word = "Word" in export_formats
 
-    if pypandoc:
+    result_filepath      = str(md_filename)   # fallback if PDF fails/not requested
+    final_docx_filepath  = None
+
+    if pypandoc and (want_pdf or want_word):
         pandoc_tmp = BASE_DIR / ".pandoc_tmp"
         pandoc_tmp.mkdir(exist_ok=True)
         typst_root = BASE_DIR.anchor
 
-        # Inject #set page(numbering: none) into Pandoc's template PREAMBLE
-        # (before $body$) via --include-in-header. This suppresses Pandoc's
-        # default numbering: "1" on front-matter pages WITHOUT causing a page
-        # flush — preamble #set page() applies in-place, body #set page() flushes.
+        # Inject #set page(numbering: none) into Pandoc preamble via header file.
+        # This prevents blank page 1: #set page() in preamble applies in-place,
+        # while #set page() inside $body$ always flushes the current page first.
+                # Override Pandoc's conf() function to remove hardcoded numbering: "1".
+        # conf() in template.typst has numbering: "1" hardcoded — no variable exists
+        # to suppress it from outside. Re-defining conf with numbering: none before
+        # the #show: doc => conf(...) call lets our Typst blocks control numbering.
+        typst_header_file = pandoc_tmp / "typst_header.typ"
+        # Override Pandoc's conf() to remove hardcoded numbering: "1".
+        # ..args sink absorbs any unknown parameters Pandoc may add in future
+        # versions (e.g. abstract-title in newer Pandoc releases) without
+        # requiring updates here when Pandoc is upgraded.
         typst_header_file = pandoc_tmp / "typst_header.typ"
         typst_header_file.write_text(
-            "#set page(numbering: none)\n",
+            textwrap.dedent("""\
+                #let conf(
+                  title: none,
+                  authors: none,
+                  date: none,
+                  abstract: none,
+                  cols: 1,
+                  margin: (x: 1.25in, y: 1.25in),
+                  paper: "us-letter",
+                  lang: "en",
+                  region: "US",
+                  font: (),
+                  fontsize: 11pt,
+                  sectionnumbering: none,
+                  doc,
+                  ..args,
+                ) = {
+                  set page(
+                    paper: paper,
+                    margin: margin,
+                    numbering: none,
+                  )
+                  set par(justify: true)
+                  set text(lang: lang,
+                           region: region,
+                           font: font,
+                           size: fontsize)
+                  set heading(numbering: sectionnumbering)
+                  if cols == 1 { doc } else { columns(cols, doc) }
+                }
+            """),
             encoding="utf-8",
         )
 
         _old_env: dict[str, str | None] = {}
         try:
-            # Redirect TEMP/TMP so Pandoc/Typst write scratch files inside
-            # our controlled directory rather than the system temp folder.
             _old_env = {k: os.environ.get(k) for k in ("TEMP", "TMP")}
             os.environ["TEMP"] = str(pandoc_tmp)
             os.environ["TMP"]  = str(pandoc_tmp)
 
-            typst_bin = shutil.which("typst") or "typst"
-            logger.info(f"Converting to PDF (Typst engine: {typst_bin})...")
-            pypandoc.convert_file(
-                str(md_filename),
-                to="pdf",
-                outputfile=str(pdf_filename),
-                extra_args=[
-                    f"--pdf-engine={typst_bin}",
-                    "--pdf-engine-opt=--root",
-                    f"--pdf-engine-opt={typst_root}",
-                    "--include-in-header", str(typst_header_file),
-                    "-V", "margin-left=2.5cm",
-                    "-V", "margin-right=2.5cm",
-                    "-V", "margin-top=2cm",
-                    "-V", "margin-bottom=2cm",
-                ],
-            )
-            logger.info(f"✓ PDF saved: {pdf_filename}")
-            result_filepath = str(pdf_filename)
+            # ── PDF ──────────────────────────────────────────────────
+            if want_pdf:
+                typst_bin = shutil.which("typst") or "typst"
+                logger.info(f"Converting to PDF (Typst engine: {typst_bin})...")
+                try:
+                    pypandoc.convert_file(
+                        str(md_filename),
+                        to="pdf",
+                        outputfile=str(pdf_filename),
+                        extra_args=[
+                            f"--pdf-engine={typst_bin}",
+                            "--pdf-engine-opt=--root",
+                            f"--pdf-engine-opt={typst_root}",
+                            "--include-in-header", str(typst_header_file),
+                            "-V", "margin-left=2.5cm",
+                            "-V", "margin-right=2.5cm",
+                            "-V", "margin-top=2cm",
+                            "-V", "margin-bottom=2cm",
+                        ],
+                    )
+                    logger.info(f"✓ PDF saved: {pdf_filename}")
+                    result_filepath = str(pdf_filename)
+                except Exception as e:
+                    logger.warning(f"PDF generation failed: {e}", exc_info=True)
 
-        except Exception as e:
-            logger.warning(f"PDF generation failed: {e}", exc_info=True)
-            logger.info("Falling back to Markdown output only")
+            # ── Word (.docx) ──────────────────────────────────────────
+            if want_word:
+                logger.info("Converting to Word (.docx)...")
+                try:
+                    # Pre-process MD: strip Typst blocks, inject page breaks,
+                    # fix title and image widths for Word rendering.
+                    word_md_content = _prepare_word_md(
+                        safe_document,
+                        title,
+                        enable_images=bool(state.get("enable_images", True)),
+                    )
+
+                    docx_md = pandoc_tmp / f"{file_base}_word.md"
+                    docx_md.write_text(word_md_content, encoding="utf-8")
+                    logger.info("✓ Word MD pre-processed")
+
+                    # --toc: Pandoc builds TOC natively, placed after title block
+                    # --toc-depth=3: include ##, ### headings
+                    word_args = ["--toc", "--toc-depth=3"]
+                    ref_doc = _get_word_reference_doc(pandoc_tmp)
+                    if ref_doc:
+                        word_args += ["--reference-doc", str(ref_doc)]
+
+                    pypandoc.convert_file(
+                        str(docx_md),
+                        to="docx",
+                        outputfile=str(docx_filename),
+                        extra_args=word_args,
+                    )
+                    logger.info(f"✓ Word saved: {docx_filename}")
+                    final_docx_filepath = str(docx_filename)
+
+                    # If PDF was not requested or failed, use docx as primary result
+                    if result_filepath == str(md_filename):
+                        result_filepath = str(docx_filename)
+
+                except Exception as e:
+                    logger.warning(f"Word generation failed: {e}", exc_info=True)
 
         finally:
-            # Restore original env vars and clean up scratch directory.
-            # cleanup_temp_images() is always called here — not in the else
-            # branch below — so images are removed regardless of PDF success.
             for k, v in _old_env.items():
                 if v is None:
                     os.environ.pop(k, None)
@@ -726,11 +916,21 @@ def publish_curriculum(state: AgentState) -> dict:
                     os.environ[k] = v
             shutil.rmtree(pandoc_tmp, ignore_errors=True)
             cleanup_temp_images()
+
     else:
-        logger.warning("pypandoc not installed — skipping PDF generation")
+        if not pypandoc:
+            logger.warning("pypandoc not installed — skipping all export")
         cleanup_temp_images()
 
+    # Build output path for docx filename reference (used in Word export block above)
+    docx_filename = output_dir / f"{file_base}.docx"
+
+    messages = [f"✓ Document finalized: {os.path.basename(result_filepath)}"]
+    if final_docx_filepath:
+        messages.append(f"✓ Word export: {os.path.basename(final_docx_filepath)}")
+
     return {
-        "messages": [f"✓ Document finalized: {os.path.basename(result_filepath)}"],
-        "final_filepath": result_filepath,
+        "messages":             messages,
+        "final_filepath":       result_filepath,
+        "final_docx_filepath":  final_docx_filepath,
     }

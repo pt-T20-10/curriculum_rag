@@ -136,10 +136,13 @@ if "current_progress" not in st.session_state:
         "total_chapters": 0,
         "total_subsections": 0
     }
+if "generated_docx_path" not in st.session_state:
+    st.session_state.generated_docx_path = None
 if "stop_event" not in st.session_state:
     st.session_state.stop_event = threading.Event()
 if "is_running" not in st.session_state:
     st.session_state.is_running = False
+    
 
 # Header
 st.markdown(
@@ -194,6 +197,8 @@ with st.sidebar:
             "Áp dụng đồng nhất cho tất cả section types (light / medium / deep / applied)."
         )
     )
+
+
     st.markdown(
         f'<div class="config-info">{_level_desc[content_level]}</div>',
         unsafe_allow_html=True
@@ -231,6 +236,22 @@ with st.sidebar:
             '<div class="config-info">✗ Bỏ qua bước tìm hình — giáo trình chỉ có text.</div>',
             unsafe_allow_html=True
         )
+        
+    st.divider()
+    st.subheader("📄 Định dạng xuất")
+
+    export_formats = st.multiselect(
+        "Chọn định dạng",
+        options=["PDF", "Word"],
+        default=["Word"],
+        help=(
+            "PDF: xuất qua Typst, giữ nguyên layout và công thức toán.\n"
+            "Word: xuất .docx, công thức render qua OMML, có thể chỉnh sửa."
+        )
+    )
+    if not export_formats:
+        st.warning("⚠️ Chọn ít nhất một định dạng.")
+        export_formats = ["Word"]   
 
     st.divider()
 
@@ -411,6 +432,8 @@ if start_btn and topic:
         "messages":                 [],
         "final_content":            "",
         "current_content":          "",
+        "export_formats":              export_formats,
+        "final_docx_filepath":         None,
     }
 
     st.divider()
@@ -544,12 +567,17 @@ if start_btn and topic:
                 elif key == "publisher":
                     workflow_stages["content_generation"]["status"] = "completed"
                     workflow_stages["publisher"]["status"] = "active"
-
                     progress_bar.progress(1.0)
                     progress_text.markdown("**Bước 4/4:** Xuất bản tài liệu...")
 
-                    raw_path = value.get("final_filepath")
+                    raw_path      = value.get("final_filepath")
+                    raw_docx_path = value.get("final_docx_filepath")
 
+                    # ── Lưu Word path vào session state ──────────────
+                    if raw_docx_path and os.path.exists(os.path.abspath(raw_docx_path)):
+                        st.session_state.generated_docx_path = os.path.abspath(raw_docx_path)
+
+                    # ── Xử lý PDF / MD path ──────────────────────────
                     if raw_path:
                         abs_md_path  = os.path.abspath(raw_path)
                         abs_pdf_path = abs_md_path.replace(".md", ".pdf")
@@ -557,9 +585,12 @@ if start_btn and topic:
                         if os.path.exists(abs_pdf_path):
                             st.session_state.generated_file_path = abs_pdf_path
                             workflow_stages["publisher"]["status"] = "completed"
+                            status_msg = "Xuất bản PDF thành công"
+                            if raw_docx_path:
+                                status_msg += " + Word"
                             with status_container:
                                 st.markdown(render_workflow_status(
-                                    "publisher", "completed", "Xuất bản PDF thành công"
+                                    "publisher", "completed", status_msg
                                 ), unsafe_allow_html=True)
                             st.balloons()
 
@@ -571,11 +602,11 @@ if start_btn and topic:
                                     "publisher", "completed",
                                     "Xuất bản Markdown (PDF generation failed)"
                                 ), unsafe_allow_html=True)
+
                         else:
                             st.error(f"❌ File không tồn tại: {abs_pdf_path}")
                     else:
                         st.error("❌ Publisher không trả về file path")
-
     except Exception as e:
         st.error(f"❌ Lỗi hệ thống: {e}")
         with st.expander("Chi tiết lỗi"):
@@ -585,42 +616,51 @@ if start_btn and topic:
 # ============================================================================
 # DOWNLOAD SECTION
 # ============================================================================
-if st.session_state.generated_file_path:
-    file_path = st.session_state.generated_file_path
+_has_pdf  = (
+    st.session_state.generated_file_path
+    and st.session_state.generated_file_path.endswith(".pdf")
+    and os.path.exists(st.session_state.generated_file_path)
+)
+_has_docx = (
+    st.session_state.get("generated_docx_path")
+    and os.path.exists(st.session_state.generated_docx_path) # type:ignore
+)
 
-    if os.path.exists(file_path):
-        st.divider()
-        st.markdown(
-            '<div class="success-box">🎉 <strong>Giáo trình của bạn đã sẵn sàng!</strong></div>',
-            unsafe_allow_html=True
-        )
+if _has_pdf or _has_docx:
+    st.divider()
+    st.markdown(
+        '<div class="success-box">🎉 <strong>Giáo trình của bạn đã sẵn sàng!</strong></div>',
+        unsafe_allow_html=True
+    )
+    st.write("")
 
-        file_name = os.path.basename(file_path)
-        mime_type = "application/pdf" if file_path.endswith(".pdf") else "text/markdown"
-        file_size = os.path.getsize(file_path) / 1024
+    # Build download columns dynamically based on available files
+    available = []
+    if _has_pdf:
+        available.append(("pdf", st.session_state.generated_file_path))
+    if _has_docx:
+        available.append(("docx", st.session_state.generated_docx_path))
 
-        col1, col2, col3 = st.columns([2, 2, 2])
-        with col1:
-            st.metric("📄 File", file_name.split('_')[0][:20] + "...")
-        with col2:
-            st.metric("📦 Kích thước", f"{file_size:.1f} KB")
-        with col3:
-            st.metric("📑 Format", "PDF" if file_path.endswith(".pdf") else "Markdown")
+    cols = st.columns(len(available))
+    for col, (fmt, fpath) in zip(cols, available):
+        with col:
+            fname     = os.path.basename(fpath)
+            fsize     = os.path.getsize(fpath) / 1024
+            mime_map  = {"pdf": "application/pdf", "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
+            icon_map  = {"pdf": "📕", "docx": "📘"}
+            label_map = {"pdf": "PDF", "docx": "Word (.docx)"}
 
-        st.divider()
-
-        col_download, col_path = st.columns([1, 2])
-        with col_download:
-            with open(file_path, "rb") as f:
+            st.metric(
+                f"{icon_map[fmt]} {label_map[fmt]}",
+                f"{fsize:.1f} KB"
+            )
+            with open(fpath, "rb") as f:
                 st.download_button(
-                    label=f"⬇️ Tải xuống {file_name}",
+                    label=f"⬇️ Tải xuống {label_map[fmt]}",
                     data=f,
-                    file_name=file_name,
-                    mime=mime_type,
+                    file_name=fname,
+                    mime=mime_map[fmt],
                     type="primary",
-                    use_container_width=True
+                    use_container_width=True,
                 )
-        with col_path:
-            st.code(file_path, language=None)
-    else:
-        st.error("⚠️ File đã bị xóa hoặc di chuyển")
+            st.code(fpath, language=None)
