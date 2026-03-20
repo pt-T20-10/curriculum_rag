@@ -47,7 +47,6 @@ def setup_directories():
 def get_embedding_model():
     """
     Singleton embedding model — loaded once, reused everywhere.
-    lru_cache đảm bảo chỉ khởi tạo 1 lần duy nhất trong suốt app lifetime.
     """
     from langchain_huggingface import HuggingFaceEmbeddings
     return HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)

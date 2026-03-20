@@ -192,11 +192,21 @@ def fix_inline_display_math(content: str) -> str:
         return f'${expr}$'
 
     
-    return re.sub(
-        r'\$\$\n[ \t]*([^\n]{1,40?})[ \t]*\n[ \t]*\$\$',
+        # Pass A — multiline: $$\nexpr\n$$
+    content = re.sub(
+        r'\$\$\n[ \t]*([^\n]{1,40})[ \t]*\n[ \t]*\$\$',
         maybe_inline,
         content,
     )
+    # Pass B — single-line inline: $$expr$$ with no newline inside
+    # LLM sometimes writes $$\Omega$$ mid-sentence; Pandoc renders as
+    # a centred display block, breaking prose flow.
+    content = re.sub(
+        r'(?<!\$)\$\$([^$\n]{1,40})\$\$(?!\$)',
+        maybe_inline,
+        content,
+    )
+    return content
 
 
 def fix_math_formatting(content: str) -> str:
@@ -268,7 +278,9 @@ def fix_typst_deprecated_symbols(content: str) -> str:
     Replacements:
         times.circle → times.o  (tensor product ⊗, renamed in Typst ≥ 0.12)
     """
-    return content.replace("times.circle", "times.o")
+    content = content.replace("times.circle", "times.o")
+    content = content.replace(" sect ", " inter ")
+    return content
 
 
 def fix_markdown_headings(content: str) -> str:
@@ -475,13 +487,66 @@ def _get_word_reference_doc(pandoc_tmp: Path) -> Path | None:
 
     try:
         import subprocess
+        from docx import Document as DocxDocument
+        from docx.shared import Pt
+        from docx.oxml.ns import qn
+        from docx.oxml import OxmlElement
+
         with open(cached, "wb") as f:
             subprocess.run(
                 ["pandoc", "--print-default-data-file", "reference.docx"],
                 stdout=f,
                 check=True,
             )
-        logger.info("✓ Pandoc default reference.docx generated")
+
+        # Override default font to Times New Roman for all styles.
+        # Modifying the document-level default (w:docDefaults) ensures
+        # every style that doesn't explicitly set a font inherits TNR.
+        ref_doc = DocxDocument(cached) # type: ignore
+
+        # 1. Patch w:docDefaults → rPrDefault → rPr → w:rFonts
+        styles_element = ref_doc.styles.element
+        doc_defaults = styles_element.find(qn("w:docDefaults"))
+        if doc_defaults is not None:
+            rpr_default = doc_defaults.find(qn("w:rPrDefault"))
+            if rpr_default is None:
+                rpr_default = OxmlElement("w:rPrDefault")
+                doc_defaults.append(rpr_default)
+            rpr = rpr_default.find(qn("w:rPr"))
+            if rpr is None:
+                rpr = OxmlElement("w:rPr")
+                rpr_default.append(rpr)
+            rfonts = rpr.find(qn("w:rFonts"))
+            if rfonts is None:
+                rfonts = OxmlElement("w:rFonts")
+                rpr.insert(0, rfonts)
+            for attr in ("w:ascii", "w:hAnsi", "w:cs", "w:eastAsia"):
+                rfonts.set(qn(attr), "Times New Roman")
+
+        # 2. Patch Normal style explicitly as a safety net
+        for style in ref_doc.styles:
+            if style.name == "Normal":
+                from docx.styles.style import _ParagraphStyle
+                if isinstance(style, _ParagraphStyle):
+                    style.font.name = "Times New Roman"
+                    style.font.size = Pt(12)
+                break
+
+        # 3. Set "TOC Heading" style to page-break-before.
+        # Pandoc renders: Title paragraph → TOC Heading → TOC entries → $body$.
+        # Without this, the title and TOC share the same page.
+        # w:pageBreakBefore on TOC Heading forces title onto its own page.
+        for style in ref_doc.styles:
+            if style.name == "TOC Heading":
+                pPr = style.element.get_or_add_pPr()
+                pb = OxmlElement("w:pageBreakBefore")
+                pb.set(qn("w:val"), "true")
+                pPr.append(pb)
+                logger.info("✓ TOC Heading style patched with page break before")
+                break
+
+        ref_doc.save(cached)  # type: ignore
+        logger.info("✓ reference.docx generated with Times New Roman default font")
         return cached
     except Exception as e:
         logger.warning(f"Could not generate reference.docx: {e} — using Pandoc built-in default")
@@ -921,9 +986,6 @@ def publish_curriculum(state: AgentState) -> dict:
         if not pypandoc:
             logger.warning("pypandoc not installed — skipping all export")
         cleanup_temp_images()
-
-    # Build output path for docx filename reference (used in Word export block above)
-    docx_filename = output_dir / f"{file_base}.docx"
 
     messages = [f"✓ Document finalized: {os.path.basename(result_filepath)}"]
     if final_docx_filepath:

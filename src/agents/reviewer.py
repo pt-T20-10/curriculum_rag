@@ -275,8 +275,10 @@ Execute these fixes IN ORDER before any other edits.
 4. Technical terms — keep standard English terms as-is (DataFrame, CPU, API).
    Use standard Vietnamese translations for general terms.
 
-5. Length — if draft is under 200 words, expand using internal knowledge.
-   Add definitions, explain the WHY and HOW, provide an example.
+5. Length — PRESERVE content length. Do NOT summarize, condense, or remove
+   paragraphs. If draft is under 200 words, expand using internal knowledge.
+   The polished output must be at least as long as the input draft.
+   Removing content is only allowed when fixing duplicated passages.
 </phase>
 
 <phase id="3" name="VISUALS">
@@ -355,6 +357,15 @@ Format: > [IMAGE: Short caption title | Detailed English description for image g
         ])
 
         try:
+            # Strip control characters that break JSON serialization.
+            # Keep only printable chars + standard whitespace (\n \t \r).
+            # These accumulate after multiple Writer→Reviewer revision cycles
+            # and cause OpenAI API to return 400 invalid_request_error.
+            safe_draft = ''.join(
+                c for c in draft_content
+                if c >= ' ' or c in '\n\t\r'
+            )
+
             chain = prompt | self.llm
             response = chain.invoke({
                 "course_topic":        course_topic,
@@ -363,7 +374,7 @@ Format: > [IMAGE: Short caption title | Detailed English description for image g
                 "section_num":         section_num,
                 "section_title":       section_title,
                 "section_description": section_description,
-                "draft":               draft_content,
+                "draft":               safe_draft,
                 "chap_cmd":            chapter_cmd,
             })
 

@@ -205,7 +205,10 @@ class WriterAgent:
                 "if it sets the scene or establishes the visual context for the chapter.\n"
                 "Insert exactly 1 image suggestion if a diagram or photo would orient\n"
                 "the reader. Prefer a real-world photo or overview diagram.\n"
-                "Format: > [IMAGE: Short caption title | Detailed English description]"
+                "Format: > [IMAGE: Short caption title | Detailed English description]\n"
+                "DESCRIPTION: 1-2 sentences in English describing what to depict visually.\n"
+                "CRITICAL: Do NOT mention text, labels, captions, or written words as visual\n"
+                "elements — they will be rendered literally and appear garbled in the image."
             )
 
         elif section_type == "applied":
@@ -214,7 +217,11 @@ class WriterAgent:
                 "the task, tool, material, or expected result are strongly encouraged.\n"
                 "Insert 2–3 image suggestions: one near the start to show the goal or\n"
                 "setup, and one after each major worked step that has a visual output.\n"
-                "Format: > [IMAGE: Short caption title | Detailed English description]"
+                "Format: > [IMAGE: Short caption title | Detailed English description]\n"
+                "DESCRIPTION: 1-2 sentences showing the task, tool, or result visually.\n"
+                "Describe steps as actions and shapes — NOT as numbered labels or text overlays.\n"
+                "CRITICAL: Do NOT mention text, labels, captions, or written words as visual\n"
+                "elements — they will be rendered literally and appear garbled in the image."
             )
 
         else:
@@ -237,20 +244,23 @@ class WriterAgent:
                 "IMAGE FORMAT RULES:\n"
                 "- TITLE: 3-6 words max, Vietnamese or English, used directly as PDF caption.\n"
                 "  Examples: 'Kiến trúc microservices', 'OSI Model layers', 'CI/CD pipeline flow'\n"
-                "- DESCRIPTION: 2-3 sentences in English. Specify: visual structure (shapes,\n"
-                "  layout), key elements (number of components, connections, labels),\n"
-                "  style (technical diagram / photograph / illustration, clean white background).\n"
-                "  For abstract/conceptual: describe metaphor, atmosphere, and style.\n"
-                "  For real entities: name the specific subject clearly.\n"
+               "- DESCRIPTION: 2-3 sentences in English. Describe what to depict visually:\n"
+                "  shapes, composition, key elements, mood, colors, and atmosphere.\n"
+                "  For abstract/conceptual: describe the metaphor, mood, and visual composition.\n"
+                "  For real entities: name the specific subject clearly and describe the scene.\n"
+                "  CRITICAL: Do NOT mention text, labels, captions, or written words as visual\n"
+                "  elements — they will be rendered literally and appear garbled in the image.\n"
+                "  Do NOT over-constrain style (avoid forcing 'white background', 'clean technical').\n"
                 "  Examples:\n"
-                "  > [IMAGE: Kiến trúc microservices | System architecture diagram showing 5 independent\n"
-                "    service boxes connected via REST arrows, API gateway on left, message queue in center,\n"
-                "    each service with a database icon below, white background, clean technical style]\n"
-                "  > [IMAGE: Vụ nổ Big Bang | Abstract illustration of the Big Bang: a bright point\n"
-                "    of light exploding outward into colourful expanding matter, dark space background,\n"
-                "    dramatic and scientific style]\n"
-                "  > [IMAGE: Kính viễn vọng Hubble | Photograph of the Hubble Space Telescope\n"
-                "    orbiting Earth, solar panels extended, blue Earth visible below]"
+                "  > [IMAGE: Kiến trúc microservices | Five independent service nodes connected by\n"
+                "    arrows flowing through a central gateway, each node paired with a small database\n"
+                "    cylinder below, message queue shown as a horizontal pipeline in the center]\n"
+                "  > [IMAGE: Vụ nổ Big Bang | A brilliant point of light exploding outward into\n"
+                "    swirling colourful matter and energy against a deep dark space background,\n"
+                "    dramatic cosmic atmosphere with warm and cool colour contrast]\n"
+                "  > [IMAGE: Kính viễn vọng Hubble | The Hubble Space Telescope floating in orbit\n"
+                "    above Earth, golden solar panels extended, blue curved Earth below, star-filled\n"
+                "    space backdrop]"
             )
         # ------------------------------------------------------------------
         # Revision instruction block — injected into system prompt only when
@@ -423,6 +433,10 @@ RULE 7 — VISUALS:
         ])
 
         try:
+            safe_context = ''.join(
+                c for c in context
+                if c >= ' ' or c in '\n\t\r'
+            )
             chain = prompt | self.llm
             response = chain.invoke({
                 "course_topic": course_topic,
@@ -431,7 +445,7 @@ RULE 7 — VISUALS:
                 "section_num": section_num,
                 "section_title": section_title,
                 "section_description": section_description,
-                "context": context,
+                "context": safe_context,
                 "chapter_instruction": chapter_instruction,
                 "revision_instruction": revision_instruction,
                 "section_type": section_type,

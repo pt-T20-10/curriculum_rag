@@ -137,12 +137,12 @@ def search_web(
 
 def search_web_multi_region(
     query: str,
-    max_results_per_region: int = 25,
+    max_results_per_region: int = 30,
 ) -> List[str]:
     """
     Search DuckDuckGo in parallel across Vietnamese and English regions.
 
-    Increased default max_results_per_region (15 → 25) to compensate for
+    Increased default max_results_per_region (15 → 30) to compensate for
     URLs removed by the noise filter — net useful URLs remains similar
     while noise is excluded early.
 
@@ -151,7 +151,7 @@ def search_web_multi_region(
     Args:
         query:                  Search query (from QueryExpansion)
         max_results_per_region: Raw results to request per region before filtering.
-                                Default 25 → up to 50 raw, ~30-40 after noise filter.
+                                Default 30 → up to 50 raw, ~30-40 after noise filter.
 
     Returns:
         Deduplicated list of noise-filtered URLs from both regions,

@@ -260,11 +260,17 @@ class IllustratorAgent:
                 context_label=f"Sanitize | {description[:40]}",
             )
             response = self.llm.invoke(
-                "Rewrite this image description for DALL-E. "
-                "Replace all specific names, labels, and enumerations with structural "
-                "counts (e.g. '7 stacked layers', '4 connected nodes', '3 steps'). "
-                "Keep overall structure and flow. Return ONLY the rewritten description.\n\n"
-                "Original: " + description
+                "Rewrite this image description to prevent DALL-E from rendering text artifacts.\n"
+            "ONLY remove explicit enumeration labels that would appear as literal text in the image:\n"
+            "  - Numbered labels: 'Step 1:', 'Phase 2:', 'Layer A:', 'Option B:'\n"
+            "  - Replace with structural counts: '3 sequential steps', '4 phases'\n"
+            "KEEP everything else unchanged:\n"
+            "  - Proper nouns (person names, place names, artwork titles, philosophy names)\n"
+            "  - Conceptual terms (yin-yang, Confucianism, Renaissance, etc.)\n"
+            "  - Compositional and stylistic details\n"
+            "  - Colors, atmosphere, visual metaphors\n"
+            "Return ONLY the rewritten description, no explanation.\n\n"
+            "Original: " + description
             )
             sanitized = str(response.content).strip()
             logger.info(f"Description sanitized: '{description[:50]}' → '{sanitized[:50]}'")
@@ -342,7 +348,7 @@ class IllustratorAgent:
     # Image acquisition methods
     # ------------------------------------------------------------------
 
-    def generate_image_openai(self, description: str) -> str:
+    def generate_image_openai(self, description: str, is_search_fallback: bool = False) -> str:
         """
         Generate an educational illustration via OpenAI DALL-E 3.
 
@@ -370,17 +376,26 @@ class IllustratorAgent:
 
         try:
             client    = OpenAI(api_key=OPENAI_API_KEY)
-            sanitized = self.sanitize_description_for_dalle(description)
-
+            if is_search_fallback:
+                # Entity existed in real world but image download failed.
+                # Preserve original description — do NOT sanitize proper nouns.
+                dalle_prompt = (
+                    "Educational illustration for a university textbook.\n"
+                    "CRITICAL: No text, words, numbers, or labels anywhere in the image.\n"
+                    "Depict accurately: " + description
+                )
+            else:
+                # DRAW-native: LLM intentionally chose illustration over search.
+                # Sanitize only enumeration labels, keep conceptual terms.
+                sanitized = self.sanitize_description_for_dalle(description)
+                dalle_prompt = (
+                    "Educational illustration for a university textbook.\n"
+                    "CRITICAL: No text, words, numbers, or labels anywhere in the image.\n"
+                    "Illustrate: " + sanitized
+                )
             response = client.images.generate(
                 model="dall-e-3",
-                prompt=(
-                    "An educational illustration for a university textbook. "
-                    "Clean, professional style. White or very light background. "
-                    "Conceptual and visually engaging — NOT a technical diagram with boxes and arrows. "
-                    "No text, no labels, no captions inside the image. "
-                    "Topic: " + sanitized
-                ),
+                prompt=dalle_prompt,
                 size="1024x1024",
                 quality="standard",
                 n=1,
@@ -445,10 +460,10 @@ class IllustratorAgent:
 
         url     = "https://google.serper.dev/images"
         headers = {"X-API-KEY": self.api_key, "Content-Type": "application/json"}
-        payload = {"q": optimized_query, "num": 20}
+        payload = {"q": optimized_query, "num": 10}
 
         try:
-            response = requests.post(url, headers=headers, json=payload, timeout=20)
+            response = requests.post(url, headers=headers, json=payload, timeout=10)
             response.raise_for_status()
 
             images_results = response.json().get("images", [])
@@ -458,7 +473,7 @@ class IllustratorAgent:
 
             valid_urls: list[str] = []
 
-            for i, candidate in enumerate(images_results[:20]):
+            for i, candidate in enumerate(images_results[:10]):
                 image_url = candidate.get("imageUrl", "")
 
                 # Check 1 — non-empty string
@@ -590,7 +605,7 @@ class IllustratorAgent:
 
             # DRAW → DALL-E 3, with automatic fallback to SEARCH on failure
             if action == "DRAW":
-                local_path = self.generate_image_openai(description)
+                local_path = self.generate_image_openai(description, is_search_fallback=False)
                 if not local_path:
                     logger.info(f"DRAW failed — falling back to SEARCH: '{label[:50]}'")
                     action = "SEARCH"
@@ -620,7 +635,7 @@ class IllustratorAgent:
                         f"All Serper candidates failed for '{label[:50]}' "
                         f"— falling back to DALL-E DRAW"
                     )
-                    local_path = self.generate_image_openai(description)
+                    local_path = self.generate_image_openai(description, is_search_fallback=True)
             # -- Build figure block --------------------------------------------
             if local_path:
                 # Caption: prefer TITLE (short, often already Vietnamese).

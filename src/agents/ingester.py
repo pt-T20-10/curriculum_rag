@@ -117,7 +117,7 @@ def perform_ingestion(state: AgentState) -> dict:
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
         futures = {
-            executor.submit(search_web, q, 15, r): (q, r)
+            executor.submit(search_web, q, 20, r): (q, r)
             for q, r in region_query_pairs
         }
         for future in concurrent.futures.as_completed(futures):
