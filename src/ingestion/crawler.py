@@ -28,7 +28,7 @@ from langchain_core.documents import Document
 from src.config import get_embedding_model
 
 from src.log_config import setup_logger
-from src.config import CHROMA_DB_DIR
+from src.config import CHROMA_DB_DIR, CRAWL_MAX_WORKERS, CRAWL_MAX_SUB_LINKS
 from src import stop_signal
 
 logger = setup_logger(name="Crawler", logfile="logs/crawler.log")
@@ -363,7 +363,7 @@ def process_deep_crawl(link_info: Dict[str, str]) -> List[Document]:
                 return results
 
             if soup:
-                sub_links = get_internal_links(soup, url, limit=5)
+                sub_links = get_internal_links(soup, url, limit=CRAWL_MAX_SUB_LINKS)
                 if sub_links:
                     logger.info(f"  ↳ Crawling {len(sub_links)} sub-links from {url[:50]}")
                     for sub in sub_links:
@@ -425,7 +425,7 @@ def ingest_dynamic_data(
     # ── Step 1: Parallel deep crawl ──────────────────────────────────────────
     all_docs: List[Document] = []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=CRAWL_MAX_WORKERS) as executor:
         futures = [
             executor.submit(process_deep_crawl, link)
             for link in clean_links
@@ -468,6 +468,7 @@ def ingest_dynamic_data(
         return False
 
     # ── Step 4: Relevance filter ─────────────────────────────────────────────
+    t4 = time.time()
     logger.info(
         f"Relevance scoring {len(quality_chunks)} chunks "
         f"(threshold={MIN_RELEVANCE_SCORE})..."
@@ -486,7 +487,8 @@ def ingest_dynamic_data(
     removed_irrelevant = len(quality_chunks) - len(relevant_chunks)
     logger.info(
         f"Relevance filter: {len(quality_chunks)} → {len(relevant_chunks)} chunks "
-        f"({removed_irrelevant} off-topic chunks removed)"
+        f"({removed_irrelevant} off-topic chunks removed) "
+        f"[{time.time() - t4:.1f}s]"
     )
 
     if not relevant_chunks:
@@ -500,6 +502,7 @@ def ingest_dynamic_data(
         relevant_chunks = quality_chunks
 
     # ── Step 5: Save to ChromaDB ─────────────────────────────────────────────
+    t5 = time.time()
     logger.info(f"Saving {len(relevant_chunks)} chunks to ChromaDB...")
     try:
         Chroma.from_documents(
@@ -508,8 +511,9 @@ def ingest_dynamic_data(
             persist_directory=str(CHROMA_DB_DIR),
             collection_name="dynamic_context",
         )
+        logger.info(f"✓ ChromaDB save complete [{time.time() - t5:.1f}s]")
     except Exception as e:
-        logger.error(f"ChromaDB save failed: {e}", exc_info=True)
+        logger.error(f"ChromaDB save failed after {time.time() - t5:.1f}s: {e}", exc_info=True)
         return False
 
     elapsed = time.time() - t_start

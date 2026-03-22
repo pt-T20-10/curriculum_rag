@@ -1,666 +1,468 @@
 """
-Streamlit UI for AI Textbook Generator.
+Streamlit entry point for AI Textbook Generator.
 
-Provides web interface with Google Gemini Deep Search style:
-- Progressive workflow visualization
-- Hierarchical curriculum display
-- Real-time status updates
-- Clean, modern design
+Workflow phases:
+  idle       → user fills topic, hits ↑
+  planning   → ingestion + curriculum generation running (Phase A thread)
+  reviewing  → user reviews/edits curriculum before content starts (Phase 4 gate)
+  generating → content loop running (Phase B thread)
+  done       → publisher finished, download available
 """
 
 import os
-import sys
-import threading
-import queue as _queue
-
-from src.config import setup_directories
-from src.graph.workflow import create_workflow
-from src.log_config import setup_logger
-from src import stop_signal
-
-logger = setup_logger(name="App", logfile="logs/app.log")
+import queue
 
 import streamlit as st
 
-# Add project root to path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if project_root not in sys.path:
-    sys.path.append(project_root)
+from src.config import setup_directories
+from src import stop_signal
+from src.ui.components import (
+    init_session_state,
+    load_css,
+    render_sidebar,
+    render_input_row,
+    render_config_panel,
+    render_curriculum_tree,
+    render_workflow_status,
+    render_download_section,
+    render_curriculum_editor,
+    build_sub_stage_card,
+)
+from src.ui.events import EventType, WorkflowEvent
+from backend import (
+    build_initial_state,
+    build_content_initial_state,
+    start_planning_thread,
+    start_content_thread,
+)
 
-
-setup_directories()
-
-# Page configuration
+# ============================================================================
+# Bootstrap
+# ============================================================================
 st.set_page_config(
     page_title="AI Textbook Generator",
     page_icon="📚",
-    layout="wide"
+    layout="wide",
 )
+load_css()
+init_session_state()
 
-# Custom CSS - Deep Search Style
-st.markdown("""
-<style>
-    .main-header {
-        font-size: 2.5rem;
-        color: #4F8BF9;
-        text-align: center;
-        margin-bottom: 1rem;
-        font-weight: 600;
-    }
-    .success-box {
-        padding: 1rem;
-        border-radius: 10px;
-        background-color: #d4edda;
-        color: #155724;
-        border: 1px solid #c3e6cb;
-    }
-    .error-box {
-        padding: 1rem;
-        border-radius: 10px;
-        background-color: #f8d7da;
-        color: #721c24;
-        border: 1px solid #f5c6cb;
-    }
+if not st.session_state.get("_dirs_ready"):
+    setup_directories()
+    st.session_state["_dirs_ready"] = True
 
-    /* Deep Search Style Cards */
-    .workflow-card {
-        padding: 1rem;
-        border-radius: 8px;
-        border-left: 4px solid #4F8BF9;
-        background-color: #f8f9fa;
-        margin-bottom: 0.5rem;
-    }
-    .workflow-card.completed {
-        border-left-color: #28a745;
-        background-color: #f1f8f4;
-    }
-    .workflow-card.active {
-        border-left-color: #ffc107;
-        background-color: #fffbf0;
-    }
-    .workflow-card.pending {
-        border-left-color: #e0e0e0;
-        background-color: #fafafa;
-        opacity: 0.7;
-    }
-
-    /* Curriculum Tree */
-    .curriculum-tree {
-        font-family: 'Courier New', monospace;
-        background-color: #f5f5f5;
-        padding: 1rem;
-        border-radius: 8px;
-        font-size: 0.9rem;
-        line-height: 1.6;
-    }
-    .chapter-item {
-        color: #1a73e8;
-        font-weight: 600;
-        margin-top: 0.5rem;
-    }
-    .section-item {
-        color: #5f6368;
-        padding-left: 1.5rem;
-    }
-
-    /* Status badges */
-    .status-badge {
-        display: inline-block;
-        padding: 0.25rem 0.75rem;
-        border-radius: 12px;
-        font-size: 0.85rem;
-        font-weight: 500;
-    }
-    .status-completed { background-color: #d4edda; color: #155724; }
-    .status-active    { background-color: #fff3cd; color: #856404; }
-    .status-pending   { background-color: #e9ecef; color: #6c757d; }
-
-    /* Config panel */
-    .config-info {
-        font-size: 0.82rem;
-        color: #6c757d;
-        margin-top: 0.2rem;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# Initialize session state
-if "generated_file_path" not in st.session_state:
-    st.session_state.generated_file_path = None
-if "curriculum_structure" not in st.session_state:
-    st.session_state.curriculum_structure = None
-if "current_progress" not in st.session_state:
-    st.session_state.current_progress = {
-        "chapter": 0,
-        "subsection": 0,
-        "total_chapters": 0,
-        "total_subsections": 0
-    }
-if "generated_docx_path" not in st.session_state:
-    st.session_state.generated_docx_path = None
-if "stop_event" not in st.session_state:
-    st.session_state.stop_event = threading.Event()
-if "is_running" not in st.session_state:
-    st.session_state.is_running = False
-    
-
+# ============================================================================
 # Header
+# ============================================================================
 st.markdown(
-    '<div class="main-header">📚 AI Textbook Generator</div>',
-    unsafe_allow_html=True
+    '<div class="main-header">📚 Hệ Thống Tạo Giáo Trình Tự Động</div>',
+    unsafe_allow_html=True,
 )
 st.markdown(
-    '<p style="text-align: center; color: #6c757d; margin-bottom: 2rem;">'
-    'Tạo giáo trình tự động với AI - Powered by LangGraph & RAG</p>',
-    unsafe_allow_html=True
+    '<p class="sub-header">'
+    "Hệ thống AI — vui lòng kiểm tra lại kết quả trước khi sử dụng"
+    "</p>",
+    unsafe_allow_html=True,
 )
 
 # ============================================================================
-# SIDEBAR - Configuration
+# Sidebar / Input / Config
 # ============================================================================
-with st.sidebar:
-    st.header("⚙️ Cấu hình")
+render_sidebar()
+topic, _default_config = render_input_row()
+config = render_config_panel() or _default_config
 
-    # --- Nội dung ---
-    st.subheader("📖 Nội dung")
+# ============================================================================
+# Resolve current phase ONCE at top — used for all conditional rendering below.
+# _workflow_phase is the authoritative source; do NOT re-read session_state
+# mid-script to avoid stale reads on the same rerun cycle where phase changes.
+# ============================================================================
+_phase     = st.session_state.get("workflow_phase", "idle")
+_confirmed = st.session_state.get("_curriculum_confirmed", False)
+_is_active = _phase in ("planning", "reviewing", "generating", "done")
 
-    num_chapters = st.slider(
-        "Số chương",
-        min_value=1,
-        max_value=20,
-        value=3,
-        help="Số lượng chương trong giáo trình. Nhiều chương hơn → thời gian tạo lâu hơn."
-    )
-
-    # Độ dài nội dung — radio thay thế slider min_words.
-    # Mỗi level scale char targets của tất cả section_type theo CONTENT_LEVEL_SCALES
-    # trong state.py. Ước tính số từ dựa trên section type "medium" (phổ biến nhất):
-    #   base chars: 3000 min – 4500 max  |  4.8 chars/từ (tiếng Việt đơn âm tiết)
-    #   Ngắn:       3000×0.55/4.8 ≈ 344  →  4500×0.55/4.8 ≈ 516   → ~350–500 từ
-    #   Trung Bình: 3000×1.0 /4.8 ≈ 625  →  4500×1.0 /4.8 ≈ 938   → ~600–950 từ
-    #   Dài:        3000×1.6 /4.8 ≈ 1000 →  4500×1.6 /4.8 ≈ 1500  → ~1000–1500 từ
-    #   Rất Dài:    3000×2.3 /4.8 ≈ 1438 →  4500×2.3 /4.8 ≈ 2156  → ~1400–2200 từ
-    _level_desc = {
-        "Ngắn":       "~350–500 từ/mục · Trình bày cốt lõi, súc tích",
-        "Trung Bình": "~600–950 từ/mục · Cân bằng lý thuyết và ví dụ",
-        "Dài":        "~1000–1500 từ/mục · Phân tích sâu, nhiều ví dụ",
-        "Rất Dài":    "~1400–2200 từ/mục · Toàn diện, mức học thuật",
-    }
-
-    content_level = st.radio(
-        "Độ dài nội dung",
-        options=["Ngắn", "Trung Bình", "Dài", "Rất Dài"],
-        index=1,   # default: Trung Bình
-        horizontal=True,
-        help=(
-            "Kiểm soát độ dài và độ sâu của mỗi mục. "
-            "Áp dụng đồng nhất cho tất cả section types (light / medium / deep / applied)."
-        )
-    )
-
-
-    st.markdown(
-        f'<div class="config-info">{_level_desc[content_level]}</div>',
-        unsafe_allow_html=True
-    )
-
-    max_subsections = st.slider(
-        "Số mục tối đa / chương",
-        min_value=2,
-        max_value=10,
-        value=3,
-        help=(
-            "Giới hạn số mục con trong mỗi chương. "
-            "Planner sẽ chọn cấu trúc phù hợp với chủ đề trong giới hạn này."
-        )
-    )
-
+# ============================================================================
+# Progress bar + status text
+# ============================================================================
+if _is_active:
     st.divider()
+    st.progress(st.session_state.get("progress_value", 0.0))
+    if st.session_state.get("status_text"):
+        st.markdown(st.session_state.status_text)
 
-    # --- Hình ảnh ---
-    st.subheader("🖼️ Hình ảnh")
+# ============================================================================
+# Workflow stage cards
+#
+# CRITICAL: Each card is rendered via st.empty() so the slot is ATOMIC —
+# it can hold exactly one item. This prevents any double-render artifact that
+# would appear with plain st.markdown() when two reruns happen in quick
+# succession (e.g. config panel toggle + drain rerun firing simultaneously).
+# ============================================================================
+ingestion_slot  = st.empty()
+planner_slot    = st.empty()
+tree_slot       = st.empty()
+sub_stage_slot  = st.empty()
+publisher_slot  = st.empty()
 
-    enable_images = st.toggle(
-        "Chèn hình ảnh minh họa",
-        value=True,
-        help="Tìm và chèn hình ảnh từ Google Images vào giáo trình. Yêu cầu SERPER_API_KEY."
+if st.session_state.get("ingestion_html"):
+    ingestion_slot.markdown(st.session_state.ingestion_html, unsafe_allow_html=True)
+
+if st.session_state.get("planner_html"):
+    planner_slot.markdown(st.session_state.planner_html, unsafe_allow_html=True)
+
+if st.session_state.get("curriculum_html"):
+    tree_slot.markdown(
+        "### 📚 Cấu trúc giáo trình\n\n" + st.session_state.curriculum_html,
+        unsafe_allow_html=True,
     )
 
-    if enable_images:
-        st.markdown(
-            '<div class="config-info">✓ Hình ảnh sẽ được tải về, resize và chèn tự động.</div>',
-            unsafe_allow_html=True
-        )
-    else:
-        st.markdown(
-            '<div class="config-info">✗ Bỏ qua bước tìm hình — giáo trình chỉ có text.</div>',
-            unsafe_allow_html=True
-        )
-        
-    st.divider()
-    st.subheader("📄 Định dạng xuất")
+if st.session_state.get("sub_stage_html"):
+    sub_stage_slot.markdown(st.session_state.sub_stage_html, unsafe_allow_html=True)
 
-    export_formats = st.multiselect(
-        "Chọn định dạng",
-        options=["PDF", "Word"],
-        default=["Word"],
-        help=(
-            "PDF: xuất qua Typst, giữ nguyên layout và công thức toán.\n"
-            "Word: xuất .docx, công thức render qua OMML, có thể chỉnh sửa."
-        )
-    )
-    if not export_formats:
-        st.warning("⚠️ Chọn ít nhất một định dạng.")
-        export_formats = ["Word"]   
+if st.session_state.get("publisher_html"):
+    publisher_slot.markdown(st.session_state.publisher_html, unsafe_allow_html=True)
 
-    st.divider()
-
-    # --- Hệ thống ---
-    st.subheader("🔧 Hệ thống")
-
-    # recursion_limit tính động trước khi có curriculum thực tế.
-    # Công thức: ingestion(1) + planner(1) + subsections × steps + publisher(1) + buffer(25%)
-    # 9 steps/sub (with images) = researcher + writer + reviewer(×2 max) + illustrator +
-    #                             route_after_review + check_next_step + update_sub/chapter
-    _est_subs      = num_chapters * max_subsections
-    _steps_per_sub = 9 if enable_images else 8   # worst case với MAX_REVISIONS=2
-    _auto_limit    = int((3 + _est_subs * _steps_per_sub) * 1.25)
-
-    st.markdown(
-        f'<div class="config-info">Recursion limit tự động: <b>{_auto_limit}</b> '
-        f'(dựa trên ~{_est_subs} mục × {_steps_per_sub} steps + 25% buffer)</div>',
-        unsafe_allow_html=True
-    )
-    st.divider()
-    st.subheader("📊 Thống kê")
-    if st.session_state.curriculum_structure:
-        st.metric("Số chương", st.session_state.current_progress['total_chapters'])
-        st.metric("Tổng số mục", st.session_state.current_progress['total_subsections'])
-
-    st.divider()
-    if st.button("🧹 Xóa Cache & Reset"):
-        st.session_state.clear()
-        st.rerun()
+# ============================================================================
+# Phase 4 — Curriculum editor slot
+#
+# st.empty() creates a fixed-position slot in the DOM.
+# - When phase == "reviewing": slot is populated with the editor
+# - When phase != "reviewing": slot is an empty container → previous
+#   content at this position is cleared automatically by Streamlit
+# No flags, no guards needed — the slot itself handles visibility.
+# ============================================================================
+editor_slot = st.empty()
+if st.session_state.get("workflow_phase") == "reviewing":
+    with editor_slot.container():
+        st.divider()
+        render_curriculum_editor()
 
 
 # ============================================================================
-# MAIN UI - Topic input
+# Phase 4b — Process confirmed curriculum
 # ============================================================================
-col1, col2 = st.columns([3, 1])
-with col1:
-    topic = st.text_input(
-        "📌 Nhập chủ đề giáo trình:",
-        placeholder="Ví dụ: Công nghệ Blockchain, Kỹ thuật trồng hoa lan, Marketing cơ bản..."
-    )
-with col2:
-    st.write("")
-    st.write("")
-    start_btn = st.button(
-        "🚀 Bắt đầu tạo", type="primary", use_container_width=True,
-        disabled=st.session_state.is_running
-    )
-    if st.session_state.is_running:
-        if st.button("⛔ Dừng lại", type="secondary", use_container_width=True):
-            st.session_state.stop_event.set()
-            stop_signal.request_stop()
-            st.session_state.is_running = False
-            st.rerun()
+if (st.session_state.get("workflow_phase") == "generating"
+        and st.session_state.get("_confirmed_curriculum_dict") is not None
+        and st.session_state.get("_content_initial_state") is None):
 
-# Config summary caption below topic input
+    edited_dict = st.session_state["_confirmed_curriculum_dict"]
+
+    from src.graph.state import CurriculumOutline
+    edited_curriculum = None
+    try:
+        edited_curriculum = CurriculumOutline(**edited_dict)
+    except Exception:
+        pass
+    if edited_curriculum is None:
+        try:
+            if hasattr(CurriculumOutline, "model_validate"):
+                edited_curriculum = CurriculumOutline.model_validate(edited_dict)
+            else:
+                edited_curriculum = CurriculumOutline.parse_obj(edited_dict)
+        except Exception as e:
+            st.error(f"❌ Lỗi phân tích cấu trúc: {e}")
+
+    if edited_curriculum:
+        edited_sub_count = sum(len(ch.subsections) for ch in edited_curriculum.chapters)
+        _enable_imgs   = st.session_state.get("_pending_config", {}).get("enable_images", True)
+        _steps_per_sub = 9 if _enable_imgs else 8
+
+        st.session_state["_total_steps"] = int((3 + edited_sub_count * _steps_per_sub) * 1.25)
+        st.session_state["_step_count"]  = 0
+        st.session_state["_sub_stages"]  = {
+            "researcher": "pending", "writer": "pending",
+            "reviewer": "pending", "illustrator": "pending",
+        }
+        content_state = build_content_initial_state(
+            st.session_state.get("_planning_initial_state", {}),
+            edited_curriculum,
+            st.session_state.get("_planner_result", {}),
+        )
+        st.session_state["_content_initial_state"]       = content_state
+        st.session_state["_confirmed_curriculum_dict"]   = None  # clear after use
+        st.session_state.curriculum_structure            = edited_curriculum
+        st.session_state.curriculum_html                 = render_curriculum_tree(edited_curriculum)
+        st.session_state.current_progress["total_chapters"]    = len(edited_curriculum.chapters)
+        st.session_state.current_progress["total_subsections"] = edited_sub_count
+
+        for k in [k for k in st.session_state
+                  if k.startswith("_edit_") or k.startswith("_del_")
+                  or k.startswith("_new_sub") or k.startswith("_add_sub")]:
+            del st.session_state[k]
+        st.session_state["_deleted_subs"] = set()
+
+        st.session_state.is_running     = True
+        st.session_state.event_q        = None
+        st.session_state.progress_value = 0.10
+        st.session_state.status_text    = "**Bước 3/4:** Đang tạo nội dung..."
+        # No st.rerun() needed — thread-start block below runs in same cycle
+
+# ============================================================================
+# Download section
+# ============================================================================
+render_download_section()
+
+
+# ============================================================================
+# Topic submit — reset all state, start planning phase
+# ============================================================================
 if topic:
-    img_label = "✓ Có hình ảnh" if enable_images else "✗ Không có hình"
-    st.caption(
-        f"Cấu hình: **{num_chapters} chương** · "
-        f"**≤{max_subsections} mục/chương** · "
-        f"**{content_level}** ({_level_desc[content_level].split('·')[0].strip()}) · "
-        f"**{img_label}**"
-    )
-
-
-# ============================================================================
-# HELPERS
-# ============================================================================
-def render_curriculum_tree(curriculum):
-    """Render curriculum structure as a tree (Deep Search style)."""
-    tree_html = '<div class="curriculum-tree">'
-    tree_html += (
-        f'<div style="color: #1a73e8; font-weight: 700; margin-bottom: 0.5rem;">'
-        f'📘 {curriculum.topic}</div>'
-    )
-
-    for idx, chapter in enumerate(curriculum.chapters, 1):
-        tree_html += f'<div class="chapter-item">├─ Chương {idx}: {chapter.title}</div>'
-
-        for sub_idx, subsection in enumerate(chapter.subsections, 1):
-            is_last    = sub_idx == len(chapter.subsections)
-            connector  = "└─" if is_last else "├─"
-            stype      = getattr(subsection, 'section_type', '')
-            type_badge = (
-                f' <span style="color:#aaa;font-size:0.8em">[{stype}]</span>'
-                if stype else ''
-            )
-            tree_html += (
-                f'<div class="section-item">'
-                f'│  {connector} {idx}.{sub_idx} {subsection.title}{type_badge}'
-                f'</div>'
-            )
-
-    tree_html += '</div>'
-    return tree_html
-
-
-def render_workflow_status(stage, status, message):
-    """Render workflow stage card (Deep Search style)."""
-    icons = {
-        "ingestion":   "🔍",
-        "planner":     "📋",
-        "researcher":  "📚",
-        "writer":      "✍️",
-        "reviewer":    "👁️",
-        "illustrator": "🎨",
-        "publisher":   "📦",
-    }
-    badge_class = {
-        "completed": "status-completed",
-        "active":    "status-active",
-        "pending":   "status-pending",
-    }
-    badge_text = {
-        "completed": "✓ Hoàn tất",
-        "active":    "⏳ Đang xử lý",
-        "pending":   "⏸️ Chờ xử lý",
-    }
-    card_class = {
-        "completed": "completed",
-        "active":    "active",
-        "pending":   "pending",
-    }
-
-    icon  = icons.get(stage, "📌")
-    c_cls = card_class.get(status, "pending")
-    b_cls = badge_class.get(status, "status-pending")
-    badge = badge_text.get(status, "Pending")
-
-    return f'''
-    <div class="workflow-card {c_cls}">
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-            <div>
-                <span style="font-size: 1.2rem; margin-right: 0.5rem;">{icon}</span>
-                <strong><p style="text-align: center; color: #adb5bd; font-size: 0.85rem;">{message}</p></strong>
-            </div>
-            <span class="status-badge {b_cls}">{badge}</span>
-        </div>
-    </div>
-    '''
-
-
-# ============================================================================
-# WORKFLOW EXECUTION
-# ============================================================================
-if start_btn and topic:
-    # Reset session state for new run
-    st.session_state.generated_file_path = None
+    st.session_state.generated_file_path  = None
+    st.session_state.generated_docx_path  = None
     st.session_state.curriculum_structure = None
-    st.session_state.current_progress = {
+    st.session_state.current_progress     = {
         "chapter": 0, "subsection": 0,
         "total_chapters": 0, "total_subsections": 0,
     }
+    st.session_state.event_q               = None
+    st.session_state["_sub_stages"]        = {
+        "researcher": "pending", "writer": "pending",
+        "reviewer": "pending", "illustrator": "pending",
+    }
+    st.session_state["_total_steps"]       = 30
+    st.session_state["_step_count"]        = 0
+    st.session_state["_deleted_subs"]             = set()
+    st.session_state["_confirmed_curriculum_dict"] = None
+    st.session_state["_content_initial_state"]     = None
+    st.session_state["_planner_result"] = {"textbook_title": "", "preface_content": ""}
 
-    st.session_state.stop_event.clear()
+    for k in [k for k in st.session_state
+              if k.startswith("_edit_") or k.startswith("_del_")
+              or k.startswith("_new_sub") or k.startswith("_add_sub")]:
+        del st.session_state[k]
+
+    for key in ("progress_value", "status_text", "ingestion_html",
+                "planner_html", "sub_stage_html", "publisher_html", "curriculum_html"):
+        st.session_state[key] = 0.0 if key == "progress_value" else ""
+
     stop_signal.clear()
-    st.session_state.is_running = True
+    st.session_state.stop_event.clear()
 
-    app = create_workflow()
+    initial_planning_state = build_initial_state(topic, **config)
+    st.session_state["_planning_initial_state"] = initial_planning_state
+    st.session_state["_pending_topic"]  = topic
+    st.session_state["_pending_config"] = config
 
-    initial_state = {
-        "request": topic,
+    st.session_state.workflow_phase = "planning"
+    st.session_state.is_running     = True
+    st.session_state.progress_value = 0.02
+    st.session_state.status_text    = "**Bước 1/4:** Đang mở rộng truy vấn và thu thập dữ liệu..."
+    # ingestion_html intentionally NOT set here — drain loop is sole owner.
+    st.rerun()
 
-        # User configuration
-        "num_chapters":                num_chapters,
-        "enable_images":               enable_images,
-        "content_level":               content_level,   # drives char targets via CONTENT_LEVEL_SCALES
-        "min_chars_per_section":       0,               # 0 = use content_level as sole floor
-        "max_subsections_per_chapter": max_subsections,
 
-        # Runtime state — all reset at workflow start
-        "rag_context":              "",
-        "current_chapter_index":    0,
-        "current_subsection_index": 0,
-        "revision_number":          0,
-        "review_feedback":          "",
-        "chapter_header_written":   False,
-        "messages":                 [],
-        "final_content":            "",
-        "current_content":          "",
-        "export_formats":              export_formats,
-        "final_docx_filepath":         None,
-    }
+# ============================================================================
+# Thread start — planning phase
+# ============================================================================
+if (st.session_state.get("workflow_phase") == "planning"
+        and st.session_state.get("event_q") is None):
+    eq: queue.Queue[WorkflowEvent] = queue.Queue()
+    st.session_state.event_q = eq
+    start_planning_thread(
+        st.session_state.get("_planning_initial_state", {}),
+        st.session_state.get("_pending_config", {}).get("recursion_limit", 105),
+        eq,
+    )
 
-    st.divider()
 
-    progress_container   = st.container()
-    status_container     = st.container()
-    curriculum_container = st.container()
+# ============================================================================
+# Thread start — content generation phase
+# ============================================================================
+if (st.session_state.get("workflow_phase") == "generating"
+        and st.session_state.get("event_q") is None):
+    eq_c: queue.Queue[WorkflowEvent] = queue.Queue()
+    st.session_state.event_q = eq_c
+    start_content_thread(
+        st.session_state.get("_content_initial_state", {}),
+        st.session_state.get("_pending_config", {}).get("recursion_limit", 105),
+        eq_c,
+    )
 
-    workflow_stages = {
-        "ingestion":          {"status": "pending", "message": "Thu thập dữ liệu từ web"},
-        "planner":            {"status": "pending", "message": "Lập dàn ý giáo trình"},
-        "content_generation": {"status": "pending", "message": "Sinh nội dung"},
-        "publisher":          {"status": "pending", "message": "Xuất bản tài liệu"},
-    }
+
+# ============================================================================
+# Drain event queue
+#
+# Runs during planning and generating phases only.
+# st.rerun() is called OUTSIDE try/except so RerunException propagates cleanly.
+#
+# ingestion_html is set HERE (not in submit block) as the sole source of truth.
+# Using ingestion_slot.markdown() (via the slot created above) guarantees
+# atomic single-slot rendering — no duplication across rapid reruns.
+# ============================================================================
+_active_phase = st.session_state.get("workflow_phase", "idle")
+
+if _active_phase in ("planning", "generating") and st.session_state.get("event_q") is not None:
+
+    event_q_live:     queue.Queue[WorkflowEvent] = st.session_state.event_q #type: ignore
+    is_planning_phase = (_active_phase == "planning")
+
+    sub_stages:  dict = st.session_state.get("_sub_stages", {
+        "researcher": "pending", "writer": "pending",
+        "reviewer":   "pending", "illustrator": "pending",
+    })
+    total_steps: int = st.session_state.get("_total_steps", 30)
+    step_count:  int = st.session_state.get("_step_count", 0)
+
+    needs_rerun = False
+    terminal    = False
+    drain_error = None
+
+    # Set ingestion "active" card on the very first planning drain cycle.
+    # Only runs when ingestion_html is empty (i.e. once per workflow run).
+    # Writes DIRECTLY to ingestion_slot so it's always in the correct
+    # position in the component tree, regardless of rerun timing.
+    if is_planning_phase and not st.session_state.get("ingestion_html"):
+        _ing_html = render_workflow_status(
+            "ingestion", "active",
+            f"Đang thu thập dữ liệu về '{st.session_state.get('_pending_topic', '')}'"
+        )
+        st.session_state.ingestion_html = _ing_html
+        ingestion_slot.markdown(_ing_html, unsafe_allow_html=True)
+        needs_rerun = True
 
     try:
-        with progress_container:
-            progress_bar  = st.progress(0)
-            progress_text = st.empty()
-
-        step_count            = 0
-        total_estimated_steps = 30   # updated after planner completes
-        recursion_limit       = _auto_limit
-        content_started       = False
-
-        # Run streaming in a background thread so the stop button stays responsive
-        event_q = _queue.Queue()
-
-        def _stream_worker(rl=recursion_limit):
-            try:
-                for ev in app.stream(initial_state, {"recursion_limit": rl}):
-                    if stop_signal.is_stopped():
-                        event_q.put(("STOPPED", None))
-                        return
-                    event_q.put(("EVENT", ev))
-                event_q.put(("DONE", None))
-            except Exception as exc:
-                event_q.put(("ERROR", exc))
-
-        _worker = threading.Thread(target=_stream_worker, daemon=True)
-        _worker.start()
-
+        first = True
         while True:
             try:
-                msg_type, payload = event_q.get(timeout=1.0)
-            except _queue.Empty:
-                continue
-            if msg_type == "STOPPED":
-                st.session_state.is_running = False
-                st.warning("⛔ Quá trình đã bị dừng.")
+                event: WorkflowEvent = event_q_live.get(timeout=0.5 if first else 0)
+                first = False
+            except queue.Empty:
+                needs_rerun = True
                 break
-            elif msg_type == "DONE":
-                st.session_state.is_running = False
-                break
-            elif msg_type == "ERROR":
-                st.session_state.is_running = False
-                raise payload
 
-            # msg_type == "EVENT"
-            event = payload
-            for key, value in event.items():
-                step_count += 1
-                progress = min(step_count / total_estimated_steps, 0.95)
-                progress_bar.progress(progress)
+            needs_rerun  = True
+            step_count  += 1
 
-                # === INGESTION ===
-                if key == "ingestion":
-                    workflow_stages["ingestion"]["status"] = "completed"
-                    progress_text.markdown("**Bước 1/4:** Thu thập dữ liệu hoàn tất")
-                    with status_container:
-                        st.markdown(render_workflow_status(
-                            "ingestion", "completed",
-                            f"Thu thập dữ liệu về '{topic}'"
-                        ), unsafe_allow_html=True)
+            match event.type:
 
-                # === PLANNER ===
-                elif key == "planner":
-                    workflow_stages["planner"]["status"] = "completed"
-                    progress_text.markdown("**Bước 2/4:** Lập dàn ý hoàn tất")
-
-                    plan = value.get("curriculum")
-                    if plan:
-                        st.session_state.curriculum_structure = plan
-
-                        total_chapters    = len(plan.chapters)
-                        total_subsections = sum(len(ch.subsections) for ch in plan.chapters)
-                        st.session_state.current_progress['total_chapters']    = total_chapters
-                        st.session_state.current_progress['total_subsections'] = total_subsections
-
-                        with status_container:
-                            st.markdown(render_workflow_status(
-                                "planner", "completed",
-                                f"Dàn ý: {plan.topic} ({total_chapters} chương, {total_subsections} mục)"
-                            ), unsafe_allow_html=True)
-
-                        with curriculum_container:
-                            st.markdown("### 📚 Cấu trúc giáo trình")
-                            st.markdown(render_curriculum_tree(plan), unsafe_allow_html=True)
-
-                # === CONTENT GENERATION ===
-                elif key in ["researcher", "writer", "reviewer", "illustrator"]:
-                    if not content_started:
-                        workflow_stages["content_generation"]["status"] = "active"
-                        content_started = True
-
-                    current_state = value
-                    chap_idx = current_state.get("current_chapter_index", 0)
-                    sub_idx  = current_state.get("current_subsection_index", 0)
-
-                    st.session_state.current_progress['chapter']    = chap_idx + 1
-                    st.session_state.current_progress['subsection'] = sub_idx + 1
-
-                    stage_label = {
-                        "researcher":  "🔍 Tìm kiếm tài liệu",
-                        "writer":      "✍️ Viết nội dung",
-                        "reviewer":    "👁️ Kiểm tra chất lượng",
-                        "illustrator": "🎨 Chèn hình ảnh",
-                    }.get(key, key)
-
-                    progress_text.markdown(
-                        f"**Bước 3/4:** {stage_label} — "
-                        f"Chương {chap_idx + 1}, "
-                        f"Mục {sub_idx + 1}/{st.session_state.current_progress['total_subsections']}"
+                case EventType.INGESTION_DONE:
+                    st.session_state.progress_value = 0.05
+                    st.session_state.status_text    = "**Bước 1/4:** Thu thập dữ liệu — ✓ Hoàn tất"
+                    _h = render_workflow_status(
+                        "ingestion", "completed",
+                        f"Thu thập dữ liệu về '{st.session_state.get('_pending_topic', '')}'"
                     )
+                    st.session_state.ingestion_html = _h
+                    ingestion_slot.markdown(_h, unsafe_allow_html=True)
 
-                # === CHECKPOINT NODES ===
-                elif key in ["update_subsection", "update_chapter"]:
-                    pass
+                case EventType.PLANNER_DONE:
+                    total_steps = int((3 + event.total_subsections * 9) * 1.25)
+                    st.session_state.current_progress["total_chapters"]    = event.total_chapters
+                    st.session_state.current_progress["total_subsections"] = event.total_subsections
+                    st.session_state.curriculum_structure = event.curriculum
+                    st.session_state["_planner_result"] = {
+                        "textbook_title":  event.textbook_title,
+                        "preface_content": event.preface_content,
+                    }
+                    st.session_state.progress_value = 0.10
+                    st.session_state.status_text    = "**Bước 2/4:** Lập dàn ý — ✓ Hoàn tất"
+                    _ph = render_workflow_status(
+                        "planner", "completed",
+                        f"Dàn ý: {event.curriculum.topic} "
+                        f"({event.total_chapters} chương, {event.total_subsections} mục)"
+                    )
+                    st.session_state.planner_html = _ph
+                    planner_slot.markdown(_ph, unsafe_allow_html=True)
+                    _tree = render_curriculum_tree(event.curriculum)
+                    st.session_state.curriculum_html = _tree
+                    tree_slot.markdown("### 📚 Cấu trúc giáo trình\n\n" + _tree, unsafe_allow_html=True)
 
-                # === PUBLISHER ===
-                elif key == "publisher":
-                    workflow_stages["content_generation"]["status"] = "completed"
-                    workflow_stages["publisher"]["status"] = "active"
-                    progress_bar.progress(1.0)
-                    progress_text.markdown("**Bước 4/4:** Xuất bản tài liệu...")
+                case EventType.CONTENT_UPDATE:
+                    progress = min(0.10 + step_count / max(total_steps, 1) * 0.85, 0.95)
+                    st.session_state.progress_value = progress
 
-                    raw_path      = value.get("final_filepath")
-                    raw_docx_path = value.get("final_docx_filepath")
+                    chap         = event.chapter_idx
+                    sub          = event.subsection_idx
+                    total_ch     = st.session_state.current_progress["total_chapters"]
+                    subs_in_chap = event.subsections_in_chapter or 1
 
-                    # ── Lưu Word path vào session state ──────────────
-                    if raw_docx_path and os.path.exists(os.path.abspath(raw_docx_path)):
-                        st.session_state.generated_docx_path = os.path.abspath(raw_docx_path)
+                    if event.stage == "researcher" and event.stage_status == "start":
+                        for k in sub_stages:
+                            sub_stages[k] = "pending"
 
-                    # ── Xử lý PDF / MD path ──────────────────────────
-                    if raw_path:
-                        abs_md_path  = os.path.abspath(raw_path)
-                        abs_pdf_path = abs_md_path.replace(".md", ".pdf")
+                    sub_stages[event.stage] = (
+                        "active" if event.stage_status == "start" else "done"
+                    )
+                    st.session_state.status_text = (
+                        f"**Bước 3/4:** Chương {chap+1}/{total_ch} · "
+                        f"Mục {sub+1}/{subs_in_chap}"
+                    )
+                    _ss = build_sub_stage_card(sub_stages, chap, sub, subs_in_chap, total_ch)
+                    st.session_state.sub_stage_html = _ss
+                    sub_stage_slot.markdown(_ss, unsafe_allow_html=True)
 
-                        if os.path.exists(abs_pdf_path):
-                            st.session_state.generated_file_path = abs_pdf_path
-                            workflow_stages["publisher"]["status"] = "completed"
-                            status_msg = "Xuất bản PDF thành công"
-                            if raw_docx_path:
-                                status_msg += " + Word"
-                            with status_container:
-                                st.markdown(render_workflow_status(
-                                    "publisher", "completed", status_msg
-                                ), unsafe_allow_html=True)
-                            st.balloons()
+                case EventType.CHECKPOINT:
+                    for k in sub_stages:
+                        sub_stages[k] = "pending"
 
-                        elif os.path.exists(abs_md_path):
-                            st.session_state.generated_file_path = abs_md_path
-                            workflow_stages["publisher"]["status"] = "completed"
-                            with status_container:
-                                st.markdown(render_workflow_status(
-                                    "publisher", "completed",
-                                    "Xuất bản Markdown (PDF generation failed)"
-                                ), unsafe_allow_html=True)
+                case EventType.PUBLISHER_DONE:
+                    st.session_state.progress_value = 1.0
+                    st.session_state.status_text    = "**Bước 4/4:** Xuất bản — ✓ Hoàn tất"
+                    _pub = render_workflow_status(
+                        "publisher", "completed", "Xuất bản tài liệu hoàn tất"
+                    )
+                    st.session_state.publisher_html = _pub
+                    publisher_slot.markdown(_pub, unsafe_allow_html=True)
+                    if event.final_filepath:
+                        abs_path = os.path.abspath(event.final_filepath)
+                        pdf_path = abs_path.replace(".md", ".pdf")
+                        st.session_state.generated_file_path = (
+                            pdf_path if os.path.exists(pdf_path) else
+                            abs_path if os.path.exists(abs_path) else None
+                        )
+                    if event.final_docx_filepath:
+                        docx_abs = os.path.abspath(event.final_docx_filepath)
+                        if os.path.exists(docx_abs):
+                            st.session_state.generated_docx_path = docx_abs
 
-                        else:
-                            st.error(f"❌ File không tồn tại: {abs_pdf_path}")
+                case EventType.DONE:
+                    st.session_state.event_q = None
+                    if is_planning_phase:
+                        st.session_state.workflow_phase = "reviewing"
+                        st.session_state.is_running     = False
                     else:
-                        st.error("❌ Publisher không trả về file path")
-    except Exception as e:
-        st.error(f"❌ Lỗi hệ thống: {e}")
+                        st.session_state.workflow_phase = "done"
+                        st.session_state.is_running     = False
+                        st.balloons()
+                    terminal    = True
+                    needs_rerun = True
+                    break
+
+                case EventType.STOPPED:
+                    st.session_state.workflow_phase = "idle"
+                    st.session_state.is_running     = False
+                    st.session_state.event_q        = None
+                    st.session_state.status_text    = "⛔ Quá trình đã bị dừng."
+                    terminal    = True
+                    needs_rerun = True
+                    break
+
+                case EventType.ERROR:
+                    st.session_state.workflow_phase = "idle"
+                    st.session_state.is_running     = False
+                    st.session_state.event_q        = None
+                    st.session_state.status_text    = f"❌ Lỗi hệ thống: {event.error}"
+                    terminal    = True
+                    needs_rerun = True
+                    break
+
+        st.session_state["_sub_stages"]  = sub_stages
+        st.session_state["_total_steps"] = total_steps
+        st.session_state["_step_count"]  = step_count
+
+    except Exception as exc:
+        st.session_state.workflow_phase = "idle"
+        st.session_state.is_running     = False
+        st.session_state.event_q        = None
+        st.session_state.status_text    = f"❌ Lỗi hệ thống: {exc}"
+        drain_error  = exc
+        needs_rerun  = False
+
+    if drain_error is not None:
+        st.error(f"❌ Lỗi hệ thống: {drain_error}")
         with st.expander("Chi tiết lỗi"):
-            st.exception(e)
+            st.exception(drain_error)
 
-
-# ============================================================================
-# DOWNLOAD SECTION
-# ============================================================================
-_has_pdf  = (
-    st.session_state.generated_file_path
-    and st.session_state.generated_file_path.endswith(".pdf")
-    and os.path.exists(st.session_state.generated_file_path)
-)
-_has_docx = (
-    st.session_state.get("generated_docx_path")
-    and os.path.exists(st.session_state.generated_docx_path) # type:ignore
-)
-
-if _has_pdf or _has_docx:
-    st.divider()
-    st.markdown(
-        '<div class="success-box">🎉 <strong>Giáo trình của bạn đã sẵn sàng!</strong></div>',
-        unsafe_allow_html=True
-    )
-    st.write("")
-
-    # Build download columns dynamically based on available files
-    available = []
-    if _has_pdf:
-        available.append(("pdf", st.session_state.generated_file_path))
-    if _has_docx:
-        available.append(("docx", st.session_state.generated_docx_path))
-
-    cols = st.columns(len(available))
-    for col, (fmt, fpath) in zip(cols, available):
-        with col:
-            fname     = os.path.basename(fpath)
-            fsize     = os.path.getsize(fpath) / 1024
-            mime_map  = {"pdf": "application/pdf", "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
-            icon_map  = {"pdf": "📕", "docx": "📘"}
-            label_map = {"pdf": "PDF", "docx": "Word (.docx)"}
-
-            st.metric(
-                f"{icon_map[fmt]} {label_map[fmt]}",
-                f"{fsize:.1f} KB"
-            )
-            with open(fpath, "rb") as f:
-                st.download_button(
-                    label=f"⬇️ Tải xuống {label_map[fmt]}",
-                    data=f,
-                    file_name=fname,
-                    mime=mime_map[fmt],
-                    type="primary",
-                    use_container_width=True,
-                )
-            st.code(fpath, language=None)
+    # st.rerun() OUTSIDE try/except so RerunException propagates cleanly
+    if needs_rerun:
+        st.rerun()

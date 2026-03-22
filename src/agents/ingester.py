@@ -31,6 +31,7 @@ from src.ingestion.url_filter import filter_and_classify_urls
 from src.ingestion.crawler import ingest_dynamic_data
 from src import stop_signal
 from src.log_config import setup_logger
+from src.config import CHROMA_DB_DIR, SEARCH_RESULTS_PER_QUERY, SEARCH_MAX_WORKERS
 
 # Use setup_logger (not logging.getLogger) so ingestion logs are written to
 # logs/agents.log with the same formatter and file handler as all other agents.
@@ -115,11 +116,11 @@ def perform_ingestion(state: AgentState) -> dict:
     seen_urls:    set[str]  = set()
     all_raw_urls: list[str] = []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=SEARCH_MAX_WORKERS) as executor:
         futures = {
-            executor.submit(search_web, q, 20, r): (q, r)
-            for q, r in region_query_pairs
-        }
+        executor.submit(search_web, q, SEARCH_RESULTS_PER_QUERY, r): (q, r)
+        for q, r in region_query_pairs
+         }
         for future in concurrent.futures.as_completed(futures):
             if stop_signal.is_stopped():
                 break

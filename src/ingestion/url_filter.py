@@ -17,7 +17,7 @@ Quality strategy:
 from urllib.parse import urlparse
 from typing import List, Dict, Optional
 from threading import Lock
-
+from src.config import URL_FILTER_MAX_WORKERS
 import concurrent.futures
 import requests
 
@@ -245,7 +245,7 @@ def filter_and_classify_urls(urls: List[str]) -> List[Dict[str, str]]:
             with lock:
                 clean_urls.append({"url": url, "type": doc_type})
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=URL_FILTER_MAX_WORKERS) as executor:
         futures = [executor.submit(check_and_collect, url) for url in candidate_urls]
         concurrent.futures.wait(futures)
 
