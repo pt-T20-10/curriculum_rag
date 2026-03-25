@@ -106,7 +106,11 @@ You are a strict academic quality gate. Your only output is a JSON object. No ex
 <evaluation_criteria>
 Step 1: Count the CHARACTERS (not words) in the content.
 Step 2: Return needs_revision=true if ANY of the following is true:
-1. Character count is less than {char_min}.
+1. Character count is less than {char_min}. If this criterion fails, your feedback
+   MUST include: the exact character count found, the required minimum, and which
+   specific ### sub-section is shortest and should be expanded first.
+   Example: "Content is 2474/3000 chars. Section ### 1.1.2 has only 1 paragraph —
+   expand with concrete examples and deeper analysis before other fixes."
 2. Contains naked math — LaTeX symbols or variables written outside $ delimiters (e.g., a_x, \\frac outside $).
 3. Contains wrong math delimiters: \\[ \\] or \\( \\) instead of $$ or $.
 4. Uses conversational or unprofessional tone in Vietnamese.
@@ -275,10 +279,14 @@ Execute these fixes IN ORDER before any other edits.
 4. Technical terms — keep standard English terms as-is (DataFrame, CPU, API).
    Use standard Vietnamese translations for general terms.
 
-5. Length — PRESERVE content length. Do NOT summarize, condense, or remove
-   paragraphs. If draft is under 200 words, expand using internal knowledge.
-   The polished output must be at least as long as the input draft.
-   Removing content is only allowed when fixing duplicated passages.
+5. Length — PRESERVE AND PROTECT content length.
+   CRITICAL: Count the input draft characters before editing. Your output MUST
+   contain AT LEAST as many characters as the input draft. If your editorial
+   changes (tone, structure, math fixes) reduce the character count, you MUST
+   immediately expand the shortest ### sub-section with additional explanation,
+   examples, or analysis to compensate — do NOT submit output shorter than input.
+   Removing content is only allowed when fixing exact duplicate passages, and any
+   removal must be offset by equivalent expansion elsewhere in the same section.
 </phase>
 
 <phase id="3" name="VISUALS">

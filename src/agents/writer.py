@@ -532,7 +532,7 @@ RULE 7 — VISUALS:
             # this log line gives early visibility in the pipeline logs.
             # ------------------------------------------------------------------
             actual_chars = len(content)
-            if actual_chars < char_target[0] * 0.7:
+            if actual_chars < char_target[0] * 0.95:
                 logger.warning(
                     f"⚠️  Content too short: {actual_chars} chars "
                     f"(target {char_target[0]}–{char_target[1]}) "

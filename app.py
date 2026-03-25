@@ -2,18 +2,23 @@
 Streamlit entry point for AI Textbook Generator.
 
 Workflow phases:
-  idle       → user fills topic, hits ↑
-  planning   → ingestion + curriculum generation running (Phase A thread)
-  reviewing  → user reviews/edits curriculum before content starts (Phase 4 gate)
-  generating → content loop running (Phase B thread)
-  done       → publisher finished, download available
+  idle             → user fills topic, hits ↑
+  planning         → Phase A: validator + ingestion + curriculum generation
+  reviewing        → Phase 4 gate: user reviews/edits curriculum
+  generating_ch1   → Phase B1: Chapter 1 content generation
+  previewing       → Phase 5 gate: user previews Chapter 1 before continuing
+  generating_rest  → Phase B2: remaining chapters generation
+  publishing_early → user chose to stop at Chapter 1 and publish
+  done             → publisher finished, download available
 """
 
 import os
 import queue
 
 import streamlit as st
-
+from src.agents.publisher import cleanup_temp_images
+from src.config import CHROMA_DB_DIR
+import shutil, threading
 from src.config import setup_directories
 from src import stop_signal
 from src.ui.components import (
@@ -26,6 +31,7 @@ from src.ui.components import (
     render_workflow_status,
     render_download_section,
     render_curriculum_editor,
+    render_chapter1_preview,
     build_sub_stage_card,
     render_validation_error,
 )
@@ -33,10 +39,17 @@ from src.ui.events import EventType, WorkflowEvent
 from backend import (
     build_initial_state,
     build_content_initial_state,
+    build_remaining_state,
     start_planning_thread,
-    start_content_thread,
+    start_chapter1_thread,
+    start_remaining_thread,
 )
-
+# Helper function
+def _cleanup_background() -> None:
+    """Run storage cleanup in a daemon thread to avoid blocking the UI."""
+    cleanup_temp_images()
+    if CHROMA_DB_DIR.exists():
+        shutil.rmtree(CHROMA_DB_DIR, ignore_errors=True)
 # ============================================================================
 # Bootstrap
 # ============================================================================
@@ -74,13 +87,15 @@ topic, _default_config = render_input_row()
 config = render_config_panel() or _default_config
 
 # ============================================================================
-# Resolve current phase ONCE at top — used for all conditional rendering below.
-# _workflow_phase is the authoritative source; do NOT re-read session_state
-# mid-script to avoid stale reads on the same rerun cycle where phase changes.
+# Phase snapshot — read ONCE at top, never re-read mid-script
 # ============================================================================
 _phase     = st.session_state.get("workflow_phase", "idle")
-_confirmed = st.session_state.get("_curriculum_confirmed", False)
-_is_active = _phase in ("planning", "reviewing", "generating", "done")
+_is_active = _phase in (
+    "planning", "reviewing",
+    "generating_ch1", "previewing",
+    "generating_rest", "publishing_early",
+    "done",
+)
 
 # ============================================================================
 # Progress bar + status text
@@ -92,51 +107,39 @@ if _is_active:
         st.markdown(st.session_state.status_text)
 
 # ============================================================================
-# Workflow stage cards
-#
-# CRITICAL: Each card is rendered via st.empty() so the slot is ATOMIC —
-# it can hold exactly one item. This prevents any double-render artifact that
-# would appear with plain st.markdown() when two reruns happen in quick
-# succession (e.g. config panel toggle + drain rerun firing simultaneously).
+# Workflow stage cards (st.empty() slots — atomic, no double-render)
 # ============================================================================
-ingestion_slot  = st.empty()
-planner_slot    = st.empty()
-tree_slot       = st.empty()
-sub_stage_slot  = st.empty()
-publisher_slot  = st.empty()
+ingestion_slot = st.empty()
+planner_slot   = st.empty()
+tree_slot      = st.empty()
+sub_stage_slot = st.empty()
+publisher_slot = st.empty()
 
 if st.session_state.get("ingestion_html"):
     ingestion_slot.markdown(st.session_state.ingestion_html, unsafe_allow_html=True)
-
 if st.session_state.get("planner_html"):
     planner_slot.markdown(st.session_state.planner_html, unsafe_allow_html=True)
-
 if st.session_state.get("curriculum_html"):
     tree_slot.markdown(
         "### 📚 Cấu trúc giáo trình\n\n" + st.session_state.curriculum_html,
         unsafe_allow_html=True,
     )
-
 if st.session_state.get("sub_stage_html"):
     sub_stage_slot.markdown(st.session_state.sub_stage_html, unsafe_allow_html=True)
-
 if st.session_state.get("publisher_html"):
     publisher_slot.markdown(st.session_state.publisher_html, unsafe_allow_html=True)
-    
+
+# Validation error card
 if st.session_state.get("_validation_error"):
     err = st.session_state["_validation_error"]
     st.markdown(
         render_validation_error(err["reason"], err["suggestion"]),
         unsafe_allow_html=True,
     )
+
 # ============================================================================
 # Phase 4 — Curriculum editor slot
-#
-# st.empty() creates a fixed-position slot in the DOM.
-# - When phase == "reviewing": slot is populated with the editor
-# - When phase != "reviewing": slot is an empty container → previous
-#   content at this position is cleared automatically by Streamlit
-# No flags, no guards needed — the slot itself handles visibility.
+# Slot is empty when phase != "reviewing" → Streamlit clears it automatically
 # ============================================================================
 editor_slot = st.empty()
 if st.session_state.get("workflow_phase") == "reviewing":
@@ -144,11 +147,11 @@ if st.session_state.get("workflow_phase") == "reviewing":
         st.divider()
         render_curriculum_editor()
 
-
 # ============================================================================
-# Phase 4b — Process confirmed curriculum
+# Phase 4b — Build content state after curriculum is confirmed
+# Runs once on first "generating_ch1" rerun when _content_initial_state is None
 # ============================================================================
-if (st.session_state.get("workflow_phase") == "generating"
+if (st.session_state.get("workflow_phase") == "generating_ch1"
         and st.session_state.get("_confirmed_curriculum_dict") is not None
         and st.session_state.get("_content_initial_state") is None):
 
@@ -173,8 +176,11 @@ if (st.session_state.get("workflow_phase") == "generating"
         edited_sub_count = sum(len(ch.subsections) for ch in edited_curriculum.chapters)
         _enable_imgs   = st.session_state.get("_pending_config", {}).get("enable_images", True)
         _steps_per_sub = 9 if _enable_imgs else 8
+        # Step estimate for Chapter 1 only (~1/N of total)
+        total_chapters = len(edited_curriculum.chapters)
+        ch1_subs       = len(edited_curriculum.chapters[0].subsections) if total_chapters else 1
 
-        st.session_state["_total_steps"] = int((3 + edited_sub_count * _steps_per_sub) * 1.25)
+        st.session_state["_total_steps"] = int((ch1_subs * _steps_per_sub) * 1.25)
         st.session_state["_step_count"]  = 0
         st.session_state["_sub_stages"]  = {
             "researcher": "pending", "writer": "pending",
@@ -185,11 +191,11 @@ if (st.session_state.get("workflow_phase") == "generating"
             edited_curriculum,
             st.session_state.get("_planner_result", {}),
         )
-        st.session_state["_content_initial_state"]       = content_state
-        st.session_state["_confirmed_curriculum_dict"]   = None  # clear after use
-        st.session_state.curriculum_structure            = edited_curriculum
-        st.session_state.curriculum_html                 = render_curriculum_tree(edited_curriculum)
-        st.session_state.current_progress["total_chapters"]    = len(edited_curriculum.chapters)
+        st.session_state["_content_initial_state"]     = content_state
+        st.session_state["_confirmed_curriculum_dict"] = None
+        st.session_state.curriculum_structure          = edited_curriculum
+        st.session_state.curriculum_html               = render_curriculum_tree(edited_curriculum)
+        st.session_state.current_progress["total_chapters"]    = total_chapters
         st.session_state.current_progress["total_subsections"] = edited_sub_count
 
         for k in [k for k in st.session_state
@@ -201,8 +207,54 @@ if (st.session_state.get("workflow_phase") == "generating"
         st.session_state.is_running     = True
         st.session_state.event_q        = None
         st.session_state.progress_value = 0.10
-        st.session_state.status_text    = "**Bước 3/4:** Đang tạo nội dung..."
-        # No st.rerun() needed — thread-start block below runs in same cycle
+        st.session_state.status_text    = "**Bước 3/4:** Đang tạo Chương 1..."
+
+# ============================================================================
+# Phase 5 — Chapter 1 preview gate slot
+# Same st.empty() pattern as Phase 4: clears when phase != "previewing"
+# ============================================================================
+preview_slot = st.empty()
+if st.session_state.get("workflow_phase") == "previewing":
+    with preview_slot.container():
+        st.divider()
+        render_chapter1_preview(
+            st.session_state.get("_chapter1_preview_content", "")
+        )
+
+# ============================================================================
+# Phase 5b — Build remaining state after user confirms continue
+# Runs once on first "generating_rest" rerun when event_q is None
+# ============================================================================
+if (st.session_state.get("workflow_phase") == "generating_rest"
+        and st.session_state.get("event_q") is None
+        and st.session_state.get("_remaining_state_built") is not True):
+
+    ch1_content   = st.session_state.get("_chapter1_preview_content", "")
+    content_state = st.session_state.get("_content_initial_state", {})
+
+    remaining_state = build_remaining_state(content_state, ch1_content)
+    st.session_state["_remaining_initial_state"] = remaining_state
+    st.session_state["_remaining_state_built"]   = True
+
+    # Recalculate step count for remaining chapters
+    curriculum     = st.session_state.get("curriculum_structure")
+    _enable_imgs   = st.session_state.get("_pending_config", {}).get("enable_images", True)
+    _steps_per_sub = 9 if _enable_imgs else 8
+    if curriculum and len(curriculum.chapters) > 1:
+        remaining_subs = sum(
+            len(ch.subsections) for ch in curriculum.chapters[1:]
+        )
+    else:
+        remaining_subs = 0
+    st.session_state["_total_steps"] = int((remaining_subs * _steps_per_sub) * 1.25) or 30
+    st.session_state["_step_count"]  = 0
+    st.session_state["_sub_stages"]  = {
+        "researcher": "pending", "writer": "pending",
+        "reviewer": "pending", "illustrator": "pending",
+    }
+    st.session_state.is_running     = True
+    st.session_state.progress_value = 0.45
+    st.session_state.status_text    = "**Bước 3/4:** Đang tạo các chương còn lại..."
 
 # ============================================================================
 # Download section
@@ -211,7 +263,7 @@ render_download_section()
 
 
 # ============================================================================
-# Topic submit — reset all state, start planning phase
+# Topic submit — reset all state and start planning phase
 # ============================================================================
 if topic:
     st.session_state.generated_file_path  = None
@@ -221,16 +273,19 @@ if topic:
         "chapter": 0, "subsection": 0,
         "total_chapters": 0, "total_subsections": 0,
     }
-    st.session_state.event_q               = None
-    st.session_state["_sub_stages"]        = {
+    st.session_state.event_q = None
+    st.session_state["_sub_stages"] = {
         "researcher": "pending", "writer": "pending",
         "reviewer": "pending", "illustrator": "pending",
     }
-    st.session_state["_total_steps"]       = 30
-    st.session_state["_step_count"]        = 0
-    st.session_state["_deleted_subs"]             = set()
+    st.session_state["_total_steps"]             = 30
+    st.session_state["_step_count"]              = 0
+    st.session_state["_deleted_subs"]            = set()
     st.session_state["_confirmed_curriculum_dict"] = None
-    st.session_state["_content_initial_state"]     = None
+    st.session_state["_content_initial_state"]   = None
+    st.session_state["_remaining_initial_state"] = None
+    st.session_state["_remaining_state_built"]   = False
+    st.session_state["_chapter1_preview_content"] = ""
     st.session_state["_planner_result"] = {"textbook_title": "", "preface_content": ""}
     st.session_state["_validation_error"] = None
 
@@ -248,14 +303,13 @@ if topic:
 
     initial_planning_state = build_initial_state(topic, **config)
     st.session_state["_planning_initial_state"] = initial_planning_state
-    st.session_state["_pending_topic"]  = topic
-    st.session_state["_pending_config"] = config
+    st.session_state["_pending_topic"]          = topic
+    st.session_state["_pending_config"]         = config
 
     st.session_state.workflow_phase = "planning"
     st.session_state.is_running     = True
     st.session_state.progress_value = 0.02
     st.session_state.status_text    = ""
-    # ingestion_html intentionally NOT set here — drain loop is sole owner.
     st.rerun()
 
 
@@ -272,37 +326,48 @@ if (st.session_state.get("workflow_phase") == "planning"
         eq,
     )
 
-
 # ============================================================================
-# Thread start — content generation phase
+# Thread start — Chapter 1 generation phase
 # ============================================================================
-if (st.session_state.get("workflow_phase") == "generating"
-        and st.session_state.get("event_q") is None):
-    eq_c: queue.Queue[WorkflowEvent] = queue.Queue()
-    st.session_state.event_q = eq_c
-    start_content_thread(
+if (st.session_state.get("workflow_phase") == "generating_ch1"
+        and st.session_state.get("event_q") is None
+        and st.session_state.get("_content_initial_state") is not None):
+    eq_ch1: queue.Queue[WorkflowEvent] = queue.Queue()
+    st.session_state.event_q = eq_ch1
+    start_chapter1_thread(
         st.session_state.get("_content_initial_state", {}),
         st.session_state.get("_pending_config", {}).get("recursion_limit", 105),
-        eq_c,
+        eq_ch1,
+    )
+
+# ============================================================================
+# Thread start — remaining chapters generation phase
+# ============================================================================
+if (st.session_state.get("workflow_phase") == "generating_rest"
+        and st.session_state.get("event_q") is None
+        and st.session_state.get("_remaining_initial_state") is not None):
+    eq_rest: queue.Queue[WorkflowEvent] = queue.Queue()
+    st.session_state.event_q = eq_rest
+    start_remaining_thread(
+        st.session_state.get("_remaining_initial_state", {}),
+        st.session_state.get("_pending_config", {}).get("recursion_limit", 105),
+        eq_rest,
     )
 
 
 # ============================================================================
 # Drain event queue
-#
-# Runs during planning and generating phases only.
+# Runs during planning, generating_ch1, and generating_rest phases.
 # st.rerun() is called OUTSIDE try/except so RerunException propagates cleanly.
-#
-# ingestion_html is set HERE (not in submit block) as the sole source of truth.
-# Using ingestion_slot.markdown() (via the slot created above) guarantees
-# atomic single-slot rendering — no duplication across rapid reruns.
 # ============================================================================
 _active_phase = st.session_state.get("workflow_phase", "idle")
 
-if _active_phase in ("planning", "generating") and st.session_state.get("event_q") is not None:
+if (_active_phase in ("planning", "generating_ch1", "generating_rest")
+        and st.session_state.get("event_q") is not None):
 
-    event_q_live:     queue.Queue[WorkflowEvent] = st.session_state.event_q #type: ignore
+    event_q_live:     queue.Queue[WorkflowEvent] = st.session_state.event_q  # type: ignore
     is_planning_phase = (_active_phase == "planning")
+    is_ch1_phase      = (_active_phase == "generating_ch1")
 
     sub_stages:  dict = st.session_state.get("_sub_stages", {
         "researcher": "pending", "writer": "pending",
@@ -315,8 +380,6 @@ if _active_phase in ("planning", "generating") and st.session_state.get("event_q
     terminal    = False
     drain_error = None
 
-
-
     try:
         first = True
         while True:
@@ -327,18 +390,18 @@ if _active_phase in ("planning", "generating") and st.session_state.get("event_q
                 needs_rerun = True
                 break
 
-            needs_rerun  = True
-            step_count  += 1
+            needs_rerun = True
+            step_count += 1
 
             match event.type:
 
                 case EventType.VALIDATION_FAILED:
-                    st.session_state.workflow_phase   = "idle"
-                    st.session_state.is_running       = False
-                    st.session_state.event_q          = None
-                    st.session_state.progress_value   = 0.0
-                    st.session_state.status_text      = ""   
-                    st.session_state.ingestion_html   = ""  
+                    st.session_state.workflow_phase = "idle"
+                    st.session_state.is_running     = False
+                    st.session_state.event_q        = None
+                    st.session_state.progress_value = 0.0
+                    st.session_state.status_text    = ""
+                    st.session_state.ingestion_html = ""
                     st.session_state["_validation_error"] = {
                         "reason":     event.validation_reason,
                         "suggestion": event.validation_suggestion,
@@ -346,9 +409,13 @@ if _active_phase in ("planning", "generating") and st.session_state.get("event_q
                     terminal    = True
                     needs_rerun = True
                     break
+
                 case EventType.INGESTION_START:
                     st.session_state.progress_value = 0.03
-                    st.session_state.status_text    = "**Bước 1/4:** Đang mở rộng truy vấn và thu thập dữ liệu..."
+                    st.session_state.status_text    = (
+                        "**Bước 1/4:** Đang mở rộng truy vấn và thu thập dữ liệu..."
+                    )
+
                 case EventType.INGESTION_DONE:
                     st.session_state.progress_value = 0.05
                     st.session_state.status_text    = "**Bước 1/4:** Thu thập dữ liệu — ✓ Hoàn tất"
@@ -358,6 +425,7 @@ if _active_phase in ("planning", "generating") and st.session_state.get("event_q
                     )
                     st.session_state.ingestion_html = _h
                     ingestion_slot.markdown(_h, unsafe_allow_html=True)
+
                 case EventType.PLANNER_DONE:
                     total_steps = int((3 + event.total_subsections * 9) * 1.25)
                     st.session_state.current_progress["total_chapters"]    = event.total_chapters
@@ -378,10 +446,17 @@ if _active_phase in ("planning", "generating") and st.session_state.get("event_q
                     planner_slot.markdown(_ph, unsafe_allow_html=True)
                     _tree = render_curriculum_tree(event.curriculum)
                     st.session_state.curriculum_html = _tree
-                    tree_slot.markdown("### 📚 Cấu trúc giáo trình\n\n" + _tree, unsafe_allow_html=True)
+                    tree_slot.markdown(
+                        "### 📚 Cấu trúc giáo trình\n\n" + _tree,
+                        unsafe_allow_html=True,
+                    )
 
                 case EventType.CONTENT_UPDATE:
-                    progress = min(0.10 + step_count / max(total_steps, 1) * 0.85, 0.95)
+                    progress = min(
+                        (0.10 if is_ch1_phase else 0.45)
+                        + step_count / max(total_steps, 1) * (0.35 if is_ch1_phase else 0.50),
+                        0.95,
+                    )
                     st.session_state.progress_value = progress
 
                     chap         = event.chapter_idx
@@ -408,6 +483,14 @@ if _active_phase in ("planning", "generating") and st.session_state.get("event_q
                     for k in sub_stages:
                         sub_stages[k] = "pending"
 
+                case EventType.CHAPTER1_PREVIEW:
+                    # Chapter 1 complete — save content for preview gate
+                    st.session_state["_chapter1_preview_content"] = event.chapter1_content
+                    st.session_state.progress_value = 0.45
+                    st.session_state.status_text    = (
+                        "✅ Chương 1 hoàn tất — Xem trước trước khi tiếp tục"
+                    )
+
                 case EventType.PUBLISHER_DONE:
                     st.session_state.progress_value = 1.0
                     st.session_state.status_text    = "**Bước 4/4:** Xuất bản — ✓ Hoàn tất"
@@ -429,34 +512,62 @@ if _active_phase in ("planning", "generating") and st.session_state.get("event_q
                             st.session_state.generated_docx_path = docx_abs
 
                 case EventType.DONE:
-                    st.session_state.event_q = None
+                    st.session_state.event_q    = None
+                    st.session_state.is_running = False
                     if is_planning_phase:
                         st.session_state.workflow_phase = "reviewing"
-                        st.session_state.is_running     = False
+                    elif is_ch1_phase:
+                        # Check if preview was set (multi-chapter) or publisher ran (single-chapter)
+                        if st.session_state.get("_chapter1_preview_content"):
+                            st.session_state.workflow_phase = "previewing"
+                        else:
+                            st.session_state.workflow_phase = "done"
+                            st.balloons()
                     else:
                         st.session_state.workflow_phase = "done"
-                        st.session_state.is_running     = False
                         st.balloons()
                     terminal    = True
                     needs_rerun = True
                     break
 
                 case EventType.STOPPED:
+                    stop_signal.clear()
                     st.session_state.workflow_phase = "idle"
                     st.session_state.is_running     = False
                     st.session_state.event_q        = None
-                    st.session_state.status_text    = "⛔ Quá trình đã bị dừng."
+                    st.session_state.progress_value = 0.0
+                    # Clear all progress display state
+                    for _k in ("status_text", "ingestion_html", "planner_html",
+                               "sub_stage_html", "publisher_html", "curriculum_html"):
+                        st.session_state[_k] = ""
+                    st.session_state.curriculum_structure = None
+                    st.session_state["_chapter1_preview_content"] = ""
+                    st.session_state["_remaining_state_built"]    = False
+                    st.session_state["_remaining_initial_state"]  = None
+                    st.session_state["_content_initial_state"]    = None
                     terminal    = True
                     needs_rerun = True
+                    threading.Thread(target=_cleanup_background, daemon=True).start()
                     break
 
                 case EventType.ERROR:
+                    stop_signal.clear()
                     st.session_state.workflow_phase = "idle"
                     st.session_state.is_running     = False
                     st.session_state.event_q        = None
+                    st.session_state.progress_value = 0.0
                     st.session_state.status_text    = f"❌ Lỗi hệ thống: {event.error}"
+                    for _k in ("ingestion_html", "planner_html",
+                               "sub_stage_html", "publisher_html", "curriculum_html"):
+                        st.session_state[_k] = ""
+                    st.session_state.curriculum_structure = None
+                    st.session_state["_chapter1_preview_content"] = ""
+                    st.session_state["_remaining_state_built"]    = False
+                    st.session_state["_remaining_initial_state"]  = None
+                    st.session_state["_content_initial_state"]    = None
                     terminal    = True
                     needs_rerun = True
+                    threading.Thread(target=_cleanup_background, daemon=True).start()
                     break
 
         st.session_state["_sub_stages"]  = sub_stages
@@ -470,6 +581,7 @@ if _active_phase in ("planning", "generating") and st.session_state.get("event_q
         st.session_state.status_text    = f"❌ Lỗi hệ thống: {exc}"
         drain_error  = exc
         needs_rerun  = False
+        threading.Thread(target=_cleanup_background, daemon=True).start()
 
     if drain_error is not None:
         st.error(f"❌ Lỗi hệ thống: {drain_error}")
