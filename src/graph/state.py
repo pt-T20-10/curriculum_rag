@@ -321,6 +321,10 @@ class AgentState(TypedDict):
     Path to the generated .docx file, or None if Word export was not
     requested or failed.
     """
+    # ---- Validation ----
+    validation_failed:     bool
+    validation_reason:     str
+    validation_suggestion: str
 
 # ============================================================================
 # HELPERS — shared utility functions used across multiple agent nodes
@@ -449,4 +453,8 @@ def build_initial_state(
         "final_filepath": None,
         "export_formats":       export_formats or ["Word"],
         "final_docx_filepath":  None,
+        # ---- Validation ----
+        "validation_failed":     False,
+        "validation_reason":     "",
+        "validation_suggestion": ""
     }

@@ -40,7 +40,6 @@ def init_session_state() -> None:
         "_dirs_ready":           False,
         "_curriculum_confirmed":      False,
         "_confirmed_curriculum_dict": None,
-        "_content_initial_state":     None,
         "_show_editor":               False,
         # Planning phase outputs (forwarded to content phase)
         "_planning_initial_state": None,
@@ -68,6 +67,7 @@ def init_session_state() -> None:
         # Topic / config carry-through
         "_pending_topic":  "",
         "_pending_config": {},
+        "_validation_error": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -112,11 +112,18 @@ def render_input_row() -> tuple[str | None, dict]:
     """
     Render: [⚙️] [text input...] [↑]
     Returns (topic_submitted | None, default_config_dict).
+    While workflow is running the input shows the submitted topic (disabled).
     """
     config = _build_config_dict()
 
     _phase    = st.session_state.get("workflow_phase", "idle")
     _disabled = _phase not in ("idle", "done")
+
+    # Show submitted topic in the input box while workflow is active
+    _display_value = (
+        st.session_state.get("_pending_topic", "")
+        if _disabled else ""
+    )
 
     _, center, _ = st.columns([1, 4, 1])
     with center:
@@ -136,6 +143,7 @@ def render_input_row() -> tuple[str | None, dict]:
                 with col_text:
                     topic_input = st.text_input(
                         "Chủ đề giáo trình",
+                        value=_display_value,
                         placeholder="Nhập chủ đề giáo trình...",
                         label_visibility="collapsed",
                         disabled=_disabled,
@@ -147,7 +155,17 @@ def render_input_row() -> tuple[str | None, dict]:
                         disabled=_disabled,
                     )
 
-    topic = topic_input.strip() if (submitted and topic_input and topic_input.strip()) else None
+    topic = None
+    if submitted:
+        stripped = topic_input.strip() if topic_input else ""
+        if not stripped:
+            st.toast("Vui lòng nhập chủ đề giáo trình.", icon="⚠️")
+        elif len(stripped) < 3:
+            st.toast("Chủ đề quá ngắn, vui lòng nhập rõ hơn.", icon="⚠️")
+        elif not any(c.isalpha() for c in stripped):
+            st.toast("Chủ đề không hợp lệ.", icon="⚠️")
+        else:
+            topic = stripped
     return topic, config
 
 
@@ -205,12 +223,12 @@ def render_config_panel() -> dict:
                     unsafe_allow_html=True,
                 )
                 export_formats = st.multiselect(
-                    "Định dạng xuất", options=["PDF", "Word"], default=["Word"],
+                    "Định dạng xuất", options=["PDF", "Word"], default=["PDF"],
                     disabled=_running,
                 )
                 if not export_formats:
                     st.warning("⚠️ Chọn ít nhất một định dạng.")
-                    export_formats = ["Word"]
+                    export_formats = ["PDF"]
 
             _est_subs       = num_chapters * max_subsections
             _steps_per_sub  = 9 if enable_images else 8
@@ -324,7 +342,7 @@ def _confirm_curriculum_callback() -> None:
             if new_title:
                 edited_subs.append({
                     "title":        new_title,
-                    "description":  f"Nội dung về {new_title}",
+                    "description": f"Content about {new_title}",
                     "search_query": new_title,
                     "section_type": "medium",
                 })
@@ -627,7 +645,33 @@ def render_workflow_status(stage: str, status: str, message: str) -> str:
         f'<span class="status-badge {b_cls}">{badge}</span>'
         f'</div></div>'
     )
+def render_validation_error(reason: str, suggestion: str) -> str:
+    """Render error card when topic is rejected by validator."""
+    is_content_violation = not suggestion
+    suggestions_html = ""
+    if suggestion:
+        items = "".join(
+            f'<span style="background:#EBF6FF;color:#0078D4;padding:0.2rem 0.6rem;'
+            f'border-radius:6px;margin-right:0.4rem;font-size:0.85rem">{s.strip()}</span>'
+            for s in suggestion.split("|") if s.strip()
+        )
+        suggestions_html = f'<div style="margin-top:0.6rem">{items}</div>'
 
+    icon   = "🚫" if is_content_violation else "⚠️"
+    color  = "#DC2626" if is_content_violation else "#92400E"
+    bg     = "#FEF2F2" if is_content_violation else "#FFFBEB"
+    border = "#EF4444" if is_content_violation else "#F59E0B"
+    hint   = "Vui lòng nhập chủ đề học thuật phù hợp." if is_content_violation \
+             else "Hãy thử lại với chủ đề cụ thể hơn."
+
+    return (
+        f'<div class="workflow-card" style="border-left:4px solid {border};background:{bg}">'
+        f'<div style="font-weight:600;color:{color};margin-bottom:0.3rem">{icon} Chủ đề không được chấp nhận</div>'
+        f'<div style="color:{color};font-size:0.9rem">{reason}</div>'
+        f'{suggestions_html}'
+        f'<div style="margin-top:0.75rem;font-size:0.82rem;color:{color}">{hint}</div>'
+        f'</div>'
+    )
 
 # ============================================================================
 # Download section

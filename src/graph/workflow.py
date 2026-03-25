@@ -17,6 +17,7 @@ from src.agents.writer import write_section
 from src.agents.reviewer import review_section
 from src.agents.illustrator import illustrate_section
 from src.agents.publisher import publish_curriculum
+from src.agents.validator import validate_topic_node
 
 logger = setup_logger(name="WorkflowBuilder", logfile="logs/workflow.log")
 
@@ -182,11 +183,17 @@ def create_planning_workflow() -> CompiledStateGraph:
     """
     logger.info("Building planning workflow (ingestion → planner → END)...")
     builder = StateGraph(AgentState)
-    builder.add_node("ingestion", perform_ingestion)
-    builder.add_node("planner",   plan_curriculum)
+    builder.add_node("validator",  validate_topic_node)
+    builder.add_node("ingestion",  perform_ingestion)
+    builder.add_node("planner",    plan_curriculum)
+    builder.add_conditional_edges(
+        "validator",
+        lambda s: "end" if s.get("validation_failed") else "continue",
+        {"end": END, "continue": "ingestion"},
+    )
     builder.add_edge("ingestion", "planner")
     builder.add_edge("planner",   END)
-    builder.set_entry_point("ingestion")
+    builder.set_entry_point("validator")
     graph = builder.compile()
     logger.info("✓ Planning workflow compiled")
     return graph

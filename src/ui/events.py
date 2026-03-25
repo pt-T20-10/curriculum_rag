@@ -4,6 +4,7 @@ from typing import Any, Optional
 
 
 class EventType(str, Enum):
+    INGESTION_START = "ingestion_start"
     INGESTION_DONE  = "ingestion_done"
     PLANNER_DONE    = "planner_done"
     CONTENT_UPDATE  = "content_update"
@@ -12,7 +13,7 @@ class EventType(str, Enum):
     STOPPED         = "stopped"
     ERROR           = "error"
     DONE            = "done"
-
+    VALIDATION_FAILED = "validation_failed"
 
 @dataclass
 class WorkflowEvent:
@@ -40,3 +41,5 @@ class WorkflowEvent:
 
     # ERROR
     error: Optional[Exception] = None
+    validation_reason:     str = ""
+    validation_suggestion: str = ""

@@ -27,6 +27,7 @@ from src.ui.components import (
     render_download_section,
     render_curriculum_editor,
     build_sub_stage_card,
+    render_validation_error,
 )
 from src.ui.events import EventType, WorkflowEvent
 from backend import (
@@ -121,7 +122,13 @@ if st.session_state.get("sub_stage_html"):
 
 if st.session_state.get("publisher_html"):
     publisher_slot.markdown(st.session_state.publisher_html, unsafe_allow_html=True)
-
+    
+if st.session_state.get("_validation_error"):
+    err = st.session_state["_validation_error"]
+    st.markdown(
+        render_validation_error(err["reason"], err["suggestion"]),
+        unsafe_allow_html=True,
+    )
 # ============================================================================
 # Phase 4 — Curriculum editor slot
 #
@@ -225,6 +232,7 @@ if topic:
     st.session_state["_confirmed_curriculum_dict"] = None
     st.session_state["_content_initial_state"]     = None
     st.session_state["_planner_result"] = {"textbook_title": "", "preface_content": ""}
+    st.session_state["_validation_error"] = None
 
     for k in [k for k in st.session_state
               if k.startswith("_edit_") or k.startswith("_del_")
@@ -246,7 +254,7 @@ if topic:
     st.session_state.workflow_phase = "planning"
     st.session_state.is_running     = True
     st.session_state.progress_value = 0.02
-    st.session_state.status_text    = "**Bước 1/4:** Đang mở rộng truy vấn và thu thập dữ liệu..."
+    st.session_state.status_text    = ""
     # ingestion_html intentionally NOT set here — drain loop is sole owner.
     st.rerun()
 
@@ -307,18 +315,7 @@ if _active_phase in ("planning", "generating") and st.session_state.get("event_q
     terminal    = False
     drain_error = None
 
-    # Set ingestion "active" card on the very first planning drain cycle.
-    # Only runs when ingestion_html is empty (i.e. once per workflow run).
-    # Writes DIRECTLY to ingestion_slot so it's always in the correct
-    # position in the component tree, regardless of rerun timing.
-    if is_planning_phase and not st.session_state.get("ingestion_html"):
-        _ing_html = render_workflow_status(
-            "ingestion", "active",
-            f"Đang thu thập dữ liệu về '{st.session_state.get('_pending_topic', '')}'"
-        )
-        st.session_state.ingestion_html = _ing_html
-        ingestion_slot.markdown(_ing_html, unsafe_allow_html=True)
-        needs_rerun = True
+
 
     try:
         first = True
@@ -335,6 +332,23 @@ if _active_phase in ("planning", "generating") and st.session_state.get("event_q
 
             match event.type:
 
+                case EventType.VALIDATION_FAILED:
+                    st.session_state.workflow_phase   = "idle"
+                    st.session_state.is_running       = False
+                    st.session_state.event_q          = None
+                    st.session_state.progress_value   = 0.0
+                    st.session_state.status_text      = ""   
+                    st.session_state.ingestion_html   = ""  
+                    st.session_state["_validation_error"] = {
+                        "reason":     event.validation_reason,
+                        "suggestion": event.validation_suggestion,
+                    }
+                    terminal    = True
+                    needs_rerun = True
+                    break
+                case EventType.INGESTION_START:
+                    st.session_state.progress_value = 0.03
+                    st.session_state.status_text    = "**Bước 1/4:** Đang mở rộng truy vấn và thu thập dữ liệu..."
                 case EventType.INGESTION_DONE:
                     st.session_state.progress_value = 0.05
                     st.session_state.status_text    = "**Bước 1/4:** Thu thập dữ liệu — ✓ Hoàn tất"
@@ -344,7 +358,6 @@ if _active_phase in ("planning", "generating") and st.session_state.get("event_q
                     )
                     st.session_state.ingestion_html = _h
                     ingestion_slot.markdown(_h, unsafe_allow_html=True)
-
                 case EventType.PLANNER_DONE:
                     total_steps = int((3 + event.total_subsections * 9) * 1.25)
                     st.session_state.current_progress["total_chapters"]    = event.total_chapters

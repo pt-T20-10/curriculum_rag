@@ -169,7 +169,16 @@ def stream_workflow(
                         textbook_title=cumulative.get("textbook_title", ""),
                         preface_content=cumulative.get("preface_content", ""),
                     ))
-
+                elif key == "validator":
+                    if cumulative.get("validation_failed"):
+                        event_q.put(WorkflowEvent(
+                            type=EventType.VALIDATION_FAILED,
+                            validation_reason=cumulative.get("validation_reason", ""),
+                            validation_suggestion=cumulative.get("validation_suggestion", ""),
+                        ))
+                    else:
+                        # Validation passed — signal UI to show ingestion status
+                        event_q.put(WorkflowEvent(type=EventType.INGESTION_START))
                 elif key in ("researcher", "writer", "reviewer", "illustrator"):
                     if prev_stage and prev_stage != key:
                         event_q.put(WorkflowEvent(

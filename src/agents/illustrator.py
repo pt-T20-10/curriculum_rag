@@ -38,7 +38,7 @@ from urllib.parse import urlparse
 from pathlib import Path
 from PIL import Image
 
-from src.config import OPENAI_API_KEY, SERPER_API_KEY, BASE_DIR, LLM_MODEL_CHEAP
+from src.config import OPENAI_API_KEY, SERPER_API_KEY, BASE_DIR, LLM_MODEL_CHEAP, INDICATE_LINKS_FOR_PICS
 from src.log_config import setup_logger, setup_prompt_logger
 from src.graph.state import AgentState
 
@@ -460,7 +460,7 @@ class IllustratorAgent:
 
         url     = "https://google.serper.dev/images"
         headers = {"X-API-KEY": self.api_key, "Content-Type": "application/json"}
-        payload = {"q": optimized_query, "num": 10}
+        payload = {"q": optimized_query, "num": INDICATE_LINKS_FOR_PICS}
 
         try:
             response = requests.post(url, headers=headers, json=payload, timeout=10)
@@ -473,7 +473,7 @@ class IllustratorAgent:
 
             valid_urls: list[str] = []
 
-            for i, candidate in enumerate(images_results[:10]):
+            for i, candidate in enumerate(images_results[:INDICATE_LINKS_FOR_PICS]):
                 image_url = candidate.get("imageUrl", "")
 
                 # Check 1 — non-empty string
