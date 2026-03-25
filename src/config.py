@@ -72,6 +72,8 @@ CRAWL_MAX_SUB_LINKS: int = 1
 # Số worker probe content-type song song (url_filter.py ThreadPoolExecutor)
 URL_FILTER_MAX_WORKERS: int = 5
 
+INDICATE_LINKS_FOR_PICS = 15
+
 def setup_directories():
     for path in [DATA_DIR, CHROMA_DB_DIR]:
         path.mkdir(parents=True, exist_ok=True)
