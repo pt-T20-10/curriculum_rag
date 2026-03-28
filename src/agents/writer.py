@@ -12,9 +12,11 @@ Responsibilities:
 """
 
 import re
-
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
 from langchain_core.prompts import ChatPromptTemplate
+
 
 from src.log_config import setup_logger, setup_prompt_logger
 from src.graph.state import (
@@ -25,7 +27,7 @@ from src.graph.state import (
     get_char_target,
     clean_section_title,
 )
-from src.config import LLM_MODEL_PREMIUM
+from src.config import LLM_MODEL_PREMIUM, ANTHROPIC_API_KEY
 
 logger = setup_logger(name="WriterAgent", logfile="logs/agents.log")
 
@@ -116,9 +118,9 @@ class WriterAgent:
     - Revision support: accepts Reviewer feedback and rewrites from scratch
 
     LLM is initialized once in __init__ and reused across all write_section calls
-    within the same agent lifetime (BUG-05 fix — no per-call instantiation).
+    within the same agent lifetime.
     """
-
+    llm: BaseChatModel
     def __init__(self) -> None:
         """
         Initialize LLM with temperature=0.4 (balanced creativity vs consistency).
@@ -128,7 +130,12 @@ class WriterAgent:
         - Avoid excessive creativity that breaks structural rules
         - Remain deterministic enough for consistent formatting compliance
         """
-        self.llm = ChatOpenAI(model=LLM_MODEL_PREMIUM, temperature=0.4)
+        self.llm = ChatAnthropic(
+            model_name=LLM_MODEL_PREMIUM,
+            api_key=ANTHROPIC_API_KEY,        # type: ignore[arg-type]
+            temperature=0.4,
+            max_tokens_to_sample=1024,
+        )
         self.prompt_logger = setup_prompt_logger("writer")
 
     def write_section(
@@ -416,6 +423,7 @@ RULE 7 — VISUALS:
                 char_min=char_target[0],
                 char_max=char_target[1],
                 visual_rule=visual_rule,
+                length_rule=length_rule,
             )
         except Exception:
             formatted_system = system_prompt

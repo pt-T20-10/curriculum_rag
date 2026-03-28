@@ -21,8 +21,9 @@ import warnings
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
 
-from src.config import LLM_MODEL_CHEAP
+from src.config import LLM_MODEL_CHEAP,ANTHROPIC_API_KEY
 from src.log_config import setup_logger, setup_prompt_logger
 
 logger = setup_logger(name="QueryExpansion", logfile="logs/agents.log")
@@ -59,7 +60,12 @@ class QueryExpansionAgent:
         targeting textbooks, one targeting syllabi, one targeting papers)
         rather than producing near-identical phrasings.
         """
-        self.llm          = ChatOpenAI(model=LLM_MODEL_CHEAP, temperature=0.5)
+        self.llm = ChatAnthropic(
+            model_name=LLM_MODEL_CHEAP,
+            api_key=ANTHROPIC_API_KEY,        # type: ignore[arg-type]
+            temperature=0.5,
+            max_tokens_to_sample=1024,
+        )
         self.prompt_logger = setup_prompt_logger("query_expansion")
 
     def expand_query(self, user_input: str) -> list[str]:

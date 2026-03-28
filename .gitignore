@@ -50,3 +50,6 @@ tests/
 *.db
 *.sqlite3
 /skills.txt
+eval/
+list_models.py
+seed_chromadb.py

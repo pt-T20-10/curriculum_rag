@@ -30,9 +30,9 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_chroma import Chroma
 from src.config import get_embedding_model
-
+from langchain_anthropic import ChatAnthropic
 from src.graph.state import AgentState, CurriculumOutline
-from src.config import CHROMA_DB_DIR, LLM_MODEL_CHEAP
+from src.config import CHROMA_DB_DIR, LLM_MODEL_CHEAP, ANTHROPIC_API_KEY
 from src.log_config import setup_logger, setup_prompt_logger
 
 logger = setup_logger(name="PlannerAgent", logfile="logs/agents.log")
@@ -68,7 +68,12 @@ class HybridPlanner:
         instantiated once per workflow run — the connection cost is paid once
         and shared across get_all_documents() and any future vector queries.
         """
-        self.llm = ChatOpenAI(model=LLM_MODEL_CHEAP, temperature=0.3)
+        self.llm = ChatAnthropic(
+            model_name=LLM_MODEL_CHEAP,
+            api_key=ANTHROPIC_API_KEY,        # type: ignore[arg-type]
+            temperature=0.3,
+            max_tokens_to_sample=1024,
+        )
 
         self.vector_db = Chroma(
             persist_directory=str(CHROMA_DB_DIR),

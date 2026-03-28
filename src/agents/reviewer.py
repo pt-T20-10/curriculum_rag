@@ -24,7 +24,7 @@ import re
 
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
-
+from langchain_anthropic import ChatAnthropic
 from src.log_config import setup_logger, setup_prompt_logger
 from src.graph.state import (
     AgentState,
@@ -33,7 +33,7 @@ from src.graph.state import (
     get_chapter_and_subsection,
     clean_section_title,
 )
-from src.config import LLM_MODEL_CHEAP
+from src.config import LLM_MODEL_CHEAP,ANTHROPIC_API_KEY
 
 logger = setup_logger(name="ReviewerAgent", logfile="logs/agents.log")
 
@@ -65,7 +65,12 @@ class ReviewerAgent:
         (delimiter replacement, header normalization) where creativity is
         undesirable and consistency is critical.
         """
-        self.llm = ChatOpenAI(model=LLM_MODEL_CHEAP, temperature=0.1)
+        self.llm = ChatAnthropic(
+            model_name=LLM_MODEL_CHEAP,
+            api_key=ANTHROPIC_API_KEY,        # type: ignore[arg-type]
+            temperature=0.1,
+            max_tokens_to_sample=1024,
+)
         self.prompt_logger = setup_prompt_logger("reviewer")
 
     def should_revise(

@@ -11,7 +11,8 @@ Returns:
 
 import json
 from langchain_openai import ChatOpenAI
-from src.config import LLM_MODEL_CHEAP
+from src.config import LLM_MODEL_CHEAP, ANTHROPIC_API_KEY
+from langchain_anthropic import ChatAnthropic
 from src.graph.state import AgentState
 from src.log_config import setup_logger
 
@@ -31,7 +32,17 @@ def validate_topic(topic: str) -> dict:
     Returns:
         Dict with keys: valid (bool), reason (str), suggestion (str).
     """
-    llm = ChatOpenAI(model=LLM_MODEL_CHEAP, temperature=0)
+    logger.info(f"validate_topic is running")
+    llm = ChatAnthropic(
+        model_name=LLM_MODEL_CHEAP,
+        api_key=ANTHROPIC_API_KEY,        # type: ignore[arg-type]
+        temperature=0,
+        max_tokens_to_sample=256,
+    )
+    
+    logger.info(f"[ValidatorAgent] Using model: {llm.model}")
+    logger.info(f"[ValidatorAgent] Validating topic: '{topic}'")
+
 
     prompt = f"""You are a quality gate for a Vietnamese university textbook generator.
 

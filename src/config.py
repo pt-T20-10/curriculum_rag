@@ -21,18 +21,34 @@ if not SERPER_API_KEY:
         stacklevel=2
     )
     
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
+    raise ValueError("GEMINI_API_KEY not found! Please check your .env file.")   
+    
+ 
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+if not GROQ_API_KEY:
+    raise ValueError("GROQ_API_KEY not found! Please check your .env file.")     
+
+
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+if not ANTHROPIC_API_KEY:
+    raise ValueError("ANTHROPIC_API_KEY not found! Please check your .env file.")     
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-
+RAG_TOP_K: int = 8
 # --DATA PATHS --
 DATA_DIR = BASE_DIR / "data"
 CHROMA_DB_DIR = DATA_DIR / "chroma_db"    
 
 # -- AI MODELS --
 EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-LLM_MODEL_CHEAP =   "gpt-4o-mini" #"gpt-4o"
-LLM_MODEL_PREMIUM = "gpt-4o-mini" #"gpt-5.4-mini"
+# LLM_MODEL_CHEAP =   "gpt-4o-mini" #"gpt-4o"
+# LLM_MODEL_PREMIUM = "gpt-4o-mini" #"gpt-5.4-mini"
 
+LLM_MODEL_CHEAP   = "claude-sonnet-4-20250514"
+LLM_MODEL_PREMIUM = "claude-sonnet-4-20250514"
 # -- CHUNKINGS --
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
