@@ -248,53 +248,46 @@ class HybridPlanner:
         raw_topics: str,
         num_chapters: int,
     ) -> Optional[List[str]]:
-        """
-        Phase 2a: Generate N chapter titles following a progressive 3-zone arc.
-
-        The prompt enforces a learning progression across three zones:
-            Zone A (first ~third):  Foundations — concepts, definitions, basic theory
-            Zone B (middle ~third): Core techniques and mechanisms
-            Zone C (last ~third):   Applications, advanced topics, integration
-
-        Each title must cover a distinct aspect; the prompt explicitly forbids
-        repeating the same concept across multiple chapter slots.
-
-        Retries up to MAX_RETRIES=3 on JSON parse failure or wrong count.
-        Pads with generic fallback titles if the LLM returns fewer than requested;
-        trims silently if it returns more.
-
-        Args:
-            topic_name:   Main subject (e.g. "Học máy").
-            raw_topics:   NMF cluster string from extract_topics_with_nmf().
-            num_chapters: Exact number of chapter titles to produce.
-
-        Returns:
-            List of Vietnamese chapter title strings, or None after all retries fail.
-        """
         logger.info(f"Phase 2a: Planning {num_chapters} chapter titles...")
 
         zone_a = max(1, num_chapters // 3)
         zone_b = max(1, num_chapters // 3)
-        # Zone C covers chapters (zone_a + zone_b + 1) through num_chapters implicitly
 
-        system_prompt = (
-            "You are a curriculum designer building a Vietnamese university textbook.\n\n"
-            f"Generate EXACTLY {num_chapters} chapter titles for the subject below.\n\n"
-            "CRITICAL RULES:\n"
-            "1. Every chapter must cover a DISTINCT aspect of the subject — no two chapters "
-            "may overlap in their primary topic.\n"
-            "2. Follow a progressive learning arc:\n"
-            f"   - Chapters 1–{zone_a}: Foundations (concepts, definitions, basic theory)\n"
-            f"   - Chapters {zone_a + 1}–{zone_a + zone_b}: Core techniques and mechanisms\n"
-            f"   - Chapters {zone_a + zone_b + 1}–{num_chapters}: "
-            "Applications, advanced topics, integration\n"
-            "3. DO NOT repeat or rephrase the same concept in different chapters.\n"
-            "4. Titles should be specific and descriptive (e.g. 'Mạng nơ-ron tích chập CNN' "
-            "not just 'Học sâu').\n\n"
-            "OUTPUT: A JSON array of exactly {n} Vietnamese chapter titles. "
-            "No explanation, no markdown — ONLY the JSON array.\n"
-            'Example: ["Tiêu đề chương 1", "Tiêu đề chương 2"]'
-        ).format(n=num_chapters)
+        system_prompt = f"""
+    [CONTEXT]
+    You are a curriculum designer building a Vietnamese university textbook.
+    Your task is to plan chapter titles that form a coherent, progressive learning arc.
+    [/CONTEXT]
+
+    [TASK]
+    Generate EXACTLY {num_chapters} chapter titles for the subject provided.
+    [/TASK]
+
+    [CRITERION]
+    Each title must:
+    (a) Cover a DISTINCT aspect of the subject — no two chapters may overlap
+        in their primary topic.
+    (b) Be specific and descriptive rather than generic.
+        Good: "Mạng nơ-ron tích chập CNN"
+        Bad:  "Học sâu"
+    (c) Follow a progressive learning arc across three zones:
+        - Chapters 1–{zone_a}: Foundations (concepts, definitions, basic theory)
+        - Chapters {zone_a + 1}–{zone_a + zone_b}: Core techniques and mechanisms
+        - Chapters {zone_a + zone_b + 1}–{num_chapters}: Applications, advanced topics, integration
+    [/CRITERION]
+
+    [CONSTRAINT]
+    Rule 1 — NO OVERLAP: Do not repeat or rephrase the same concept across different chapters.
+    Rule 2 — EXACT COUNT: Output EXACTLY {num_chapters} titles — no more, no less.
+    Rule 3 — LANGUAGE: All titles must be in Vietnamese.
+    [/CONSTRAINT]
+
+    [FORMAT]
+    Output a JSON array of exactly {num_chapters} Vietnamese chapter title strings.
+    No explanation, no markdown — ONLY the JSON array.
+    Example: ["Tiêu đề chương 1", "Tiêu đề chương 2"]
+    [/FORMAT]
+    """
 
         user_prompt = (
             f"Subject: {topic_name}\n"
@@ -361,7 +354,7 @@ class HybridPlanner:
         chapter_index: int,
         num_chapters: int,
         raw_topics: str,
-        max_subsections: int = 5,
+        max_subsections: int = 4,
         assigned_chapters: Optional[List[Dict[str, Any]]] = None,
     ) -> Optional[List[Dict[str, Any]]]:
         """
@@ -509,7 +502,17 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
 
     def _generate_textbook_title(self, topic: str, curriculum: CurriculumOutline) -> str:
         """
-        Generate a formal academic Vietnamese textbook title (≤ 12 words).
+        Generate a Vietnamese textbook title adapted to the subject domain.
+
+        Unlike a fixed academic title generator, this method infers the domain
+        tone from the topic and chapter list, then produces a title that fits
+        naturally — formal academic style for scholarly subjects, engaging and
+        descriptive style for practical or lifestyle subjects.
+
+        Examples by domain:
+            Academic:  "Giáo trình Hóa học Đại cương"
+            Practical: "Nghệ thuật Làm bánh — Từ Cơ bản đến Nâng cao"
+            Lifestyle: "Kỹ thuật Làm Nail Chuyên nghiệp"
 
         Called after the full CurriculumOutline is built so the LLM can base
         the title on the actual chapter list rather than the raw topic string.
@@ -519,31 +522,62 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
             curriculum: Completed CurriculumOutline with all chapter titles.
 
         Returns:
-            Vietnamese academic title string.
+            Vietnamese title string adapted to the subject domain.
             Falls back to "Giáo trình {topic}" on any LLM error.
         """
-        logger.info("Generating academic textbook title...")
+        logger.info("Generating textbook title...")
         chapter_list = "\n".join(f"  - {ch.title}" for ch in curriculum.chapters)
 
+        system_prompt = (
+            "[CONTEXT]\n"
+            "You are a neutral title specialist for an educational content platform\n"
+            "that covers all learning domains — from university-level academics to\n"
+            "practical crafts, cooking, beauty, sports, and lifestyle skills.\n"
+            "Your task is to produce a Vietnamese title that feels natural and\n"
+            "appropriate for the specific domain, not uniformly academic.\n"
+            "[/CONTEXT]\n\n"
+
+            "[CRITERION]\n"
+            "The title must:\n"
+            "  (a) Accurately reflect the subject and scope of the chapter list.\n"
+            "  (b) Match the tone appropriate for the domain:\n"
+            "      - Scholarly/scientific → formal academic style\n"
+            "        e.g. \"Giáo trình Hóa học Đại cương\"\n"
+            "      - Technical/engineering → clear and professional\n"
+            "        e.g. \"Lập trình Python Ứng dụng Thực tế\"\n"
+            "      - Practical/lifestyle → engaging and descriptive\n"
+            "        e.g. \"Nghệ thuật Làm bánh — Từ Cơ bản đến Nâng cao\"\n"
+            "        e.g. \"Kỹ thuật Làm Nail Chuyên nghiệp\"\n"
+            "  (c) Be concise — maximum 12 words.\n"
+            "[/CRITERION]\n\n"
+
+            "[CONSTRAINT]\n"
+            "Rule 1 — LANGUAGE: Output must be in Vietnamese only.\n"
+            "Rule 2 — LENGTH: Maximum 12 words.\n"
+            "Rule 3 — FORMAT: Output the title string only — no explanation,\n"
+            "  no markdown, no surrounding quotes.\n"
+            "[/CONSTRAINT]\n\n"
+
+            "[FORMAT]\n"
+            "A single Vietnamese title string. Nothing else.\n"
+            "[/FORMAT]"
+        )
+
+        user_prompt = (
+            f"User request: {topic}\n\n"
+            f"Chapter list:\n{chapter_list}\n\n"
+            "Output the Vietnamese title:"
+        )
+
         prompt = ChatPromptTemplate.from_messages([
-            ("system", (
-                "You are a Vietnamese academic textbook editor. "
-                "Given a user request and a list of chapter titles, generate ONE formal academic "
-                "textbook title. No explanation, no markdown, maximum 12 words. "
-                "Output MUST be in Vietnamese. "
-                'Example: "Giáo trình Hóa học Đại cương"'
-            )),
-            ("human", (
-                f"User request: {topic}\n\n"
-                f"Chapters:\n{chapter_list}\n\n"
-                "Output the Vietnamese textbook title:"
-            )),
+            ("system", system_prompt),
+            ("human", user_prompt),
         ])
         try:
             self.prompt_logger.log(
-                system_prompt="[Title generator — formal Vietnamese academic title]",
-                user_prompt=f"Topic: {topic}\nChapters:\n{chapter_list}",
-                context_label="Textbook title generation",
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                context_label=f"Title generation | {topic[:40]}",
             )
             response = (prompt | self.llm).invoke({})
             title    = str(response.content).strip().strip('"').strip("'")  # type: ignore
@@ -553,6 +587,7 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
             logger.warning(f"Title generation failed: {e}")
             return f"Giáo trình {topic}"
 
+
     def _generate_preface(
         self,
         topic: str,
@@ -560,22 +595,29 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
         curriculum: CurriculumOutline,
     ) -> str:
         """
-        Generate the Lời nói đầu (Preface) as plain Markdown.
+        Generate the Lời nói đầu (Preface) adapted to the subject domain.
+
+        Unlike a fixed academic preface template, this method adapts tone and
+        framing to the domain — a chemistry textbook preface reads differently
+        from a baking guide or a nail art course introduction, yet both serve
+        the same structural purpose: orient the reader, state objectives, and
+        explain how to use the material.
 
         The prompt requests plain Markdown with no LaTeX commands because the
         Publisher prepends the "# Lời nói đầu" heading itself and strips any
         LaTeX artifacts that older LLM responses produced.
 
         Content covers: target audience, prerequisites, learning objectives,
-        chapter structure overview, distinctive features, and usage guidance.
+        chapter structure overview, distinctive features, and usage guidance —
+        expressed in a voice appropriate to the domain.
 
         Args:
             topic:      User's original topic request.
-            title:      Generated academic title from _generate_textbook_title().
+            title:      Generated title from _generate_textbook_title().
             curriculum: Completed CurriculumOutline for chapter reference.
 
         Returns:
-            Preface Markdown string (4-6 paragraphs, formal Vietnamese).
+            Preface Markdown string (4–6 paragraphs, domain-appropriate Vietnamese).
             Empty string on failure — preface is optional; Publisher handles absence.
         """
         logger.info("Generating preface (Lời nói đầu)...")
@@ -585,27 +627,59 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
         )
 
         system_prompt = (
-            'You are the author of a Vietnamese university textbook writing the "Lời nói đầu" (Preface).\n\n'
-            "Write a natural, flowing academic preface in plain Markdown — "
-            "no LaTeX commands, no outer code fences, no \\begin or \\end tags.\n\n"
-            "Write 4-6 paragraphs that naturally cover these aspects "
-            "(in any order, without rigid labels):\n"
-            "- Who the textbook is intended for and what prerequisite knowledge is assumed\n"
-            "- The purpose and learning objectives of the textbook\n"
-            "- How the content is structured across chapters "
-            "(reference the provided chapter list)\n"
-            "- What makes this textbook distinctive or valuable for students\n"
-            "- How to use the textbook effectively for best results\n\n"
-            "Style rules:\n"
-            "- Formal academic Vietnamese (văn phong học thuật trang trọng)\n"
-            "- Each paragraph 3-5 sentences, flowing naturally without bolded section labels\n"
-            "- No conversational filler or generic phrases\n"
-            "- Tailor the content specifically to the topic and chapter structure provided\n"
-            "- Output starts directly with the first paragraph — no title, no heading\n\n"
-            "All output MUST be in formal Vietnamese."
+            "[CONTEXT]\n"
+            "You are a neutral academic writing specialist producing a Vietnamese\n"
+            "preface (Lời nói đầu) for an educational content platform that covers\n"
+            "all learning domains — university academics, technical skills, practical\n"
+            "crafts, cooking, beauty, sports, and lifestyle topics.\n"
+            "The preface must feel natural and fitting for the specific domain,\n"
+            "not uniformly stiff or academic.\n"
+            "[/CONTEXT]\n\n"
+
+            "[TASK]\n"
+            "Write a Lời nói đầu (Preface) in plain Markdown — no LaTeX commands,\n"
+            "no outer code fences, no \\begin or \\end tags.\n"
+            "Write 4–6 paragraphs that naturally cover these aspects\n"
+            "(in any order, without rigid section labels):\n"
+            "  - Who this material is intended for and what prior knowledge is assumed\n"
+            "  - The purpose and learning objectives\n"
+            "  - How the content is structured across chapters\n"
+            "    (reference the provided chapter list naturally in prose)\n"
+            "  - What makes this material distinctive or valuable for the learner\n"
+            "  - How to use it effectively for best results\n"
+            "[/TASK]\n\n"
+
+            "[CRITERION]\n"
+            "Adapt tone to the domain:\n"
+            "  - Scholarly/scientific → formal, precise, third-person academic voice\n"
+            "  - Technical/engineering → clear, professional, practical\n"
+            "  - Practical/lifestyle → warm, encouraging, direct — still structured\n"
+            "    but not stiff; a baking guide preface should feel like it was written\n"
+            "    by someone who loves teaching the craft, not a committee\n\n"
+            "Quality standards (apply to all domains):\n"
+            "  - Each paragraph 3–5 sentences, flowing naturally\n"
+            "  - No bolded section labels inside paragraphs\n"
+            "  - No conversational filler (\"Chúng ta hãy cùng...\", \"Bạn sẽ thấy...\")\n"
+            "  - Tailor content specifically to the topic and chapter structure provided\n"
+            "  - Output starts directly with the first paragraph — no title, no heading\n"
+            "[/CRITERION]\n\n"
+
+            "[CONSTRAINT]\n"
+            "Rule 1 — LANGUAGE: All output must be in Vietnamese.\n"
+            "Rule 2 — FORMAT: Plain Markdown only — no LaTeX, no code fences,\n"
+            "  no outer wrappers. Blank line between each paragraph.\n"
+            "Rule 3 — LENGTH: 4–6 paragraphs. Do not pad with generic filler\n"
+            "  to reach the count — fewer strong paragraphs beat more weak ones.\n"
+            "[/CONSTRAINT]\n\n"
+
+            "[FORMAT]\n"
+            "Plain Markdown paragraphs separated by blank lines.\n"
+            "Start directly with the first sentence — no heading, no preamble.\n"
+            "[/FORMAT]"
         )
+
         user_prompt = (
-            f"Textbook title: {title}\n"
+            f"Title: {title}\n"
             f"Topic: {topic}\n\n"
             f"Chapter list:\n{chapter_summary}\n\n"
             "Write the Vietnamese preface now:"

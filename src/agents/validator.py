@@ -11,8 +11,8 @@ Returns:
 
 import json
 from langchain_openai import ChatOpenAI
-from src.config import LLM_MODEL_CHEAP, ANTHROPIC_API_KEY
-from langchain_anthropic import ChatAnthropic
+from src.config import GROQ_API_KEY
+from langchain_groq import ChatGroq
 from src.graph.state import AgentState
 from src.log_config import setup_logger
 
@@ -33,37 +33,77 @@ def validate_topic(topic: str) -> dict:
         Dict with keys: valid (bool), reason (str), suggestion (str).
     """
     logger.info(f"validate_topic is running")
-    llm = ChatAnthropic(
-        model_name=LLM_MODEL_CHEAP,
-        api_key=ANTHROPIC_API_KEY,        # type: ignore[arg-type]
-        temperature=0,
-        max_tokens_to_sample=256,
-    )
-    
-    logger.info(f"[ValidatorAgent] Using model: {llm.model}")
-    logger.info(f"[ValidatorAgent] Validating topic: '{topic}'")
+    llm = ChatGroq(
+            model="llama-3.3-70b-versatile",
+            api_key=GROQ_API_KEY,     # type: ignore[arg-type]
+            temperature=0,
+            max_tokens=256,
+        )
 
 
-    prompt = f"""You are a quality gate for a Vietnamese university textbook generator.
+    prompt = f"""
+[CONTEXT]
+You are a neutral logic evaluator specialized in assessing the feasibility of 
+learning topics. The system generates educational content across all domains 
+the user wants to learn — not limited to formal academic subjects.
+[/CONTEXT]
 
-Evaluate this topic: "{topic}"
+[TASK]
+Evaluate the user-submitted topic: "{topic}"
+Determine: does this topic contain sufficient semantic signal to infer a learning 
+domain and scope, and does it violate any content constraints?
+[/TASK]
 
-Return a single JSON object (no markdown, no explanation):
-- valid: true if the topic is specific enough to generate a structured academic textbook
-- reason: short explanation in Vietnamese if invalid (≤15 words)
-- suggestion: 2-3 more specific alternatives if invalid, separated by " | "
-Rules for rejection:
-1. Topic is too broad or vague (no specific academic scope)
-2. Topic contains adult, sexual, violent, illegal, or harmful content
-3. Topic promotes illegal activities, hate speech, or dangerous substances
+[CRITERION]
+A topic is considered VALID (valid = true) when it satisfies both conditions:
+  (a) A learning domain can be inferred — even if the user uses natural language
+      rather than formal academic terminology.
+  (b) It does not violate any rule in [CONSTRAINT].
 
-Examples of INVALID topics (too broad or vague): "AI", "toán", "lập trình", "khoa học"
-Examples of VALID topics: "Học máy cơ bản", "Giải tích 1", "Lập trình Python cho người mới"
-Examples of REJECTED by rule 2-3: "nội dung 18+", "cách làm vũ khí", 
-"hack hệ thống", "ma túy", "cờ bạc"
+Note: If a topic is loosely phrased but a learning intent can be inferred,
+prefer ACCEPTING it — downstream components will clarify the scope.
+[/CRITERION]
 
-Output only this JSON:
-{{"valid": true, "reason": "", "suggestion": ""}}"""
+[CONSTRAINT]
+Rule 1 — ABSOLUTE AMBIGUITY:
+  Reject only when the topic is 1–2 isolated words with no context and no 
+  inferrable learning domain or goal whatsoever.
+  Rejection threshold: missing BOTH domain AND intent.
+  Do NOT reject: when a domain can be inferred despite non-standard phrasing.
+
+Rule 2 — INAPPROPRIATE CONTENT:
+  Reject when the topic contains adult, violent, or harmful content.
+
+Rule 3 — ILLEGAL CONTENT:
+  Reject when the topic promotes illegal activities, hate speech, or dangerous 
+  substances.
+[/CONSTRAINT]
+
+[EXEMPLAR]
+REJECT — Rule 1 (absolute ambiguity, no domain inferrable):
+  "AI" | "math" | "coding" | "science" | "business" | "toán" | "lập trình"
+
+ACCEPT — natural language, learning intent inferrable:
+  "Giáo trình học Trí tuệ nhân tạo chuẩn bị cho học thạc sĩ"
+    → domain: AI, level: advanced — sufficient to process
+  "Tôi muốn học nấu ăn Nhật Bản"
+    → domain: Japanese cuisine — sufficient to process
+  "Học máy cơ bản" | "Giải tích 1" | "Lập trình Python cho người mới"
+
+REJECT — Rule 2–3 (content violation):
+  "nội dung 18+" | "cách làm vũ khí" | "hack hệ thống" | "ma túy"
+[/EXEMPLAR]
+
+[FORMAT]
+Return a single JSON object only. No markdown, no additional explanation.
+Fields:
+  valid      : true if the topic has sufficient learning signal and no constraint violations
+  reason     : Vietnamese string ≤15 words explaining the rejection reason (empty if valid)
+  suggestion : 2–3 more specific topic alternatives in Vietnamese, separated by " | " (empty if valid)
+
+Output: {{"valid": true, "reason": "", "suggestion": ""}}
+[/FORMAT]
+"""
 
     try:
         response = llm.invoke(prompt)

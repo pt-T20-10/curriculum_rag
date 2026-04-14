@@ -49,6 +49,12 @@ EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
 LLM_MODEL_CHEAP   = "claude-sonnet-4-20250514"
 LLM_MODEL_PREMIUM = "claude-sonnet-4-20250514"
+
+# -- IMAGE GENERATION MODELS --
+IMAGE_MODEL_DEFAULT  = "gpt-image-1-mini"   # light / medium sections
+IMAGE_MODEL_PREMIUM  = "gpt-image-1.5"      # deep / applied sections
+
+
 # -- CHUNKINGS --
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200

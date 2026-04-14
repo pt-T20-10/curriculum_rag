@@ -254,7 +254,6 @@ class ResearcherAgent:
 
 
 # ---------------------------------------------------------------------------
-# Module-level lazy singleton (BUG-06 fix)
 #
 # ResearcherAgent.__init__ opens a ChromaDB connection. Without a singleton,
 # a new connection would be created for every subsection call (N chapters ×

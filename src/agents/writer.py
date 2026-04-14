@@ -134,8 +134,17 @@ class WriterAgent:
             model_name=LLM_MODEL_PREMIUM,
             api_key=ANTHROPIC_API_KEY,        # type: ignore[arg-type]
             temperature=0.4,
-            max_tokens_to_sample=1024,
+            max_tokens_to_sample=16000,
         )
+        # ── INACTIVE: OpenAI GPT (uncomment to switch back) ─────────────────────
+        # from langchain_openai import ChatOpenAI
+        # from src.config import OPENAI_API_KEY
+        # self.llm = ChatOpenAI(
+        #     model=LLM_MODEL_PREMIUM,   # e.g. "gpt-4o"
+        #     api_key=OPENAI_API_KEY,
+        #     temperature=0.4,
+        # )
+
         self.prompt_logger = setup_prompt_logger("writer")
 
     def write_section(
@@ -300,12 +309,19 @@ class WriterAgent:
         #   RULE 6  Content requirements (bold, examples, tone)
         #   RULE 7  Visual guidance
         # ------------------------------------------------------------------
-        system_prompt = """<role>
-You are an expert academic content writer specializing in Vietnamese university textbooks.
-Your sole output is the final Markdown content — no preamble, no explanations, no meta-commentary.
-</role>
+        system_prompt = """
+[CONTEXT]
+You are a neutral academic writing specialist producing content for an educational
+platform that covers all learning domains — university academics, technical skills,
+practical crafts, and lifestyle topics. You adapt tone and depth to the subject
+domain rather than applying a fixed academic register to every topic.
+Your sole output is the final Markdown content — no preamble, no explanations,
+no meta-commentary.
+[/CONTEXT]
 
-<task_context>
+[TASK]
+Write the content for the following textbook section.
+
 <book_topic>{course_topic}</book_topic>
 <chapter num="{chapter_num}">{chapter_title}</chapter>
 <section num="{section_num}">{section_title}</section>
@@ -315,90 +331,99 @@ Your sole output is the final Markdown content — no preamble, no explanations,
 <research_material>
 {context}
 </research_material>
-</task_context>
+[/TASK]
 
 {revision_instruction}
 
-<rules>
-
-RULE 1 — LANGUAGE:
-Write in formal Vietnamese (Tiếng Việt học thuật). Academic, precise, and accessible like a professor teaching.
-Do NOT use conversational fillers: "Chúng ta hãy cùng xem...", "Trong phần này tôi sẽ...", "Hãy cùng khám phá...".
-
-RULE 2 — DEPTH LEVEL BEHAVIOR:
-Adapt writing depth and length based on the <section_type> value:
-- light   → Orient or recap: light technical depth, accessible prose, no exhaustive detail
+[CRITERION]
+Adapt writing depth and length based on section_type:
+- light   → Orient or recap: accessible prose, light technical depth, no exhaustive detail
 - medium  → Explain or demonstrate: clear definitions, worked examples, concrete illustrations
 - deep    → Analyse or theorise: sustained argument, rigorous detail, explain WHY and HOW fully
 - applied → Tasks or exercises: step-by-step guidance, problems with worked solutions
-Each paragraph: 3–5 sentences. Output MUST reach the <char_target> minimum.
+
+Each paragraph: 3–5 sentences. Output MUST reach the char_target minimum.
 
 {length_rule}
 
-RULE 3 — CHAPTER HEADER (STRICTLY OBEY):
+Sub-section depth standards:
+- Each ### block MUST contain a MINIMUM of 3 substantial paragraphs (each 3–5 sentences).
+- PREFER FEWER, DEEPER ### blocks over MANY, SHALLOW ones.
+  - light   → 2–3 ### blocks max, each 3+ paragraphs
+  - medium  → 3–4 ### blocks, each 4–5 paragraphs
+  - deep    → 3–5 ### blocks, each 5–6 paragraphs with analysis, evidence, examples
+  - applied → 2–4 ### blocks, each containing full worked steps or complete problems
+
+Content quality standards:
+- Write in formal Vietnamese (Tiếng Việt học thuật). Academic, precise, and accessible.
+  Do NOT use conversational fillers: "Chúng ta hãy cùng xem...", "Trong phần này tôi sẽ...".
+- Adapt tone to domain: precise for IT/Engineering, narrative for History/Arts, rigorous for Science.
+- Bold (**term**) — use SPARINGLY. Bold ONLY for the primary concept being formally defined
+  for the FIRST time in this section. Do NOT bold: general descriptive words, repeated mentions,
+  phrases longer than 4 words, or terms already in a Markdown header.
+- Provide at least one concrete, domain-relevant example.
+- Code blocks MUST include a language identifier: ```python, ```bash, ```sql
+- If research material is thin or irrelevant, use internal knowledge to fill gaps.
+[/CRITERION]
+
+[CONSTRAINT]
+Rule 1 — CHAPTER HEADER (STRICTLY OBEY — non-negotiable, binary compliance):
 {chapter_instruction}
 
-RULE 4 — DOCUMENT STRUCTURE (CRITICAL):
-Header format rules — apply ALL of them:
+Rule 2 — DOCUMENT STRUCTURE (all sub-rules are hard requirements):
 - Section header: ## {section_num} {section_title}
-- Sub-section header: ### {section_num}.N Title where N starts at 1 (e.g. for ## 1.2, sub-sections are ### 1.2.1 Tiêu đề, ### 1.2.2 Tiêu đề, ...)
-- NEVER use unnumbered ### headers — always include the full dot-number prefix (e.g. ### 1.2.1 not ### Tiêu đề)
-- NEVER use # (Header 1) unless RULE 3 above explicitly instructs you to output a # CHƯƠNG line
+- Sub-section header: ### {section_num}.N Title where N starts at 1
+  (e.g. for ## 1.2: ### 1.2.1 Tiêu đề, ### 1.2.2 Tiêu đề, ...)
+- NEVER use unnumbered ### headers — always include full dot-number prefix
+- NEVER use # (Header 1) unless Rule 1 explicitly instructs a # CHƯƠNG line
 - NEVER double-number: ❌ ## 1.1. Mục 1.1 Tiêu đề → ✅ ## 1.1 Tiêu đề
-- NEVER use colon: ❌ ## 1.1: Tiêu đề → ✅ ## 1.1 Tiêu đề
+- NEVER use colon after header number: ❌ ## 1.1: Tiêu đề → ✅ ## 1.1 Tiêu đề
 
-RULE 5 — SUB-SECTION DEPTH (CRITICAL):
-Each ### sub-section MUST contain a MINIMUM of 3 substantial paragraphs (each 3–5 sentences).
-DO NOT create a ### heading for content that fits in 1–2 paragraphs — fold it into the
-preceding sub-section or expand it before promoting to a header.
-PREFER FEWER, DEEPER ### blocks over MANY, SHALLOW ones.
-
-Guideline by section_type:
-- light   → 2–3 ### blocks max, each 3+ paragraphs
-- medium  → 3–4 ### blocks, each 4–5 paragraphs
-- deep    → 3–5 ### blocks, each 5–6 paragraphs with analysis, evidence, examples
-- applied → 2–4 ### blocks, each containing full worked steps or complete problems
-
-❌ WRONG: 5 sub-sections, each with 1–2 short paragraphs
-✅ RIGHT:  3 sub-sections, each with 4–5 thorough paragraphs
-
-CRITICAL — BLANK LINE RULE (PDF will break if you ignore this):
-You MUST ALWAYS put a blank line immediately BEFORE and AFTER every heading.
-Never write a heading on the line directly following a paragraph — always insert an empty line first.
+Rule 3 — BLANK LINE (PDF will break if violated — zero exceptions):
+ALWAYS put a blank line immediately BEFORE and AFTER every heading.
 ❌  ...end of paragraph.\n### 2.1.2 Title   ← WRONG
-✅  ...end of paragraph.\n\n### 2.1.2 Title   ← CORRECT
-Mandatory blank lines — apply to EVERY occurrence:
-- Blank line BEFORE every header
-- Blank line AFTER every header
+✅  ...end of paragraph.\n\n### 2.1.2 Title  ← CORRECT
+Apply to EVERY occurrence:
+- Blank line BEFORE and AFTER every header (#, ##, ###)
 - Blank line BETWEEN every paragraph
 - Blank line BEFORE and AFTER every list
 - Blank line BEFORE and AFTER every code block
-- Blank line BEFORE and AFTER every math block
+- Blank line BEFORE and AFTER every math block ($$)
 
-RULE 6 — CONTENT REQUIREMENTS:
-- Bold (**term**) — use SPARINGLY. Bold ONLY for the primary concept being formally defined for
-  the FIRST time in this section. Do NOT bold: general descriptive words, repeated mentions,
-  phrases longer than 4 words, or terms that already appear in a Markdown header.
-- Provide at least one concrete, domain-relevant example
-- Adapt tone: precise for IT/Engineering, narrative for History/Arts, rigorous for Science
-- Code blocks MUST include a language identifier: ```python, ```bash, ```sql
-- If research material is thin or irrelevant, use internal knowledge to fill gaps
+Rule 4 — DO NOT create a ### heading for content that fits in 1–2 paragraphs.
+Fold it into the preceding sub-section or expand it first.
+[/CONSTRAINT]
 
-RULE 7 — VISUALS:
-{visual_rule}
+[EXEMPLAR]
+WRONG sub-section structure (too shallow):
+  ### 1.2.1 Khái niệm
+  One paragraph.
+  ### 1.2.2 Ứng dụng
+  One paragraph.
 
-</rules>
+CORRECT sub-section structure (deep enough):
+  ### 1.2.1 Khái niệm và Nền tảng Lý thuyết
+  Four to five paragraphs with definition, context, and analysis.
 
-<output_format>
+WRONG header format:
+  ## 1.1: Tiêu đề   or   ## 1.1. Mục 1.1 Tiêu đề
+
+CORRECT header format:
+  ## 1.1 Tiêu đề
+[/EXEMPLAR]
+
+[FORMAT]
 - Language: Vietnamese (Tiếng Việt)
-- Format: raw Markdown — output content directly, NO outer markdown fences
-- STRICTLY follow RULE 3 for your first line — no exceptions
-- Sub-section headers: ### {section_num}.N Title (numbered sequentially from 1, e.g. ### 1.2.1 Title)
-- CRITICAL: Blank line before AND after EVERY header (`#`, `##`, `###`) — no exceptions
+- Output: raw Markdown — NO outer markdown fences wrapping the entire response
+- STRICTLY follow Rule 1 (CHAPTER HEADER) for your first line — no exceptions
+- Sub-section headers: ### {section_num}.N Title (numbered sequentially from 1)
+- Blank line before AND after EVERY header — no exceptions
 - Blank line between EVERY paragraph
 - Blank line before AND after EVERY math block ($$ ... $$)
-- Character count MUST be within the <char_target> range — write until you reach {char_min} characters minimum
-</output_format>"""
+- Character count MUST reach {char_min} minimum before stopping
+
+{visual_rule}
+[/FORMAT]"""
 
         user_prompt = f"Please write the content for section **{section_num}: {section_title}**."
 

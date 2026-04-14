@@ -30,6 +30,7 @@ import io
 import hashlib
 import uuid
 import textwrap
+from xmlrpc import client
 import requests
 
 from openai import OpenAI
@@ -38,7 +39,8 @@ from urllib.parse import urlparse
 from pathlib import Path
 from PIL import Image
 
-from src.config import OPENAI_API_KEY, SERPER_API_KEY, BASE_DIR, LLM_MODEL_CHEAP, INDICATE_LINKS_FOR_PICS
+from src.config import OPENAI_API_KEY, SERPER_API_KEY, BASE_DIR, LLM_MODEL_CHEAP, INDICATE_LINKS_FOR_PICS, IMAGE_MODEL_DEFAULT, IMAGE_MODEL_PREMIUM
+
 from src.log_config import setup_logger, setup_prompt_logger
 from src.graph.state import AgentState
 
@@ -348,24 +350,36 @@ class IllustratorAgent:
     # Image acquisition methods
     # ------------------------------------------------------------------
 
-    def generate_image_openai(self, description: str, is_search_fallback: bool = False) -> str:
+    def generate_image_openai(
+        self,
+        description: str,
+        is_search_fallback: bool = False,
+        section_type: str = "medium",
+        ) -> str:
         """
-        Generate an educational illustration via OpenAI DALL-E 3.
+        Generate an educational illustration via OpenAI GPT Image API.
 
         Uses the project-wide OPENAI_API_KEY (same key as Writer/Reviewer).
+        Model is selected dynamically based on section_type:
+            deep / applied → gpt-image-1.5  (flagship, higher fidelity)
+            light / medium → gpt-image-1-mini (cost-efficient, lower latency)
 
         Flow:
-            1. Sanitize description (remove enumeration labels)
-            2. Call DALL-E 3 → receive temporary CDN URL (TTL ~1 hour)
-            3. Download image bytes (timeout=15s)
-            4. Resize to A4 constraints and save as PNG
-            5. Return absolute local path, or "" on any failure
+            1. Select image model based on section_type
+            2. Sanitize description (remove enumeration labels)
+            3. Call GPT Image API → receive temporary CDN URL (TTL ~1 hour)
+            4. Download image bytes (timeout=15s)
+            5. Resize to A4 constraints and save as PNG
+            6. Return absolute local path, or "" on any failure
 
         An empty string return triggers automatic fallback to SEARCH in
         illustrate_content().
 
         Args:
-            description: English image description from the IMAGE tag.
+            description:       English image description from the IMAGE tag.
+            is_search_fallback: True when called as last-resort after Serper fails.
+            section_type:      One of 'light'|'medium'|'deep'|'applied' — controls
+                            which GPT Image model is selected.
 
         Returns:
             Absolute path string to the saved PNG, or "" on any failure.
@@ -375,26 +389,33 @@ class IllustratorAgent:
             return ""
 
         try:
-            client    = OpenAI(api_key=OPENAI_API_KEY)
+            from src.config import IMAGE_MODEL_DEFAULT, IMAGE_MODEL_PREMIUM
+
+            client = OpenAI(api_key=OPENAI_API_KEY)
+
+            image_model = (
+                IMAGE_MODEL_PREMIUM
+                if section_type in ("deep", "applied")
+                else IMAGE_MODEL_DEFAULT
+            )
+            logger.info(f"GPT Image model selected: {image_model} (section_type='{section_type}')")
+
             if is_search_fallback:
-                # Entity existed in real world but image download failed.
-                # Preserve original description — do NOT sanitize proper nouns.
                 dalle_prompt = (
                     "Educational illustration for a university textbook.\n"
                     "CRITICAL: No text, words, numbers, or labels anywhere in the image.\n"
                     "Depict accurately: " + description
                 )
             else:
-                # DRAW-native: LLM intentionally chose illustration over search.
-                # Sanitize only enumeration labels, keep conceptual terms.
                 sanitized = self.sanitize_description_for_dalle(description)
                 dalle_prompt = (
                     "Educational illustration for a university textbook.\n"
                     "CRITICAL: No text, words, numbers, or labels anywhere in the image.\n"
                     "Illustrate: " + sanitized
                 )
+
             response = client.images.generate(
-                model="dall-e-3",
+                model=image_model,
                 prompt=dalle_prompt,
                 size="1024x1024",
                 quality="standard",
@@ -403,14 +424,13 @@ class IllustratorAgent:
 
             image_url = response.data[0].url  # type: ignore
             if not image_url:
-                logger.warning("DALL-E 3 returned empty URL — triggering fallback")
+                logger.warning(f"{image_model} returned empty URL — triggering fallback")
                 return ""
 
-            # Download — timeout=15s to handle CDN TTL safely
             dl_response = requests.get(image_url, timeout=15)
             if dl_response.status_code != 200:
                 logger.warning(
-                    f"DALL-E 3 image download failed "
+                    f"{image_model} image download failed "
                     f"({dl_response.status_code}) — triggering fallback"
                 )
                 return ""
@@ -418,16 +438,16 @@ class IllustratorAgent:
             img = Image.open(io.BytesIO(dl_response.content)).convert("RGB")
             img.thumbnail((IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT))
 
-            uid        = uuid.uuid4().hex[:12]
+            uid = uuid.uuid4().hex[:12]
             IMAGE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
             local_path: Path = IMAGE_OUTPUT_DIR / f"gen_{uid}.png"
             img.save(local_path, "PNG")
 
-            logger.info(f"✓ DALL-E 3 image saved: {local_path.name}")
+            logger.info(f"✓ {image_model} image saved: {local_path.name}")
             return str(local_path)
 
         except Exception as e:
-            logger.warning(f"DALL-E 3 generation failed ({e}) — triggering fallback")
+            logger.warning(f"GPT Image generation failed ({e}) — triggering fallback")
             return ""
 
     def find_image_urls(self, query: str) -> list[str]:
@@ -537,7 +557,7 @@ class IllustratorAgent:
     # Main orchestration
     # ------------------------------------------------------------------
 
-    def illustrate_content(self, content: str) -> str:
+    def illustrate_content(self, content: str, section_type: str = "medium") -> str:
         """
         Process all image tags in `content` and replace them with figure blocks.
 
@@ -603,9 +623,9 @@ class IllustratorAgent:
             # -- Route ---------------------------------------------------------
             action = self.route_image_request(description)
 
-            # DRAW → DALL-E 3, with automatic fallback to SEARCH on failure
+            
             if action == "DRAW":
-                local_path = self.generate_image_openai(description, is_search_fallback=False)
+                local_path = self.generate_image_openai( description, is_search_fallback=False, section_type=section_type)
                 if not local_path:
                     logger.info(f"DRAW failed — falling back to SEARCH: '{label[:50]}'")
                     action = "SEARCH"
@@ -635,7 +655,7 @@ class IllustratorAgent:
                         f"All Serper candidates failed for '{label[:50]}' "
                         f"— falling back to DALL-E DRAW"
                     )
-                    local_path = self.generate_image_openai(description, is_search_fallback=True)
+                    local_path = self.generate_image_openai(description, is_search_fallback=True, section_type=section_type)
             # -- Build figure block --------------------------------------------
             if local_path:
                 # Caption: prefer TITLE (short, often already Vietnamese).
@@ -802,7 +822,24 @@ def illustrate_section(state: AgentState) -> dict:
         cleaned = re.sub(r"> \[IMAGE(?:\s+SUGGESTION)?: .*?\]", "", current_content)
         return {"current_content": cleaned}
 
-    agent               = IllustratorAgent()
-    illustrated_content = agent.illustrate_content(current_content)
+    sec_type = "medium"
+    try:
+            from src.graph.state import get_chapter_and_subsection
+            curriculum = state.get("curriculum")
+            if curriculum:
+                _, subsection = get_chapter_and_subsection(
+                    curriculum,
+                    state.get("current_chapter_index", 0),
+                    state.get("current_subsection_index", 0),
+                )
+                sec_type = (
+                    subsection.section_type
+                    if hasattr(subsection, "section_type")
+                    else subsection.get("section_type", "medium")
+                )
+    except Exception:
+            pass
 
+    agent = IllustratorAgent()
+    illustrated_content = agent.illustrate_content(current_content, section_type=sec_type)
     return {"current_content": illustrated_content}

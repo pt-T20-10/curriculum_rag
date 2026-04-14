@@ -53,3 +53,4 @@ tests/
 eval/
 list_models.py
 seed_chromadb.py
+docs/
