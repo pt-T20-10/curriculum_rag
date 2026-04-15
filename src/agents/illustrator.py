@@ -262,18 +262,19 @@ class IllustratorAgent:
                 context_label=f"Sanitize | {description[:40]}",
             )
             response = self.llm.invoke(
-                "Rewrite this image description to prevent DALL-E from rendering text artifacts.\n"
-            "ONLY remove explicit enumeration labels that would appear as literal text in the image:\n"
-            "  - Numbered labels: 'Step 1:', 'Phase 2:', 'Layer A:', 'Option B:'\n"
-            "  - Replace with structural counts: '3 sequential steps', '4 phases'\n"
-            "KEEP everything else unchanged:\n"
-            "  - Proper nouns (person names, place names, artwork titles, philosophy names)\n"
-            "  - Conceptual terms (yin-yang, Confucianism, Renaissance, etc.)\n"
-            "  - Compositional and stylistic details\n"
-            "  - Colors, atmosphere, visual metaphors\n"
-            "Return ONLY the rewritten description, no explanation.\n\n"
+            "Rewrite this image description for a GPT Image API call.\n\n"
+            "Output format — use EXACTLY this structure:\n"
+            "Caption: [one sentence describing the overall scene and style]\n"
+            "Elements: [comma-separated list of key visual objects with their attributes]\n\n"
+            "Rules:\n"
+            "- Caption: focus on scene, atmosphere, composition\n"
+            "- Elements: list each object with color/size/position — NO numbered labels\n"
+            "- Remove enumeration prefixes (Step 1:, Layer A:, Phase 2:)\n"
+            "- Replace with structural counts (3 sequential steps, 4 layers)\n"
+            "- Keep proper nouns, conceptual terms, and compositional details\n"
+            "- CRITICAL: No text, words, numbers visible in the image\n\n"
             "Original: " + description
-            )
+        )
             sanitized = str(response.content).strip()
             logger.info(f"Description sanitized: '{description[:50]}' → '{sanitized[:50]}'")
             return sanitized
@@ -307,23 +308,25 @@ class IllustratorAgent:
         # textwrap.dedent removes the method-body indentation from the string.
         prompt = textwrap.dedent("""
             Classify this image description for an educational textbook.
-            Choose the category that best matches the PRIMARY visual intent.
 
-            SEARCH — real entities with an authoritative visual form:
-              e.g. "Docker whale logo", "IBM quantum computer photo", "Vietnam map"
+            DIAGRAM — requires precise spatial layout (route here if ANY of these apply):
+            - Specific quantity of objects (e.g. "3 nodes", "5 layers")
+            - Attribute binding: multiple objects each with distinct properties
+            - Explicit spatial relationships (left/right/above/below/inside)
+            - Multi-subject scenes with positional constraints
+            e.g. "OSI 7-layer model", "microservices architecture", "binary search tree"
 
-            DRAW — illustrative/artistic concept, no precise layout needed:
-              e.g. "DevOps culture collaboration scene", "abstract neural network art",
-                   "metaphor of data flowing like water"
+            DRAW — conceptual illustration, no strict layout constraints:
+            - Style/atmosphere focus, single subject, abstract metaphor
+            e.g. "DevOps culture scene", "abstract neural network art"
 
-            DIAGRAM — technical structure requiring precise spatial layout:
-              e.g. "OSI 7-layer model", "microservices architecture", "binary search tree",
-                   "gradient descent loss curve", "CNN convolution layer diagram"
+            SEARCH — real entities with authoritative visual form:
+            e.g. "Docker whale logo", "Vietnam map", "IBM quantum computer photo"
 
-            Respond ONLY with one of these JSON objects — no extra text:
-              {{"action": "SEARCH"}}
-              {{"action": "DRAW"}}
-              {{"action": "DIAGRAM"}}
+            Respond ONLY with one of these JSON objects:
+            {{"action": "DIAGRAM"}}
+            {{"action": "DRAW"}}
+            {{"action": "SEARCH"}}
 
             Description: {description}
         """).strip()

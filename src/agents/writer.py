@@ -16,7 +16,10 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 from langchain_core.prompts import ChatPromptTemplate
-
+from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
+from src.agents.researcher import retrieve_context_tool
+from src.config import LLM_MODEL_PREMIUM, ANTHROPIC_API_KEY, RAG_TOOL_MAX_ROUNDS
+from src import stop_signal
 
 from src.log_config import setup_logger, setup_prompt_logger
 from src.graph.state import (
@@ -136,6 +139,8 @@ class WriterAgent:
             temperature=0.4,
             max_tokens_to_sample=16000,
         )
+        self.llm_with_tools = self.llm.bind_tools([retrieve_context_tool])
+        self.llm_no_tools   = self.llm
         # ── INACTIVE: OpenAI GPT (uncomment to switch back) ─────────────────────
         # from langchain_openai import ChatOpenAI
         # from src.config import OPENAI_API_KEY
@@ -147,6 +152,87 @@ class WriterAgent:
 
         self.prompt_logger = setup_prompt_logger("writer")
 
+
+    def _run_agentic_loop(
+        self,
+        messages: list,
+        max_rounds: int = RAG_TOOL_MAX_ROUNDS,
+        ) -> str:
+        """
+        Agentic retrieval loop for WriterAgent.
+
+        Each round invokes llm_with_tools. If the LLM emits tool_calls,
+        the tool is executed and results are appended to the conversation
+        history before the next round. If no tool_calls are emitted, the
+        LLM has decided context is sufficient and generated content directly.
+
+        Final round (max_rounds reached): switches to llm_no_tools to force
+        content generation regardless of context sufficiency assessment.
+
+        Stop signal is checked at the start of each round — returns a sentinel
+        string immediately if the pipeline is cancelled.
+
+        Args:
+            messages:   Initial [SystemMessage, HumanMessage] list.
+            max_rounds: Maximum tool call rounds before forcing generation.
+
+        Returns:
+            Generated Markdown content string.
+        """
+        round_count = 0
+
+        while True:
+            # Check stop signal at each round
+            if stop_signal.is_stopped():
+                logger.info("Stop signal detected — aborting agentic loop")
+                return "(Generation stopped by user)"
+
+            # Final round — force content generation without tools
+            if round_count >= max_rounds:
+                logger.info(
+                    f"Max rounds ({max_rounds}) reached — "
+                    f"forcing final generation without tools"
+                )
+                response = self.llm_no_tools.invoke(messages)
+                return str(response.content)
+
+            # Regular round — invoke with tools
+            response = self.llm_with_tools.invoke(messages)
+
+            # No tool calls → LLM decided context is sufficient, content generated
+            if not response.tool_calls:
+                logger.info(
+                    f"✓ Content generated directly after "
+                    f"{round_count} tool call round(s)"
+                )
+                return str(response.content)
+
+            # Process tool calls
+            logger.info(
+                f"Round {round_count + 1}/{max_rounds}: "
+                f"{len(response.tool_calls)} tool call(s)"
+            )
+
+            # Append assistant response (with tool_calls) to history
+            messages = list(messages)
+            messages.append(response)
+
+            for tc in response.tool_calls:
+                query = tc["args"].get("query", "")
+                logger.info(
+                    f"  → retrieve_context_tool('{query[:60]}')"
+                )
+
+                tool_result = retrieve_context_tool.invoke(tc["args"])
+
+                messages.append(ToolMessage(
+                    content=str(tool_result),
+                    tool_call_id=tc["id"],
+                ))
+
+            round_count += 1
+    
+    
     def write_section(
         self,
         course_topic: str,
@@ -336,6 +422,25 @@ Write the content for the following textbook section.
 {revision_instruction}
 
 [CRITERION]
+AGENTIC RETRIEVAL — assess context before writing:
+You have access to retrieve_context_tool. Use it to fetch additional chunks
+from the knowledge base when the provided research material is insufficient.
+
+WHEN to call the tool:
+- A key concept in <description> is not covered in <research_material>
+- section_type is "deep" or "medium" but research material is thin (< 3 relevant chunks)
+- You lack specific examples, data, or technical details needed to reach <char_target>
+
+HOW to use effectively:
+- Generate 3–5 targeted queries FIRST — specific phrases, not broad topic names
+- Call the tool for the 2–3 most promising queries only
+- After each retrieval, reassess: is context now sufficient to write {char_min}+ chars?
+- If yes → write content. If no → one more call (max {max_rounds} total).
+
+WHEN NOT to call:
+- section_type is "light" and initial context covers the description
+- Initial chunks already address the section description well
+- After {max_rounds} tool calls — write with what you have
 Adapt writing depth and length based on section_type:
 - light   → Orient or recap: accessible prose, light technical depth, no exhaustive detail
 - medium  → Explain or demonstrate: clear definitions, worked examples, concrete illustrations
@@ -449,6 +554,7 @@ CORRECT header format:
                 char_max=char_target[1],
                 visual_rule=visual_rule,
                 length_rule=length_rule,
+                max_rounds=RAG_TOOL_MAX_ROUNDS,
             )
         except Exception:
             formatted_system = system_prompt
@@ -460,40 +566,44 @@ CORRECT header format:
             context_label=f"{section_num} {section_title} [{mode}]",
         )
 
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", system_prompt),
-            ("user", user_prompt)
-        ])
-
         try:
             safe_context = ''.join(
                 c for c in context
                 if c >= ' ' or c in '\n\t\r'
             )
-            chain = prompt | self.llm
-            response = chain.invoke({
-                "course_topic": course_topic,
-                "chapter_num": chapter_num,
-                "chapter_title": chapter_title,
-                "section_num": section_num,
-                "section_title": section_title,
-                "section_description": section_description,
-                "context": safe_context,
-                "chapter_instruction": chapter_instruction,
-                "revision_instruction": revision_instruction,
-                "section_type": section_type,
-                "char_min": char_target[0],
-                "char_max": char_target[1],
-                "visual_rule": visual_rule,
-                "length_rule": length_rule, 
-            })
+            # Format system prompt với tất cả variables
+            formatted_system = system_prompt.format(
+                course_topic=course_topic,
+                chapter_num=chapter_num,
+                chapter_title=chapter_title,
+                section_num=section_num,
+                section_title=section_title,
+                section_description=section_description,
+                context=safe_context,
+                chapter_instruction=chapter_instruction,
+                revision_instruction=revision_instruction,
+                section_type=section_type,
+                char_min=char_target[0],
+                char_max=char_target[1],
+                visual_rule=visual_rule,
+                length_rule=length_rule,
+                max_rounds=RAG_TOOL_MAX_ROUNDS,
+            )
+            # Messages list — bắt buộc khi dùng ToolMessage trong agentic loop
+            messages = [
+                SystemMessage(content=formatted_system),
+                HumanMessage(content=user_prompt),
+            ]
 
-            raw_content = response.content
-            if not isinstance(raw_content, str):
-                logger.error(f"LLM returned non-string content: {type(raw_content)}")
+            content = self._run_agentic_loop(
+                messages=messages,
+                max_rounds=RAG_TOOL_MAX_ROUNDS,
+            )
+
+            if not isinstance(content, str):
+                logger.error(f"LLM returned non-string content: {type(content)}")
                 return "(Error: Invalid content type from LLM)"
 
-            content: str = raw_content
 
             # ------------------------------------------------------------------
             # Post-processing — deterministic fixups applied after every LLM call.

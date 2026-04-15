@@ -64,8 +64,18 @@ class QueryExpansionAgent:
             model_name=LLM_MODEL_CHEAP,
             api_key=ANTHROPIC_API_KEY,        # type: ignore[arg-type]
             temperature=0.5,
-            max_tokens_to_sample=1024,
+            max_tokens_to_sample=512,
         )
+        # ── INACTIVE: OpenAI GPT (uncomment to switch back) ─────────────────────
+        # from langchain_openai import ChatOpenAI
+        # from src.config import OPENAI_API_KEY
+        # self.llm = ChatOpenAI(
+        #     model=LLM_MODEL_CHEAP,
+        #     api_key=OPENAI_API_KEY,
+        #     temperature=0.5,
+        #     max_tokens=512,
+        # )
+
         self.prompt_logger = setup_prompt_logger("query_expansion")
 
     def expand_query(self, user_input: str) -> list[str]:
@@ -115,20 +125,37 @@ class QueryExpansionAgent:
         """
         logger.info(f"Expanding query: '{user_input}'")
 
-        system_prompt = """You are a Search Query Optimizer for an Academic Textbook Generator System.
-The user will provide a possibly vague topic (e.g., "Cooking", "Python", "Chuyển đổi số").
+        system_prompt = """
+[CONTEXT]
+You are a neutral search query optimizer for an educational content platform
+that covers all learning domains — not limited to formal academic subjects.
+Users may submit vague or natural-language topics; your job is to infer
+learning intent and generate targeted search queries regardless of domain.
+[/CONTEXT]
 
-YOUR TASK:
-1. Analyze the user's intent: Assume they want to write a comprehensive University-level Textbook or Course.
-2. Generate 3 Vietnamese search queries to find Vietnamese syllabi, curricula, or textbooks.
-3. Generate 3 English search queries to find English academic papers, textbooks, or courses on the same topic.
-4. If the topic is too broad, default to "Basic/Fundamental" level.
+[TASK]
+Given the user's topic, generate:
+  - 3 Vietnamese search queries targeting Vietnamese syllabi, curricula,
+    textbooks, or course materials (for vn-vn region search).
+  - 3 English search queries targeting English academic papers, textbooks,
+    or university courses on the same topic (for us-en region search).
 
-OUTPUT FORMAT:
+If the topic is too broad, default to "Basic/Fundamental" level.
+[/TASK]
+
+[CRITERION]
+Each query must:
+  (a) Target a different angle of the topic — textbook, syllabus, or paper.
+  (b) Be specific enough to return relevant educational resources.
+  (c) Match the domain tone — academic for scholarly topics, practical for
+      skill-based topics (e.g. cooking, nail art, woodworking).
+[/CRITERION]
+
+[FORMAT]
 Return ONLY a JSON object with keys "vi" and "en". No markdown, no preamble.
 Example for input "Nấu ăn":
-{{"vi": ["Giáo trình Kỹ thuật Chế biến món ăn", "Tài liệu nhập môn Nấu ăn cơ bản", "Giáo trình Ẩm thực học đại cương"], "en": ["culinary arts fundamentals textbook", "food science and cooking academic course", "gastronomy introduction university syllabus"]}}"""
-
+{{"vi": ["Giáo trình Kỹ thuật Chế biến món ăn", "Tài liệu nhập môn Nấu ăn cơ bản", "Giáo trình Ẩm thực học đại cương"], "en": ["culinary arts fundamentals textbook", "food science and cooking academic course", "gastronomy introduction university syllabus"]}}
+[/FORMAT]"""
         user_prompt = f"User Input: {user_input}"
 
         prompt = ChatPromptTemplate.from_messages([

@@ -80,21 +80,27 @@ CHUNK_OVERLAP = 200
 # ============================================================================
  
 # Số kết quả DuckDuckGo mỗi query (3 VI + 3 EN queries = tổng raw URLs)
-SEARCH_RESULTS_PER_QUERY: int = 5
+SEARCH_RESULTS_PER_QUERY: int = 20
  
 # Số worker crawl song song (ingester.py ThreadPoolExecutor)
 SEARCH_MAX_WORKERS: int = 6
  
 # Số worker crawl URL song song (crawler.py ThreadPoolExecutor)
-CRAWL_MAX_WORKERS: int = 3
+CRAWL_MAX_WORKERS: int = 5
  
 # Số sub-link depth-1 tối đa mỗi root page (crawler.py)
-CRAWL_MAX_SUB_LINKS: int = 1
+CRAWL_MAX_SUB_LINKS: int = 5
  
 # Số worker probe content-type song song (url_filter.py ThreadPoolExecutor)
 URL_FILTER_MAX_WORKERS: int = 5
 
-INDICATE_LINKS_FOR_PICS = 15
+INDICATE_LINKS_FOR_PICS = 12
+
+
+RAG_TOP_K: int = 8
+RAG_INITIAL_K: int = 3      # initial chunks từ Researcher
+RAG_TOOL_K: int = 3         # chunks mỗi lần tool call
+RAG_TOOL_MAX_ROUNDS: int = 3 # vòng lặp tối đa
 
 def setup_directories():
     for path in [DATA_DIR, CHROMA_DB_DIR]:

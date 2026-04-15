@@ -27,9 +27,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from langchain_core.tools import tool
+from src.config import CHROMA_DB_DIR, RAG_TOP_K, RAG_INITIAL_K, RAG_TOOL_K, get_embedding_model
 from langchain_chroma import Chroma
-
-from src.config import CHROMA_DB_DIR, RAG_TOP_K, get_embedding_model
 from src.graph.state import AgentState, Chapter, SubSection, get_chapter_and_subsection
 from src.log_config import setup_logger
 
@@ -177,7 +177,7 @@ class ResearcherAgent:
     def retrieve_context(
         self,
         query:         str,
-        k:             int  = 5,
+        k:             int  = RAG_TOP_K,
         context_label: str  = "",
     ) -> str:
         """
@@ -201,7 +201,12 @@ class ResearcherAgent:
         logger.info(f"Searching ChromaDB — query: '{query}' | k={k}")
 
         try:
-            results = self.vector_db.similarity_search(query, k=k)
+            results = self.vector_db.max_marginal_relevance_search(
+                query,
+                k=k,
+                fetch_k=k * 4,
+                lambda_mult=0.7,
+            )
 
             if not results:
                 logger.warning(f"No content found for query: '{query}'")
@@ -280,8 +285,27 @@ def _get_researcher() -> ResearcherAgent:
     if _researcher_instance is None:
         _researcher_instance = ResearcherAgent()
     return _researcher_instance
+@tool
+def retrieve_context_tool(query: str) -> str:
+    """
+    Retrieve relevant chunks from the knowledge base for a given query.
+    Use this tool when you need more specific information about a topic
+    to write better content. Returns formatted text chunks with source metadata.
 
+    Args:
+        query: Specific search query targeting the concept you need more info on.
 
+    Returns:
+        Formatted string of retrieved chunks with source metadata.
+    """
+    logger.info(f"[TOOL CALL] retrieve_context_tool: '{query[:60]}'")
+    return _get_researcher().retrieve_context(
+        query=query,
+        k=RAG_TOOL_K,
+        context_label="[TOOL CALL]",
+    )
+    
+    
 def perform_research(state: AgentState) -> dict:
     """
     Researcher node: retrieve RAG context for the current subsection.
@@ -343,9 +367,9 @@ def perform_research(state: AgentState) -> dict:
 
         context = _get_researcher().retrieve_context(
             query         = query,
-            k             = RAG_TOP_K,
-            context_label = context_label,
-        )
+            k             = RAG_INITIAL_K,
+            context_label = f"[INITIAL] {context_label}",
+)
 
         if not context:
             logger.warning("No context retrieved — Writer will use general knowledge")

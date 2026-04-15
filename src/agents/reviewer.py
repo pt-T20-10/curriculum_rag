@@ -69,8 +69,16 @@ class ReviewerAgent:
             model_name=LLM_MODEL_CHEAP,
             api_key=ANTHROPIC_API_KEY,        # type: ignore[arg-type]
             temperature=0.1,
-            max_tokens_to_sample=1024,
+            max_tokens_to_sample=4096,
 )
+        # ── INACTIVE: OpenAI GPT (uncomment to switch back) ─────────────────────
+        # from langchain_openai import ChatOpenAI
+        # from src.config import OPENAI_API_KEY
+        # self.llm = ChatOpenAI(
+        #     model=LLM_MODEL_CHEAP,
+        #     api_key=OPENAI_API_KEY,
+        #     temperature=0.1,
+        # )
         self.prompt_logger = setup_prompt_logger("reviewer")
 
     def should_revise(
@@ -87,49 +95,65 @@ class ReviewerAgent:
             3. Wrong math delimiters — \\[ \\] or \\( \\) instead of $$ or $.
             4. Conversational or unprofessional tone in Vietnamese.
             5. Superficial content — missing definitions, examples, or core
-               explanations; OR any ### sub-section with fewer than 3 paragraphs.
+            explanations; OR any ### sub-section with fewer than 3 paragraphs.
             6. Any Markdown heading not preceded by a blank line.
 
-        The char_min parameter aligns the quality gate with the Writer's
-        char_target, ensuring both agents enforce the same length floor rather
-        than using independent thresholds.
+        Uses ISE-structured prompt: [CONTEXT] → [TASK] → [CONSTRAINT] → [FORMAT].
+        [CONSTRAINT] lists hard rejection rules; model approves only when none fire.
 
         Args:
             content:  Polished content from review_content().
             char_min: Minimum character count floor (default 300 as safety net;
-                      callers should pass the section's effective char_target[0]).
+                    callers should pass the section's effective char_target[0]).
 
         Returns:
             (needs_revision, feedback) tuple.
             Falls back to (False, "") on any error to avoid blocking the workflow.
         """
         prompt = ChatPromptTemplate.from_messages([
-            ("system", """<role>
-You are a strict academic quality gate. Your only output is a JSON object. No extra text.
-</role>
+            ("system", """
+    [CONTEXT]
+    You are a neutral academic quality evaluator. Your only output is a JSON object.
+    No extra text, no explanation, no preamble.
+    [/CONTEXT]
 
-<evaluation_criteria>
-Step 1: Count the CHARACTERS (not words) in the content.
-Step 2: Return needs_revision=true if ANY of the following is true:
-1. Character count is less than {char_min}. If this criterion fails, your feedback
-   MUST include: the exact character count found, the required minimum, and which
-   specific ### sub-section is shortest and should be expanded first.
-   Example: "Content is 2474/3000 chars. Section ### 1.1.2 has only 1 paragraph —
-   expand with concrete examples and deeper analysis before other fixes."
-2. Contains naked math — LaTeX symbols or variables written outside $ delimiters (e.g., a_x, \\frac outside $).
-3. Contains wrong math delimiters: \\[ \\] or \\( \\) instead of $$ or $.
-4. Uses conversational or unprofessional tone in Vietnamese.
-5. Section is superficial — missing definitions, examples, or core explanations.
-   OR any ### sub-section contains fewer than 3 paragraphs (shallow structure).
-6. Any Markdown heading (`#`, `##`, `###`) is NOT preceded by a blank line — i.e., the line immediately before the `#` is non-empty text.
-</evaluation_criteria>
+    [TASK]
+    Evaluate the content provided by the user.
+    Determine whether it meets all quality standards by checking each rule in [CONSTRAINT].
+    Return needs_revision=true if ANY single rule fails.
+    [/TASK]
 
-<output_format>
-Output a single JSON object, no markdown fences, no extra text:
-{{"needs_revision": true, "feedback": "Actionable feedback for the writer"}}
-or
-{{"needs_revision": false, "feedback": ""}}
-</output_format>"""),
+    [CONSTRAINT]
+    Step 1: Count the CHARACTERS (not words) in the content.
+    Return needs_revision=true if ANY of the following rules is violated:
+
+    Rule 1 — LENGTH: Character count is less than {char_min}.
+    If this rule fails, feedback MUST include: exact character count found,
+    required minimum, and which specific ### sub-section is shortest and
+    should be expanded first.
+    Example: "Content is 2474/3000 chars. Section ### 1.1.2 has only 1 paragraph —
+    expand with concrete examples and deeper analysis before other fixes."
+
+    Rule 2 — NAKED MATH: Contains LaTeX symbols or variables written outside
+    $ delimiters (e.g., a_x, \\frac outside $).
+
+    Rule 3 — WRONG MATH DELIMITERS: Contains \\[ \\] or \\( \\) instead of $$ or $.
+
+    Rule 4 — TONE: Uses conversational or unprofessional tone in Vietnamese.
+
+    Rule 5 — DEPTH: Section is superficial — missing definitions, examples, or
+    core explanations. OR any ### sub-section contains fewer than 3 paragraphs.
+
+    Rule 6 — BLANK LINES: Any Markdown heading (`#`, `##`, `###`) is NOT preceded
+    by a blank line — i.e., the line immediately before the `#` is non-empty text.
+    [/CONSTRAINT]
+
+    [FORMAT]
+    Output a single JSON object. No markdown fences, no extra text.
+    {{"needs_revision": true, "feedback": "Actionable feedback for the writer"}}
+    or
+    {{"needs_revision": false, "feedback": ""}}
+    [/FORMAT]"""),
             ("user", "Content to evaluate:\n\n{content}")
         ])
 
@@ -187,11 +211,16 @@ or
         """
         Full editorial pass: sanitize, refine tone, fix structure, audit visuals.
 
-        Runs four sequential editing phases (see reviewer_template below):
-            Phase 1 — LATEX_SANITIZATION (CRITICAL, runs first)
-            Phase 2 — CONTENT_REFINEMENT (tone, headers, length)
-            Phase 3 — VISUALS (preserve existing tags, add missing ones)
-            Phase 4 — FORMAT_CHECK (bold, code blocks, blank lines, depth)
+        Runs four sequential editing phases via ISE-structured prompt:
+            [CONSTRAINT] Phase 1 — LaTeX sanitization (hard rules, runs first)
+            [CONSTRAINT] Phase 2 — Structure and header rules (hard compliance)
+            [CRITERION]  Phase 3 — Content quality and length (guided improvement)
+            [CRITERION]  Phase 4 — Visuals (additive, judgment allowed)
+            [CONSTRAINT] Phase 5 — Format audit (blank lines, bold, code blocks)
+
+        ISE segment rationale:
+            Phases 1, 2, 5 → [CONSTRAINT]: binary compliance, zero flexibility.
+            Phases 3, 4    → [CRITERION]:  quality targets, judgment allowed.
 
         Args:
             course_topic:        Main textbook topic (e.g. "Học máy").
@@ -201,9 +230,9 @@ or
             section_title:       Title of the current section.
             section_description: What this section should cover (from curriculum).
             draft_content:       Raw content from the Writer node.
-            chapter_cmd:         Typst-compatible directive for chapter header handling.
-                                 Empty string when Reviewer should ignore the # heading.
-                                 "VERIFY ONLY..." when first subsection of a chapter.
+            chapter_cmd:         Directive for chapter header handling.
+                                Empty string → Reviewer ignores # heading.
+                                "VERIFY ONLY..." → first subsection of a chapter.
 
         Returns:
             Polished Markdown string.
@@ -215,123 +244,125 @@ or
             logger.warning("Draft too short/empty — skipping review")
             return draft_content
 
-        # ------------------------------------------------------------------
-        # Reviewer prompt — XML-structured for strict LLM phase compliance.
-        #
-        # Variable interpolation note:
-        #   Single braces {var}   → Python .format() substitution
-        #   Double braces {{...}} → literal braces in the final prompt string
-        #                           (e.g. LaTeX \text{{cuối}} examples)
-        # ------------------------------------------------------------------
-        reviewer_template = """<role>
-You are a Senior Technical Editor and LaTeX Specialist for a Vietnamese university textbook publisher.
-Edit the draft below. Your sole output is the final polished Markdown — no preamble, no explanations.
-</role>
+        reviewer_template = """
+    [CONTEXT]
+    You are a neutral technical editor and LaTeX specialist for an educational
+    content platform covering all learning domains — university academics,
+    technical skills, practical crafts, and lifestyle topics.
+    Edit the draft below. Your sole output is the final polished Markdown —
+    no preamble, no explanations, no meta-commentary.
+    [/CONTEXT]
 
-<task_context>
-<book_topic>{course_topic}</book_topic>
-<chapter num="{chapter_num}">{chapter_title}</chapter>
-<section num="{section_num}">{section_title}</section>
-<description>{section_description}</description>
-</task_context>
+    [TASK]
+    Editorial task for the following section:
 
-<draft>
-{draft}
-</draft>
+    <book_topic>{course_topic}</book_topic>
+    <chapter num="{chapter_num}">{chapter_title}</chapter>
+    <section num="{section_num}">{section_title}</section>
+    <description>{section_description}</description>
 
-<editing_phases>
+    Draft to edit:
+    <draft>
+    {draft}
+    </draft>
+    [/TASK]
 
-<phase id="1" name="LATEX_SANITIZATION" priority="CRITICAL">
-Execute these fixes IN ORDER before any other edits.
+    [CONSTRAINT]
+    Execute ALL rules in this segment before any other edits.
+    These are hard requirements — zero flexibility, binary compliance.
 
-1. Block math delimiters — replace ALL non-standard forms with $$ $$:
-   ❌ \\[ F = ma \\]  →  ✅ $$ F = ma $$
-   ❌ \\begin{{equation}} F = ma \\end{{equation}}  →  ✅ $$ F = ma $$
+    --- Phase 1: LATEX SANITIZATION (run first, in order) ---
 
-2. Inline math delimiters — replace ALL \\( \\) with $:
-   ❌ \\( x = 5 \\)  →  ✅ $x = 5$
-   CRITICAL: NO space after opening $ or before closing $. $ x $ is WRONG — Pandoc ignores it.
+    Rule 1 — Block math delimiters: replace ALL non-standard forms with $$ $$:
+    ❌ \\[ F = ma \\]                           → ✅ $$ F = ma $$
+    ❌ \\begin{{equation}} F = ma \\end{{equation}} → ✅ $$ F = ma $$
 
-3. Naked math — wrap standalone variables, symbols, subscripts in $:
-   ❌ Ta có gia toc a duoc tinh bang...  →  ✅ Ta có gia tốc $a$ được tính bằng...
-   ❌ a_max = 5  →  ✅ $a_{{max}} = 5$
+    Rule 2 — Inline math delimiters: replace ALL \\( \\) with $:
+    ❌ \\( x = 5 \\) → ✅ $x = 5$
+    NO space after opening $ or before closing $. $ x $ is WRONG — Pandoc ignores it.
 
-4. Vietnamese text inside math — MUST use \\text{{...}}:
-   ❌ $$ v_{{cuoi}} = v_{{dau}} + at $$
-   ✅ $$ v_{{\\text{{cuối}}}} = v_{{\\text{{đầu}}}} + at $$
+    Rule 3 — Naked math: wrap standalone variables, symbols, subscripts in $:
+    ❌ Ta có gia tốc a được tính bằng...  → ✅ Ta có gia tốc $a$ được tính bằng...
+    ❌ a_max = 5                          → ✅ $a_{{max}} = 5$
 
-5. Unicode subscripts/superscripts — convert ALL to math notation (may not render correctly):
-   ❌ H₂O, CO₂, Na⁺, Cl⁻, 1s², H₂SO₄  (Unicode chars not in Times New Roman)
-   ✅ H$_2$O, CO$_2$, Na$^+$, Cl$^-$, $1s^2$, H$_2$SO$_4$
-   Rule: subscript digits (₀–₉) → $_n$, superscripts (⁺⁻⁰–⁹) → $^n$
-</phase>
+    Rule 4 — Vietnamese text inside math: MUST use \\text{{...}}:
+    ❌ $$ v_{{cuoi}} = v_{{dau}} + at $$
+    ✅ $$ v_{{\\text{{cuối}}}} = v_{{\\text{{đầu}}}} + at $$
 
-<phase id="2" name="CONTENT_REFINEMENT">
-1. Chapter header — DO NOT add or modify any # (level-1) heading. The Writer node owns
-   chapter headers exclusively. Your only job here is to ensure the ## section header
-   is correctly formatted.
-   {chap_cmd}
+    Rule 5 — Unicode subscripts/superscripts: convert ALL to math notation:
+    ❌ H₂O, CO₂, Na⁺, Cl⁻, 1s², H₂SO₄
+    ✅ H$_2$O, CO$_2$, Na$^+$, Cl$^-$, $1s^2$, H$_2$SO$_4$
+    subscript digits (₀–₉) → $_n$ | superscripts (⁺⁻⁰–⁹) → $^n$
 
-2. Section header must be exactly: ## {section_num} {section_title}
-   - Remove colon: ## 1.1: Title  →  ## 1.1 Title
-   - Remove double numbering: ## 1.1. Muc 1.1 Title  →  ## 1.1 {section_title}
-   - Do NOT use # (Header 1) unless it is the chapter title line
+    --- Phase 2: STRUCTURE RULES ---
 
-3. Academic tone — eliminate conversational fillers:
-   Remove: "Chung ta hay cung xem...", "Trong phan nay toi se..."
-   Keep: direct, formal, Vietnamese academic prose
+    Rule 6 — Chapter header: DO NOT add or modify any # (level-1) heading.
+    The Writer node owns chapter headers exclusively.
+    {chap_cmd}
 
-4. Technical terms — keep standard English terms as-is (DataFrame, CPU, API).
-   Use standard Vietnamese translations for general terms.
+    Rule 7 — Section header must be exactly: ## {section_num} {section_title}
+    Remove colon:          ## 1.1: Title        → ## 1.1 Title
+    Remove double number:  ## 1.1. Muc 1.1 Title → ## 1.1 {section_title}
+    Do NOT use # (Header 1) unless it is the chapter title line.
 
-5. Length — PRESERVE AND PROTECT content length.
-   CRITICAL: Count the input draft characters before editing. Your output MUST
-   contain AT LEAST as many characters as the input draft. If your editorial
-   changes (tone, structure, math fixes) reduce the character count, you MUST
-   immediately expand the shortest ### sub-section with additional explanation,
-   examples, or analysis to compensate — do NOT submit output shorter than input.
-   Removing content is only allowed when fixing exact duplicate passages, and any
-   removal must be offset by equivalent expansion elsewhere in the same section.
-</phase>
+    --- Phase 5: FORMAT RULES ---
 
-<phase id="3" name="VISUALS">
-PRESERVE all existing > [IMAGE: ...] tags — do NOT remove them.
+    Rule 8 — Every heading (`#`, `##`, `###`) MUST have a blank line immediately
+    BEFORE and AFTER it.
+    ❌  ...end of paragraph.\n### 2.1.2 Title
+    ✅  ...end of paragraph.\n\n### 2.1.2 Title\n\nNext paragraph...
 
-ADD new suggestions only where a visual would genuinely aid understanding AND is still missing.
-Mirror the Writer's image policy based on the section type inferred from the description:
+    Rule 9 — Code blocks must have a language identifier: ```python, ```bash, ```sql.
+    [/CONSTRAINT]
 
-- light sections (orientation, recap, bridge): max 1 image total, prefer 0.
-- applied sections (exercises, tasks, problems): max 2 images, only diagrams that
-  directly illustrate a task or worked example.
-- medium / deep sections: up to 3 images total, scaled to content complexity.
-  ADD when: architecture diagrams, flowcharts, process steps, scientific phenomena, data structures.
-  DO NOT ADD when: pure definition paragraphs or abstract concepts with no visual component.
+    [CRITERION]
+    Apply these quality standards with editorial judgment.
 
-Format: > [IMAGE: Short caption title | Detailed English description for image generation]
-</phase>
+    --- Phase 3: CONTENT QUALITY ---
 
-<phase id="4" name="FORMAT_CHECK">
-1. Bold audit — REMOVE excessive bold. Keep bold ONLY for the first formal definition of the
-   section's primary technical term. Remove bold from: adjectives, general nouns, phrases
-   longer than 4 words, any term that already appears in a Markdown header.
-2. Code blocks must have a language identifier: ```python, ```bash, ```sql.
-3. CRITICAL: Every heading (`#`, `##`, `###`) MUST have a blank line immediately BEFORE and AFTER it.
-   Fix any heading that directly follows a paragraph with no blank line between them.
-   ❌  ...end of paragraph.\n### 2.1.2 Title
-   ✅  ...end of paragraph.\n\n### 2.1.2 Title\n\nNext paragraph...
-4. Sub-section depth audit — if any ### block contains fewer than 3 paragraphs:
-   - MERGE it into the adjacent ### block, OR
-   - EXPAND it to at least 3 paragraphs using domain knowledge.
-   A ### heading with only 1–2 paragraphs beneath it is a structural defect — fix it.
-</phase>
+    Academic tone: eliminate conversational fillers.
+    Remove: "Chúng ta hãy cùng xem...", "Trong phần này tôi sẽ..."
+    Keep: direct, formal Vietnamese academic prose.
 
-</editing_phases>
+    Technical terms: keep standard English terms as-is (DataFrame, CPU, API).
+    Use standard Vietnamese translations for general terms.
 
-<output_format>
-- Return ONLY the final polished Markdown
-- NO conversational preamble ("Here is the revised version...", "I have fixed...")
-- NO outer markdown fences wrapping the entire output
-</output_format>"""
+    Length — PRESERVE AND PROTECT content length:
+    Count input draft characters before editing. Output MUST contain AT LEAST
+    as many characters as the input draft. If editorial changes reduce the count,
+    expand the shortest ### sub-section with additional explanation, examples,
+    or analysis to compensate. Removing content is only allowed when fixing
+    exact duplicate passages, offset by equivalent expansion elsewhere.
+
+    Sub-section depth: if any ### block contains fewer than 3 paragraphs:
+    MERGE it into the adjacent ### block, OR
+    EXPAND it to at least 3 paragraphs using domain knowledge.
+
+    Bold audit: REMOVE excessive bold. Keep bold ONLY for the first formal
+    definition of the section's primary technical term. Remove bold from:
+    adjectives, general nouns, phrases longer than 4 words, any term that
+    already appears in a Markdown header.
+
+    --- Phase 4: VISUALS ---
+
+    PRESERVE all existing > [IMAGE: ...] tags — do NOT remove them.
+
+    ADD new suggestions only where a visual would genuinely aid understanding
+    AND is still missing. Mirror the Writer's image policy:
+    - light sections (orientation, recap): max 1 image total, prefer 0.
+    - applied sections (exercises, tasks): max 2 images, diagrams only.
+    - medium / deep sections: up to 3 images, scaled to content complexity.
+        ADD when: architecture diagrams, flowcharts, process steps, data structures.
+        SKIP when: pure definition paragraphs or abstract concepts with no visual.
+
+    Format: > [IMAGE: Short caption title | Detailed English description]
+    [/CRITERION]
+
+    [FORMAT]
+    - Return ONLY the final polished Markdown
+    - NO conversational preamble ("Here is the revised version...", "I have fixed...")
+    - NO outer markdown fences wrapping the entire output
+    [/FORMAT]"""
 
         user_template = "Here is the draft to review:\n\n{draft}"
 
