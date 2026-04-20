@@ -75,9 +75,33 @@ class QueryExpansionAgent:
         #     temperature=0.5,
         #     max_tokens=512,
         # )
-
+        # Source hints per content_type — injected into query expansion prompt
+        # to guide LLM toward high-quality sources for each domain type.
+        
         self.prompt_logger = setup_prompt_logger("query_expansion")
 
+
+
+    _SOURCE_HINTS: dict[str, dict[str, str]] = {
+            "scholarly": {
+                "vi": "Ưu tiên: Wikipedia tiếng Việt, sách giáo khoa đại học, tài liệu .edu.vn",
+                "en": "Prioritize: Wikipedia, OpenStax, arXiv, MIT OpenCourseWare, encyclopedia.com",
+            },
+            "technical": {
+                "vi": "Ưu tiên: tài liệu kỹ thuật, blog công nghệ uy tín, docs chính thức",
+                "en": "Prioritize: GeeksForGeeks, official documentation, arXiv, cs.cmu.edu, university course pages",
+            },
+            "practical": {
+                "vi": "Ưu tiên: hướng dẫn thực hành từng bước, blog dạy nghề, tài liệu vocational",
+                "en": "Prioritize: wikihow.com, instructables.com, step-by-step tutorial sites",
+            },
+            "lifestyle": {
+                "vi": "Ưu tiên: hướng dẫn thực hành, trang sức khỏe/phong cách sống uy tín",
+                "en": "Prioritize: wikihow.com, health/wellness sites, practical lifestyle guides",
+            },
+        }
+    
+    
     def expand_query(self, user_input: str) -> list[str]:
         """
         Return Vietnamese-only expanded queries.
@@ -102,60 +126,69 @@ class QueryExpansionAgent:
         )
         return self.expand_query_bilingual(user_input)["vi"]
 
-    def expand_query_bilingual(self, user_input: str) -> dict[str, list[str]]:
+    def expand_query_bilingual(self, user_input: str, content_type: str = "technical") -> dict[str, list[str]]:
         """
-        Expand user topic into 3 academic search queries per language.
+    Expand user topic into 3 academic search queries per language.
 
-        The LLM is prompted to assume the user wants to write a university-level
-        textbook and generates queries targeting syllabi, textbooks, and academic
-        papers in each language.
+    Queries include source hints tailored to content_type:
+        scholarly  → Wikipedia, OpenStax, arXiv, MIT OCW, encyclopedia
+        technical  → GeeksForGeeks, arXiv, cs.cmu.edu, official docs
+        practical  → wikihow, instructables, step-by-step guides
+        lifestyle  → wikihow, health/wellness sites, practical guides
 
-        Fallback behaviour:
-            On JSON parse error or any LLM exception, returns a 3-query fallback
-            dict so the Ingester still has meaningful queries for both regions
-            rather than failing outright.
+    Args:
+        user_input:   User's topic (possibly vague, any language).
+        content_type: One of "scholarly"|"technical"|"practical"|"lifestyle"
+                      from ValidatorAgent — controls source hint strategy.
 
-        Args:
-            user_input: User's topic (possibly vague, any language).
-
-        Returns:
-            Dict with two keys:
-                "vi": list of 3 Vietnamese queries (for vn-vn region searches)
-                "en": list of 3 English queries (for us-en region searches)
-        """
+    Returns:
+        Dict with two keys:
+            "vi": list of 3 Vietnamese queries (for vn-vn region searches)
+            "en": list of 3 English queries (for us-en region searches)
+    """
         logger.info(f"Expanding query: '{user_input}'")
 
-        system_prompt = """
-[CONTEXT]
-You are a neutral search query optimizer for an educational content platform
-that covers all learning domains — not limited to formal academic subjects.
-Users may submit vague or natural-language topics; your job is to infer
-learning intent and generate targeted search queries regardless of domain.
-[/CONTEXT]
+        # Build source hints block
+        hints     = self._SOURCE_HINTS.get(content_type, self._SOURCE_HINTS["technical"])
+        hint_vi   = hints["vi"]
+        hint_en   = hints["en"]
 
-[TASK]
-Given the user's topic, generate:
-  - 3 Vietnamese search queries targeting Vietnamese syllabi, curricula,
-    textbooks, or course materials (for vn-vn region search).
-  - 3 English search queries targeting English academic papers, textbooks,
-    or university courses on the same topic (for us-en region search).
+        system_prompt = f"""
+        [CONTEXT]
+        You are a neutral search query optimizer for an educational content platform
+        that covers all learning domains — not limited to formal academic subjects.
+        Users may submit vague or natural-language topics; your job is to infer
+        learning intent and generate targeted search queries regardless of domain.
+        [/CONTEXT]
 
-If the topic is too broad, default to "Basic/Fundamental" level.
-[/TASK]
+        [TASK]
+        Given the user's topic, generate:
+        - 3 Vietnamese search queries targeting Vietnamese syllabi, curricula,
+            textbooks, or course materials (for vn-vn region search).
+        - 3 English search queries targeting English academic papers, textbooks,
+            or university courses on the same topic (for us-en region search).
 
-[CRITERION]
-Each query must:
-  (a) Target a different angle of the topic — textbook, syllabus, or paper.
-  (b) Be specific enough to return relevant educational resources.
-  (c) Match the domain tone — academic for scholarly topics, practical for
-      skill-based topics (e.g. cooking, nail art, woodworking).
-[/CRITERION]
+        If the topic is too broad, default to "Basic/Fundamental" level.
+        Content type detected: {content_type}
+        [/TASK]
 
-[FORMAT]
-Return ONLY a JSON object with keys "vi" and "en". No markdown, no preamble.
-Example for input "Nấu ăn":
-{{"vi": ["Giáo trình Kỹ thuật Chế biến món ăn", "Tài liệu nhập môn Nấu ăn cơ bản", "Giáo trình Ẩm thực học đại cương"], "en": ["culinary arts fundamentals textbook", "food science and cooking academic course", "gastronomy introduction university syllabus"]}}
-[/FORMAT]"""
+        [CRITERION]
+        Each query must:
+        (a) Target a different angle of the topic — textbook, syllabus, or paper.
+        (b) Be specific enough to return relevant educational resources.
+        (c) Match the domain tone — academic for scholarly topics, practical for
+            skill-based topics (e.g. cooking, nail art, woodworking).
+
+        Source guidance for this content type:
+        VI queries: {hint_vi}
+        EN queries: {hint_en}
+        [/CRITERION]
+
+        [FORMAT]
+        Return ONLY a JSON object with keys "vi" and "en". No markdown, no preamble.
+        Example for input "Nấu ăn":
+        {{{{"vi": ["Giáo trình Kỹ thuật Chế biến món ăn", "Tài liệu nhập môn Nấu ăn cơ bản", "Giáo trình Ẩm thực học đại cương"], "en": ["culinary arts fundamentals textbook", "food science and cooking academic course", "gastronomy introduction university syllabus"]}}}}
+        [/FORMAT]"""
         user_prompt = f"User Input: {user_input}"
 
         prompt = ChatPromptTemplate.from_messages([

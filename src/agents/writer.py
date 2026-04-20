@@ -17,7 +17,7 @@ from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
-from src.agents.researcher import retrieve_context_tool
+from src.agents.researcher import _get_researcher, retrieve_context_tool
 from src.config import LLM_MODEL_PREMIUM, ANTHROPIC_API_KEY, RAG_TOOL_MAX_ROUNDS
 from src import stop_signal
 
@@ -829,7 +829,8 @@ def write_section(state: AgentState) -> dict:
         # to keep it cleanly separated from workflow log messages.
         context      = state.get("rag_context", "") or "No specific context available."
         enable_images = state.get("enable_images", True)   # type: ignore[call-overload]
-
+        
+        _get_researcher().reset_retrieved_ids()
         agent   = WriterAgent()
         content = agent.write_section(
             course_topic=state.get("request", "General Topic"),

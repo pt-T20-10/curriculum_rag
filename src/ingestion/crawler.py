@@ -14,6 +14,7 @@ This ensures ChromaDB stays dense and relevant rather than large and noisy.
 
 import time
 import io
+import re
 from urllib.parse import urljoin, urlparse
 from typing import List, Dict, Set, Optional
 
@@ -26,9 +27,11 @@ from langchain_chroma import Chroma
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 from src.config import get_embedding_model
+from src.agents.query_expansion import QueryExpansionAgent
 
 from src.log_config import setup_logger
-from src.config import CHROMA_DB_DIR, CRAWL_MAX_WORKERS, CRAWL_MAX_SUB_LINKS
+from src.config import CHROMA_DB_DIR, CRAWL_MAX_WORKERS, CRAWL_MAX_SUB_LINKS, MIN_CHUNK_CHARS, MIN_ALPHA_RATIO, MAX_DIGIT_RATIO, MIN_RELEVANCE_SCORE, MAX_CITATION_LINE_RATIO, MAX_DUPLICATE_LINE_RATIO, MIN_RELEVANCE_SCORE, MAX_BOOKING_SIGNALS, MAX_CHUNKS_PER_DOMAIN, CRAWL_MAX_DEPTH2_LINKS
+from src.ingestion.url_filter import WHITELIST_DOMAINS
 from src import stop_signal
 
 logger = setup_logger(name="Crawler", logfile="logs/crawler.log")
@@ -41,23 +44,6 @@ HEADERS = {
     )
 }
 
-# ---------------------------------------------------------------------------
-# Quality filter constants
-# ---------------------------------------------------------------------------
-
-# Minimum characters for a chunk to be considered meaningful content
-MIN_CHUNK_CHARS = 200
-
-# Minimum ratio of alphabetic characters (filters binary/numeric garbage)
-MIN_ALPHA_RATIO = 0.55
-
-# Maximum ratio of digit characters (filters data tables, PDF stream metadata)
-MAX_DIGIT_RATIO = 0.40
-
-# Minimum cosine similarity between chunk embedding and topic embedding.
-# Chunks below this threshold are considered off-topic and discarded.
-# Range 0.0–1.0. Typical values: 0.20 (lenient) to 0.35 (strict).
-MIN_RELEVANCE_SCORE = 0.22
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +58,7 @@ def is_quality_chunk(text: str) -> bool:
     - Too short to contain meaningful content (< MIN_CHUNK_CHARS)
     - Dominated by non-alphabetic characters (binary artifacts, nav menus)
     - Dominated by digits (data tables, PDF stream metadata)
+    - Bibliography/reference sections (duplicate lines + citation patterns)
 
     Args:
         text: Raw chunk text
@@ -97,7 +84,118 @@ def is_quality_chunk(text: str) -> bool:
     if digits / total > MAX_DIGIT_RATIO:
         return False
 
+    # Check 4: bibliography/reference section detection
+    lines = [l.strip() for l in stripped.split('\n') if l.strip()]
+    if len(lines) >= 4:
+        # Check 4a: duplicate line ratio
+        # Bibliography sections repeat the same citation in different formats
+        unique_lines = set(lines)
+        if len(unique_lines) / len(lines) < (1 - MAX_DUPLICATE_LINE_RATIO):
+            return False
+
+        # Check 4b: citation pattern ratio
+        citation_pattern = re.compile(
+            r'\b(19|20)\d{2}\b.*?[:;]'
+            r'|\d+\(\d+\):\d+'
+            r'|doi:\s*10\.'
+            r'|arXiv:\d{4}\.\d+'
+            r'|pp\.\s*\d{1,4}'
+            r'|et al[.,]'
+            r'|In:\s+[A-Z]'
+            r'|ISBN\s+[\d\-X]+'
+            r'|Lưu trữ bản gốc'
+            r'|Truy cập ngày \d+'
+            r'|Nhà xuất bản'
+            r'|\[\s*\d+\s*\]'
+            r'|Retrieved\s+20\d{2}'
+            r'|\^[\s\w]'
+            r'|Archived from the original'   # ← Wikipedia citation footer
+            r'|\{\{cite'                      # ← Wikipedia {{cite book}} template
+            r'|CS1\s+maint'                   # ← Wikipedia CS1 maintenance tag
+            r'|wikimedia\.org'                # ← Wikimedia internal links in refs
+            r'|commons\.wikimedia'            # ← Commons links in refs
+            ,
+            re.IGNORECASE,
+        )
+        citation_lines = sum(
+            1 for l in lines
+            if citation_pattern.search(l)
+        )
+        if citation_lines / len(lines) > MAX_CITATION_LINE_RATIO:
+            return False
+     # Check 5: commercial/booking content detection
+    # Enrollment pages slip through keyword filters because they mention
+    # techniques, but their content is commercial, not educational
+   
+    booking_pattern = re.compile(
+        r'\bpayment\b|\benroll|\bbook(?:ing)?\b|\btuition\b'
+        r'|\bregister now\b|\bcontact us\b|\bcourse fee\b'
+        r'|\bplace.*booking\b|\bavailable dates\b'
+        r'|\bdress code\b|\bstudents must\b'
+        r'|\bcertificate of attendance\b',
+        re.IGNORECASE,
+    )
+    booking_hits = len(booking_pattern.findall(stripped))
+    if booking_hits >= MAX_BOOKING_SIGNALS:
+        return False
+    
+    # Check 6: High word repetition — navigation menus and breadcrumbs
+    # Navigation menus repeat the same words across cascading subset lines.
+    # Metric: if >60% of all words are repeated, content is likely navigational.
+    # Generic check — applies to any domain, not topic-specific.
+    if len(lines) >= 4:
+        all_words  = [w for line in lines for w in line.lower().split() if len(w) > 2]
+        if len(all_words) > 15:
+            unique_words = set(all_words)
+            word_diversity = len(unique_words) / len(all_words)
+            if word_diversity < 0.4:
+                return False
+
+
+    # Check 7: Commercial/promotional content detection
+    # Price patterns and CTAs appear in course catalog and e-commerce chunks
+    # regardless of domain — domain-agnostic signal that fires on any source
+    # selling courses, products, or services.
+    commercial_pattern = re.compile(
+    r'\$\s*\d+|\d+\s*USD|\d+\s*VNĐ'
+    r'|\d+[\.,]\d+\s*₫'                    # 600.000 ₫
+    r'|giá\s+(gốc|hiện\s+tại)'             # Giá gốc là, Giá hiện tại là
+    r'|save\s+\d+\s*%|off\s+at\s+checkout'
+    r'|add\s+to\s+cart|buy\s+now'
+    r'|original\s+price|current\s+price'
+    r'|lifetime\s+access|certificate\s+included'
+    r'|verified\s+buyer',
+    re.IGNORECASE,
+)
+    if len(commercial_pattern.findall(stripped)) >= 2:
+        return False
+    # Check 8: TOC / syllabus / chapter-listing detection
+    # Chapter indexes, syllabi, and book listings consist of repeated
+    # short topic-name lines with structural prefixes. These provide no
+    # explanatory value as RAG context — LLM needs explanations, not
+    # topic lists.
+    #
+    # Signal: high ratio of lines matching structural prefix patterns
+    # (Chapter X, Week X, Unit X, Lecture X, etc.) AND short average
+    # words-per-line — real prose has longer sentences.
+    toc_prefix_pattern = re.compile(
+        r'^(chapter|week|unit|lecture|section|module|part|topic|lesson|chương|bài|mục)'
+        r'\s*[\d\.\-\:]+',
+        re.IGNORECASE,
+    )
+    if len(lines) >= 4:
+        toc_lines = sum(1 for l in lines if toc_prefix_pattern.match(l))
+        toc_ratio = toc_lines / len(lines)
+
+        words_per_line = len(stripped.split()) / len(lines)
+
+        # TOC signature: structural prefix lines dominate AND lines are short
+        if toc_ratio >= 0.3 and words_per_line < 12:
+            return False
+
     return True
+
+
 
 
 def compute_relevance_scores(
@@ -150,6 +248,48 @@ def compute_relevance_scores(
         logger.warning(f"Relevance scoring failed ({e}) — skipping filter")
         return [1.0] * len(chunks)
 
+
+def _apply_domain_diversity_cap(
+    chunks: List[Document],
+    max_per_domain: int,
+) -> List[Document]:
+    """
+    Enforce a per-domain chunk cap to prevent any single source from
+    dominating the ChromaDB corpus.
+
+    Domain-agnostic — applies equally to all sources regardless of
+    content type or topic. Preserves insertion order so the highest-
+    relevance chunks (sorted upstream) are kept and later chunks from
+    the same domain are dropped when the cap is reached.
+
+    Args:
+        chunks:         Relevance-filtered chunk list.
+        max_per_domain: Maximum chunks retained per unique domain.
+
+    Returns:
+        Capped chunk list with domain diversity enforced.
+    """
+    domain_counts: dict[str, int] = {}
+    capped: List[Document] = []
+
+    for chunk in chunks:
+        source  = chunk.metadata.get("source", "")
+        domain  = urlparse(source).netloc.lower()
+        current = domain_counts.get(domain, 0)
+
+        if current < max_per_domain:
+            domain_counts[domain] = current + 1
+            capped.append(chunk)
+
+    removed = len(chunks) - len(capped)
+    if removed > 0:
+        top_domains = sorted(domain_counts.items(), key=lambda x: -x[1])[:5]
+        logger.info(
+            f"Domain diversity cap ({max_per_domain}/domain): "
+            f"{len(chunks)} → {len(capped)} chunks ({removed} removed). "
+            f"Top domains: {[f'{d}={c}' for d, c in top_domains]}"
+        )
+    return capped
 
 # ---------------------------------------------------------------------------
 # PDF extraction
@@ -260,6 +400,9 @@ def get_internal_links(
         skip_patterns = (
             "#", "login", "register", "tag", "search",
             "cart", "logout", "signup", "rss", "feed",
+            "privacy", "terms", "about", "contact",  
+            "cookie", "booking", "enroll", "checkout",
+            "trai-nghiem", "dang-ky",
         )
         if any(p in full_url for p in skip_patterns):
             continue
@@ -280,6 +423,8 @@ def fetch_text_from_url(url: str) -> tuple[str, Optional[BeautifulSoup]]:
 
     Strips noise tags (script, style, nav, footer, etc.) then extracts
     text from semantic content tags (h1-h3, p, li, pre, code).
+    TOC header lines are removed via clean_toc_lines() to preserve prose
+    descriptions while discarding structural navigation entries.
 
     Args:
         url: HTML page URL
@@ -309,12 +454,162 @@ def fetch_text_from_url(url: str) -> tuple[str, Optional[BeautifulSoup]]:
             if len(text) > 30:  # ignore very short snippets (nav items, etc.)
                 text_parts.append(text)
 
-        return "\n\n".join(text_parts), soup
+        raw_text = "\n\n".join(text_parts)
+        cleaned  = clean_toc_lines(raw_text)  # ← strip TOC header lines, keep prose
+        return cleaned, soup
 
     except Exception as e:
         logger.debug(f"Failed to fetch {url[:60]}: {e}")
         return "", None
 
+# Minimum character count for a root page to be considered a content page.
+# Pages below this threshold are likely homepages or navigation pages.
+MIN_ROOT_CONTENT_CHARS = 1500
+
+# Minimum ratio of long lines (> 80 chars) in a content page.
+# Navigation pages consist mostly of short link texts.
+MIN_LONG_LINE_RATIO = 0.15
+
+# Minimum ratio of lines ending with sentence punctuation.
+# Prose-heavy pages have many sentence-ending lines; nav pages do not.
+MIN_SENTENCE_PUNCT_RATIO = 0.08
+
+# Minimum word diversity ratio (unique words / total words).
+# Navigation menus repeat the same anchor texts; content pages are diverse.
+MIN_WORD_DIVERSITY_RATIO = 0.45
+
+
+def _is_content_page(text: str) -> bool:
+    """
+    Determine whether a crawled HTML page contains substantive educational
+    content, as opposed to a homepage, navigation hub, or landing page.
+
+    Four complementary signals are evaluated — a page must pass ALL of them
+    to be classified as a content page worth storing in ChromaDB:
+
+    Signal 1 — Minimum length:
+        Homepages and nav hubs extract to very short text after BeautifulSoup
+        strips scripts/nav/footer. A genuine article or chapter page produces
+        at least MIN_ROOT_CONTENT_CHARS characters of body text.
+
+    Signal 2 — Long line ratio:
+        Navigation pages consist mostly of short anchor texts (menu items,
+        breadcrumbs, sidebar links). Content pages contain prose paragraphs
+        that span many words and exceed 80 characters per line.
+
+    Signal 3 — Sentence punctuation ratio:
+        Prose ends sentences with '.', '!', or '?'. Navigation menus and
+        course index pages rarely contain sentence-ending punctuation.
+        A low ratio indicates link-list content rather than explanatory text.
+
+    Signal 4 — Word diversity:
+        Navigation menus repeat the same anchor words (Home, About, Course,
+        Chapter, Next, Previous). Educational content pages use a rich and
+        varied vocabulary. Low unique/total word ratio flags nav-heavy pages.
+
+    Args:
+        text: Raw text extracted by fetch_text_from_url() after BeautifulSoup
+              stripping of script/style/nav/footer tags.
+
+    Returns:
+        True  — page passes all four signals → worth storing as a Document.
+        False — page fails one or more signals → skip root, still crawl sublinks.
+    """
+    stripped = text.strip()
+
+    # Signal 1: minimum character length
+    if len(stripped) < MIN_ROOT_CONTENT_CHARS:
+        return False
+
+    lines = [l.strip() for l in stripped.split('\n') if l.strip()]
+    if not lines:
+        return False
+
+    # Signal 2: long line ratio (prose paragraphs vs short nav links)
+    long_lines = sum(1 for l in lines if len(l) > 80)
+    if long_lines / len(lines) < MIN_LONG_LINE_RATIO:
+        return False
+
+    # Signal 3: sentence-ending punctuation ratio
+    punct_lines = sum(1 for l in lines if l[-1] in '.!?')
+    if punct_lines / len(lines) < MIN_SENTENCE_PUNCT_RATIO:
+        return False
+
+    # Signal 4: word diversity (unique/total ratio)
+    words = [w.lower() for w in stripped.split() if len(w) > 2]
+    if len(words) > 20:
+        diversity = len(set(words)) / len(words)
+        if diversity < MIN_WORD_DIVERSITY_RATIO:
+            return False
+
+    return True
+
+
+# Compiled once at module level for performance
+_TOC_LINE_PATTERN = re.compile(
+    r'^(chapter|week|unit|lecture|section|module|part|topic|lesson'
+    r'|chương|bài|mục|phần)\s*[\d\.\-\:]+\s*\S'
+    r'|.*\d+\s+min\s+read$',  
+    re.IGNORECASE,
+)
+
+_INLINE_TOC_PATTERN = re.compile(
+    r'(chapter|topic|section|module|unit)\s+\d+[\.\:]\d*.*?'
+    r'(chapter|topic|section|module|unit)\s+\d+[\.\:]\d*'
+    r'|:\s*(chapter|topic|section|module|unit)\s+\d+[\.\:]',
+    re.IGNORECASE,
+)
+
+def clean_toc_lines(text: str) -> str:
+    """
+    Remove pure table-of-contents lines from extracted page text, preserving
+    any prose descriptions that follow structural prefix lines.
+
+    Many academic course pages mix TOC entries with inline descriptions:
+        "Chapter 01.02: Data"                     ← pure TOC header, remove
+        "In this section we explain tabular data"  ← prose description, keep
+        "Chapter 01.03: Tasks"                    ← pure TOC header, remove
+        "The tasks of supervised learning..."     ← prose description, keep
+
+    This function strips the TOC header lines while preserving the prose,
+    allowing downstream chunking and quality filters to work on actual content
+    rather than rejecting the entire chunk due to high TOC line ratio.
+
+    Domain-agnostic — applies to any page structure that mixes navigation
+    headers with inline descriptions regardless of site or topic.
+
+    Args:
+        text: Raw text extracted by fetch_text_from_url().
+
+    Returns:
+        Cleaned text with TOC header lines removed. Prose lines are preserved
+        unchanged. Consecutive blank lines are collapsed to a single blank.
+    """
+   # Step 1: Strip inline TOC — all chapters listed on a single long line
+    # e.g. "Chapter 01.01: Intro Chapter 01.02: Data Chapter 01.03: Tasks"
+    # Must run BEFORE line splitting since it operates on the full text.
+    text = _INLINE_TOC_PATTERN.sub('', text)
+
+    # Step 2: Strip per-line TOC headers
+    lines      = text.split('\n')
+    cleaned    = []
+    prev_blank = False
+
+    for line in lines:
+        stripped = line.strip()
+
+        if _TOC_LINE_PATTERN.match(stripped) and len(stripped) < 120:
+            continue
+
+        if not stripped:
+            if not prev_blank:
+                cleaned.append('')
+            prev_blank = True
+        else:
+            cleaned.append(line)
+            prev_blank = False
+
+    return '\n'.join(cleaned)
 
 # ---------------------------------------------------------------------------
 # Deep crawl worker
@@ -322,20 +617,25 @@ def fetch_text_from_url(url: str) -> tuple[str, Optional[BeautifulSoup]]:
 
 def process_deep_crawl(link_info: Dict[str, str]) -> List[Document]:
     """
-    Process a single root URL with depth-1 crawling.
+        Process a single root URL with adaptive depth crawling.
 
-    PDF: extract text with PyMuPDF (or pypdf fallback).
-    HTML: extract root page + up to 5 internal sub-pages.
+        PDF: extract text with PyMuPDF (or pypdf fallback).
+        HTML: extract root page + sublinks with content-driven depth logic:
+            - Root page passes _is_content_page()  → stored, sublinks crawled
+            - Root page fails _is_content_page()   → skipped, sublinks crawled
+            - Depth-1 passes _is_content_page()    → stored, no further crawl
+            - Depth-1 fails _is_content_page()     → skipped, depth-2 triggered
+        Depth-2 is content-driven — no domain hardcoding required.
 
-    Args:
-        link_info: Dict with keys 'url' (str) and 'type' ('pdf' | 'html')
+        Args:
+            link_info: Dict with keys 'url' (str) and 'type' ('pdf' | 'html')
 
-    Returns:
-        List of LangChain Document objects.
-        Empty list on failure or stop signal.
-    """
-    url      = link_info["url"]
-    doc_type = link_info["type"]
+        Returns:
+            List of LangChain Document objects. Empty list on failure or stop signal.
+        """
+    url          = link_info["url"]
+    doc_type     = link_info["type"]
+    content_type = link_info.get("content_type", "technical")
     results: List[Document] = []
 
     try:
@@ -353,11 +653,19 @@ def process_deep_crawl(link_info: Dict[str, str]) -> List[Document]:
         main_text, soup = fetch_text_from_url(url)
 
         if len(main_text) > 300:
-            logger.info(f"[ROOT] {url[:60]} ({len(main_text)} chars)")
-            results.append(Document(
-                page_content=main_text,
-                metadata={"source": url, "type": "html", "depth": 0},
-            ))
+            if _is_content_page(main_text):
+                logger.info(f"[ROOT] {url[:60]} ({len(main_text)} chars)")
+                results.append(Document(
+                    page_content=main_text,
+                    metadata={"source": url, "type": "html", "depth": 0},
+                ))
+                root_is_nav = False   # ← thêm
+            else:
+                logger.info(
+                    f"[ROOT/NAV] {url[:60]} ({len(main_text)} chars) "
+                    f"— low content density, root skipped, sublinks will be crawled"
+                )
+                root_is_nav = True   # ← thêm
 
             if stop_signal.is_stopped():
                 return results
@@ -369,8 +677,10 @@ def process_deep_crawl(link_info: Dict[str, str]) -> List[Document]:
                     for sub in sub_links:
                         if stop_signal.is_stopped():
                             return results
-                        sub_text, _ = fetch_text_from_url(sub)
-                        if len(sub_text) > 500:
+
+                        sub_text, sub_soup = fetch_text_from_url(sub)
+
+                        if _is_content_page(sub_text):
                             results.append(Document(
                                 page_content=sub_text,
                                 metadata={
@@ -380,6 +690,31 @@ def process_deep_crawl(link_info: Dict[str, str]) -> List[Document]:
                                     "parent": url,
                                 },
                             ))
+                        elif root_is_nav and sub_soup is not None and not stop_signal.is_stopped():
+                            # Depth-2 only when root was also nav — avoids
+                            # unnecessary deep crawl when root had real content.
+                            depth2_links = get_internal_links(
+                                sub_soup, sub, limit=CRAWL_MAX_DEPTH2_LINKS
+                            )
+                            if depth2_links:
+                                logger.info(
+                                    f"    ↳↳ Depth-2: {len(depth2_links)} sub-sub-links "
+                                    f"from nav depth-1 {sub[:50]}"
+                                )
+                            for d2_url in depth2_links:
+                                if stop_signal.is_stopped():
+                                    return results
+                                d2_text, _ = fetch_text_from_url(d2_url)
+                                if len(d2_text) > 500:
+                                    results.append(Document(
+                                        page_content=d2_text,
+                                        metadata={
+                                            "source": d2_url,
+                                            "type":   "html",
+                                            "depth":  2,
+                                            "parent": sub,
+                                        },
+                                    ))
 
     except Exception as e:
         logger.warning(f"Error processing {url[:60]}: {e}")
@@ -394,6 +729,7 @@ def process_deep_crawl(link_info: Dict[str, str]) -> List[Document]:
 def ingest_dynamic_data(
     topic: str,
     clean_links: List[Dict[str, str]],
+    content_type: str = "technical",
 ) -> bool:
     """
     Ingest data from filtered URLs into ChromaDB.
@@ -424,7 +760,10 @@ def ingest_dynamic_data(
 
     # ── Step 1: Parallel deep crawl ──────────────────────────────────────────
     all_docs: List[Document] = []
-
+    # Inject content_type into each link dict so process_deep_crawl
+    # can check whitelist without a separate parameter channel.
+    for link in clean_links:
+        link["content_type"] = content_type
     with concurrent.futures.ThreadPoolExecutor(max_workers=CRAWL_MAX_WORKERS) as executor:
         futures = [
             executor.submit(process_deep_crawl, link)
@@ -475,8 +814,27 @@ def ingest_dynamic_data(
     )
     embedding_model = get_embedding_model()
 
-    topic_emb = np.array(embedding_model.embed_query(topic))
-    logger.info("✓ Topic embedding computed (1 time, reused for all chunks)")
+    # Bilingual topic embedding — average VI + EN để không filter EN chunks
+    # Vấn đề: embed_query(topic_VI) có cosine similarity thấp với EN chunks
+    # → Stanford PDF, CMU lecture bị loại hoàn toàn dù chất lượng cao
+    try:
+        _qe = QueryExpansionAgent()
+        en_queries = _qe.expand_query_bilingual(topic).get("en", [])
+        en_topic   = en_queries[0] if en_queries else topic
+
+        topic_emb_vi  = np.array(embedding_model.embed_query(topic))
+        topic_emb_en  = np.array(embedding_model.embed_query(en_topic))
+        combined      = (topic_emb_vi + topic_emb_en) / 2
+        norm          = np.linalg.norm(combined)
+        topic_emb     = combined / norm if norm > 0 else topic_emb_vi
+
+        logger.info(
+            f"✓ Bilingual topic embedding: "
+            f"VI='{topic}' + EN='{en_topic}'"
+        )
+    except Exception as e:
+        logger.warning(f"Bilingual embedding failed ({e}) — falling back to VI only")
+        topic_emb = np.array(embedding_model.embed_query(topic))
 
     scores = compute_relevance_scores(quality_chunks, topic_emb, embedding_model)
 
@@ -491,6 +849,9 @@ def ingest_dynamic_data(
         f"[{time.time() - t4:.1f}s]"
     )
 
+    # Apply domain diversity cap — prevents any single source from
+    # dominating ChromaDB regardless of how many pages it has indexed.
+    relevant_chunks = _apply_domain_diversity_cap(relevant_chunks, MAX_CHUNKS_PER_DOMAIN)
     if not relevant_chunks:
         logger.warning(
             f"All chunks scored below {MIN_RELEVANCE_SCORE} — "

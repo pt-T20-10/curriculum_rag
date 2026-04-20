@@ -11,7 +11,8 @@ Pipeline:
          VI queries → searched on vn-vn region (Vietnamese academic sources)
          EN queries → searched on us-en region (English academic/technical sources)
     3. Execute 6 parallel web searches (3 VI + 3 EN) via DuckDuckGo
-    4. Deduplicate URLs, run static + dynamic URL filtering
+       — preserves full result dicts (title, href, body) for snippet pre-filtering
+    4. Deduplicate URLs, run static + snippet + dynamic URL filtering
     5. Deep-crawl valid URLs and ingest chunks into ChromaDB
 
 The bilingual routing (VI queries → vn-vn, EN queries → us-en) is intentional:
@@ -33,8 +34,6 @@ from src import stop_signal
 from src.log_config import setup_logger
 from src.config import CHROMA_DB_DIR, SEARCH_RESULTS_PER_QUERY, SEARCH_MAX_WORKERS
 
-# Use setup_logger (not logging.getLogger) so ingestion logs are written to
-# logs/agents.log with the same formatter and file handler as all other agents.
 logger = setup_logger(name="IngestionNode", logfile="logs/agents.log")
 
 
@@ -51,16 +50,14 @@ def perform_ingestion(state: AgentState) -> dict:
     Pipeline:
         1. Clear old ChromaDB directory (prevents previous-run contamination)
         2. Expand topic into 3 VI + 3 EN queries via QueryExpansionAgent
-        3. Search all 6 query-region pairs in parallel (max_workers=6 matches
-           the number of pairs to maximise throughput with no idle workers)
-        4. Deduplicate raw URLs and run static + dynamic URL filtering
+        3. Search all 6 query-region pairs in parallel — preserves full result
+           dicts (title, href, body) for downstream snippet pre-filtering
+        4. Deduplicate raw URLs, run static + snippet + dynamic URL filtering
+           with topic context passed for accurate snippet scoring
         5. Deep-crawl valid URLs and ingest into ChromaDB via ingest_dynamic_data()
 
     Stop signal:
         Checked at three points: after DB clear, after search, after URL filter.
-        If triggered, returns immediately with a stop message. Note that futures
-        already submitted to the executor will complete before the loop breaks —
-        partial results are discarded by the early return.
 
     Args:
         state: Current LangGraph workflow state (AgentState TypedDict).
@@ -76,8 +73,6 @@ def perform_ingestion(state: AgentState) -> dict:
 
     # ------------------------------------------------------------------
     # Step 1 — Clear old database
-    # Each run starts from a clean slate so chunks from a previous topic
-    # cannot pollute retrieval results for the current topic.
     # ------------------------------------------------------------------
     if os.path.exists(CHROMA_DB_DIR):
         try:
@@ -91,11 +86,11 @@ def perform_ingestion(state: AgentState) -> dict:
 
     # ------------------------------------------------------------------
     # Step 2 — Bilingual query expansion
-    # VI queries are paired with the vn-vn region for Vietnamese sources.
-    # EN queries are paired with us-en for English academic sources.
     # ------------------------------------------------------------------
     qe       = QueryExpansionAgent()
-    expanded = qe.expand_query_bilingual(topic)
+    content_type = state.get("content_type", "technical")
+    expanded = qe.expand_query_bilingual(topic, content_type=content_type)
+    logger.info(f"Query expansion with content_type: '{content_type}'")
     vi_queries: list[str] = expanded["vi"]
     en_queries: list[str] = expanded["en"]
 
@@ -104,23 +99,26 @@ def perform_ingestion(state: AgentState) -> dict:
 
     # ------------------------------------------------------------------
     # Step 3 — Parallel web search across all query-region pairs
-    # 3 VI × vn-vn + 3 EN × us-en = 6 pairs → 6 concurrent searches.
-    # max_workers=6 matches the pair count exactly.
-    # Each search fetches 15 results → up to 90 raw, ~40-60 unique after dedup.
+    #
+    # CHANGE: collect full result dicts (title + href + body) instead of
+    # URLs only. Body snippets are required by filter_and_classify_urls()
+    # for snippet pre-filtering — without them, Signal 2 (topic keyword
+    # matching) in score_search_result() always receives an empty string.
     # ------------------------------------------------------------------
     region_query_pairs: list[tuple[str, str]] = (
         [(q, "vn-vn") for q in vi_queries] +
         [(q, "us-en") for q in en_queries]
     )
 
-    seen_urls:    set[str]  = set()
-    all_raw_urls: list[str] = []
+    seen_urls:           set[str]             = set()
+    all_raw_urls:        list[str]            = []
+    all_results_with_meta: list[dict]         = []  # ← NEW: full dicts for snippet scoring
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=SEARCH_MAX_WORKERS) as executor:
         futures = {
-        executor.submit(search_web, q, SEARCH_RESULTS_PER_QUERY, r): (q, r)
-        for q, r in region_query_pairs
-         }
+            executor.submit(search_web, q, SEARCH_RESULTS_PER_QUERY, r): (q, r)
+            for q, r in region_query_pairs
+        }
         for future in concurrent.futures.as_completed(futures):
             if stop_signal.is_stopped():
                 break
@@ -133,6 +131,7 @@ def perform_ingestion(state: AgentState) -> dict:
                     if url and url not in seen_urls:
                         seen_urls.add(url)
                         all_raw_urls.append(url)
+                        all_results_with_meta.append(res)  # ← NEW
                         added += 1
                 logger.info(
                     f"[{r}] '{q[:50]}': {len(results)} results, {added} new unique"
@@ -151,10 +150,18 @@ def perform_ingestion(state: AgentState) -> dict:
 
     # ------------------------------------------------------------------
     # Step 4 — URL filtering
-    # filter_and_classify_urls() runs static blocklist checks + parallel
-    # HTTP content-type probing internally.
+    #
+    # CHANGE: pass scored_results and topic so filter_and_classify_urls()
+    # can run snippet pre-filtering with correct topic context.
+    # Previously called with all_raw_urls only → snippet scoring was
+    # skipped entirely in the production flow.
     # ------------------------------------------------------------------
-    clean_links = filter_and_classify_urls(all_raw_urls)
+    clean_links = filter_and_classify_urls(
+        all_raw_urls,
+        scored_results=all_results_with_meta, 
+        topic=topic,
+        content_type=content_type,                     
+    )
     logger.info(f"Found {len(clean_links)} valid links to crawl")
 
     if stop_signal.is_stopped():
@@ -166,10 +173,8 @@ def perform_ingestion(state: AgentState) -> dict:
 
     # ------------------------------------------------------------------
     # Step 5 — Deep crawl and ingest into ChromaDB
-    # ingest_dynamic_data() handles parallel crawling, chunking, quality
-    # filtering, relevance scoring, and ChromaDB persistence internally.
     # ------------------------------------------------------------------
-    success = ingest_dynamic_data(topic, clean_links)
+    success = ingest_dynamic_data(topic, clean_links, content_type=content_type)
 
     if not success:
         logger.error("Crawling failed or no content found")

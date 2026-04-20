@@ -220,6 +220,8 @@ class AgentState(TypedDict):
     validation_suggestion: str
     """Pipe-separated list of more specific topic alternatives."""
 
+    content_type: str  # "scholarly" | "technical" | "practical" | "lifestyle"
+
     # ---- Preview (Phase 5) ----
     chapter1_content: str
     """

@@ -96,12 +96,38 @@ URL_FILTER_MAX_WORKERS: int = 5
 
 INDICATE_LINKS_FOR_PICS = 12
 
+MAX_CHUNKS_PER_DOMAIN: int = 20
+
+CRAWL_MAX_DEPTH2_LINKS: int = 3
 
 RAG_TOP_K: int = 8
 RAG_INITIAL_K: int = 3      # initial chunks từ Researcher
 RAG_TOOL_K: int = 3         # chunks mỗi lần tool call
 RAG_TOOL_MAX_ROUNDS: int = 3 # vòng lặp tối đa
 
+# ---------------------------------------------------------------------------
+# Quality filter constants
+# ---------------------------------------------------------------------------
+MAX_BOOKING_SIGNALS = 2
+# Minimum characters for a chunk to be considered meaningful content
+MIN_CHUNK_CHARS = 200
+
+# Minimum ratio of alphabetic characters (filters binary/numeric garbage)
+MIN_ALPHA_RATIO = 0.55
+
+# Maximum ratio of digit characters (filters data tables, PDF stream metadata)
+MAX_DIGIT_RATIO = 0.40
+
+# Minimum cosine similarity between chunk embedding and topic embedding.
+# Chunks below this threshold are considered off-topic and discarded.
+# Range 0.0–1.0. Typical values: 0.20 (lenient) to 0.35 (strict).
+MIN_RELEVANCE_SCORE = 0.22
+
+# Maximum ratio of duplicate lines (bibliography sections repeat citations)
+MAX_DUPLICATE_LINE_RATIO = 0.4
+
+# Maximum ratio of lines matching citation patterns
+MAX_CITATION_LINE_RATIO = 0.3
 def setup_directories():
     for path in [DATA_DIR, CHROMA_DB_DIR]:
         path.mkdir(parents=True, exist_ok=True)

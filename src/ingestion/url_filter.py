@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 from typing import List, Dict, Optional
 from threading import Lock
 from src.config import URL_FILTER_MAX_WORKERS
+from src.ingestion.search_engine import score_search_result
 import concurrent.futures
 import requests
 
@@ -29,7 +30,10 @@ logger = setup_logger(name="URLFilter", logfile="logs/url_filter.log")
 # Static blocklists — checked without network calls
 # ---------------------------------------------------------------------------
 
-# Domains that produce noise, require login, or block crawling
+# Domains that NEVER contain educational content regardless of query.
+# Keep this list SHORT — noise filtering is handled by snippet scoring.
+# Only add domains that are: login-gated, watermarked, or fundamentally
+# non-educational (social media, e-commerce, job boards, stock photos).
 BLACKLIST_DOMAINS = [
     # Social media
     "facebook.com", "twitter.com", "instagram.com",
@@ -41,26 +45,75 @@ BLACKLIST_DOMAINS = [
     "shopee.vn", "tiki.vn", "lazada.vn", "sendo.vn",
     "amazon.com", "ebay.com", "aliexpress.com",
 
-    # Course platforms (login-gated content)
+    # Login-gated course platforms
     "udemy.com", "coursera.org", "edx.org",
     "skillshare.com", "pluralsight.com",
 
-    # Login / account subdomains
-    "login.", "signup.", "account.", "signin.", "auth.",
-    "register.", "checkout.",
+    # Login-gated document sharing
+    "scribd.com", "academia.edu", "123doc.net",
+    "tailieu.vn", "slideshare.net",
 
-    # Sports / betting
-    "bongda", "soikeo", "socolive", "xoilac",
-    "thethao", "casino", "bet365", "w88",
-
-    # Stock photo (watermarked images, no useful text)
+    # Stock photo (watermarked)
     "shutterstock.com", "gettyimages.com",
     "istockphoto.com", "alamy.com",
 
+    # Paywall academic (only reference lists accessible)
+    "springer.com", "ieee.org", "sciencedirect.com",
+    "wiley.com", "tandfonline.com", "jstor.org",
+
     # Ads / tracking
     "googleadservices.com", "doubleclick.net",
-    "adnxs.com", "outbrain.com",
+    
+    "github.com", "gitlab.com", "bitbucket.org",  # code hosting, not educational content
+    
+    "branddomainsforsale.com",
+    "atonu.net",
+    
+    "nguyenvanhieu.vn",      # personal blog, chỉ list tài liệu
+    "glints.com",            # job platform
+    "topcv.vn",              # job platform  
+    "itviec.com",            # job platform
+    "baomoi.com",            # news aggregator
+    "vnexpress.net",         # news aggregator — educational content rất ít
+    "marketingai.vn",        # marketing blog
+    "dichvuseohot.com",      # SEO blog
+    "cuuduongthancong.com",  # student sharing site (noisy)
 ]
+
+# ---------------------------------------------------------------------------
+# Source-Aware Whitelist — per content_type priority boost
+# URLs from these domains get automatic score boost in snippet scoring,
+# bypassing the MIN_SNIPPET_SCORE threshold entirely.
+# ---------------------------------------------------------------------------
+WHITELIST_DOMAINS: dict[str, tuple[str, ...]] = {
+    "scholarly": (
+    "wikipedia.org"
+    "openstax.org",
+    "ocw.mit.edu",
+    "arxiv.org",
+    "ncbi.nlm.nih.gov",
+    "pmc.ncbi.nlm.nih.gov",
+    "encyclopedia.com",
+    "britannica.com",
+    ),
+    "technical": (
+        "wikipedia.org",    
+        "geeksforgeeks.org",
+        "arxiv.org",
+        "docs.python.org",
+        "developer.mozilla.org",
+    ),
+    "practical": (
+        "wikihow.com",
+        "instructables.com",
+    ),
+    "lifestyle": (
+        "wikihow.com",
+        "instructables.com",
+        "healthline.com",
+    ),
+}
+
 
 # File extensions that cannot be processed as text
 BLACKLIST_EXTENSIONS = [
@@ -86,14 +139,25 @@ BLACKLIST_PATH_KEYWORDS = [
     "/login", "/logout", "/register", "/signup",
     "/search", "/cart", "/checkout",
     "/feed", "/rss",
-    "/cdn-cgi/",                    # Cloudflare internal
-    "/wp-json/",                    # WordPress API
-    "/grant", "/award",             # Grant/admin pages
+    "/cdn-cgi/",                  
+    "/wp-json/",                   
+    "/grant", "/award",             
     "/scholarship", "/travel-grant",
     "/career", "/job", "/vacancy",
     "/advertisement", "/ads/",
     "/privacy", "/terms", "/cookie",
     "/sitemap",
+    "/nextsem",
+    "/pages/",
+    "/subjects/",
+    "/catalog/",
+    "/about",
+    "/news/",
+    "/byline/",
+    "/blog/category/",             
+    "/collections/",  
+    "/tour", 
+    "/du-lich",            
 ]
 
 # User agent to mimic real browser
@@ -104,6 +168,13 @@ HEADERS = {
         "Chrome/91.0.4472.124 Safari/537.36"
     )
 }
+
+# Minimum snippet score to proceed to dynamic content-type check.
+# URLs below this threshold are rejected without a network probe.
+# Populated by search_engine.score_search_result() upstream.
+# Only applied when snippet metadata is available — falls back to
+# static-only validation when snippet is absent (e.g. direct URL input).
+SNIPPET_SCORE_THRESHOLD = 0.3
 
 
 def is_valid_url_static(url: str) -> bool:
@@ -127,7 +198,7 @@ def is_valid_url_static(url: str) -> bool:
         parsed = urlparse(url)
         domain = parsed.netloc.lower()
         path   = parsed.path.lower()
-        full   = (domain + path).lower()
+       
 
         # Check 1: domain blocklist
         for bad_domain in BLACKLIST_DOMAINS:
@@ -202,28 +273,80 @@ def check_url_content_type(url: str) -> Optional[str]:
         return None
 
 
-def filter_and_classify_urls(urls: List[str]) -> List[Dict[str, str]]:
+def filter_and_classify_urls(
+    urls: List[str],
+    scored_results: Optional[List[Dict[str, str]]] = None,
+    topic: str = "",
+    content_type: str = "technical",   # ← thêm parameter
+) -> List[Dict[str, str]]:
     """
     Filter and classify URLs into valid crawlable resources.
 
     Pipeline:
     1. Deduplicate
-    2. Static validation  (domain / extension / path keyword blocklists)
-    3. Dynamic validation (HTTP content-type probe, parallel)
-    4. Classification     (pdf vs html)
+    2. Whitelist check — URLs from trusted domain list for this content_type
+       bypass snippet scoring entirely (guaranteed crawl)
+    3. Snippet pre-filter — rejects low-quality URLs before network probe
+    4. Static validation  — domain/extension/path keyword blocklists
+    5. Dynamic validation — HTTP content-type probe, parallel
+    6. Classification     — pdf vs html
 
     Args:
-        urls: Raw URL list from search_web_multi_region()
+        urls:           Raw URL list from search results.
+        scored_results: Optional DDGS result dicts with 'href', 'title', 'body'.
+        topic:          User topic string for snippet scoring context.
+        content_type:   One of "scholarly"|"technical"|"practical"|"lifestyle"
+                        — determines which whitelist domain set to apply.
 
     Returns:
         List of dicts: [{"url": "...", "type": "pdf|html"}, ...]
-        Only URLs that pass all filters and have a supported content type.
     """
     # Step 1: Deduplicate
-    unique_urls = list(dict.fromkeys(urls))  # preserves insertion order
+    unique_urls = list(dict.fromkeys(urls))
     logger.info(f"Dedup: {len(urls)} → {len(unique_urls)} unique URLs")
 
-    # Step 2: Static filter
+    # Step 2: Whitelist check — split into guaranteed + candidates
+    whitelist = WHITELIST_DOMAINS.get(content_type, ())
+    whitelisted_urls: List[str] = []
+    remaining_urls:   List[str] = []
+
+    for u in unique_urls:
+        u_lower = u.lower()
+        if any(domain in u_lower for domain in whitelist):
+            whitelisted_urls.append(u)
+        else:
+            remaining_urls.append(u)
+
+    if whitelisted_urls:
+        logger.info(
+            f"Whitelist ({content_type}): {len(whitelisted_urls)} URLs bypass "
+            f"snippet filter — {len(remaining_urls)} remain for scoring"
+        )
+
+    # Step 3: Snippet pre-filter on non-whitelisted URLs
+    if scored_results and remaining_urls:
+        score_map: Dict[str, float] = {}
+        for r in scored_results:
+            href = r.get("href", "")
+            if href and href not in score_map:
+                score_map[href] = score_search_result(r, topic or r.get("_topic", ""))
+
+        before_snippet = len(remaining_urls)
+        remaining_urls = [
+            u for u in remaining_urls
+            if score_map.get(u, SNIPPET_SCORE_THRESHOLD) >= SNIPPET_SCORE_THRESHOLD
+        ]
+        removed_snippet = before_snippet - len(remaining_urls)
+        if removed_snippet > 0:
+            logger.info(
+                f"Snippet pre-filter: {before_snippet} → {len(remaining_urls)} URLs "
+                f"({removed_snippet} low-quality removed before network probe)"
+            )
+
+    # Merge whitelisted + scored survivors
+    unique_urls = whitelisted_urls + remaining_urls
+
+    # Step 4: Static filter
     candidate_urls = [u for u in unique_urls if is_valid_url_static(u)]
     removed_static = len(unique_urls) - len(candidate_urls)
     logger.info(
@@ -235,7 +358,7 @@ def filter_and_classify_urls(urls: List[str]) -> List[Dict[str, str]]:
         logger.warning("No URLs survived static filter")
         return []
 
-    # Step 3 & 4: Dynamic content-type check (parallel)
+    # Step 5 & 6: Dynamic content-type check (unchanged)
     clean_urls: List[Dict[str, str]] = []
     lock = Lock()
 
@@ -245,11 +368,15 @@ def filter_and_classify_urls(urls: List[str]) -> List[Dict[str, str]]:
             with lock:
                 clean_urls.append({"url": url, "type": doc_type})
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=URL_FILTER_MAX_WORKERS) as executor:
-        futures = [executor.submit(check_and_collect, url) for url in candidate_urls]
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=URL_FILTER_MAX_WORKERS
+    ) as executor:
+        futures = [
+            executor.submit(check_and_collect, url)
+            for url in candidate_urls
+        ]
         concurrent.futures.wait(futures)
 
-    # Count by type for logging
     pdf_count  = sum(1 for u in clean_urls if u["type"] == "pdf")
     html_count = sum(1 for u in clean_urls if u["type"] == "html")
     logger.info(

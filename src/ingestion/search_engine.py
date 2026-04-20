@@ -12,7 +12,6 @@ Quality strategy:
 
 import concurrent.futures
 from typing import List, Dict
-from urllib.parse import urlparse
 
 from ddgs import DDGS
 
@@ -72,6 +71,100 @@ def _is_noise_url(url: str) -> bool:
     return any(pattern in url_lower for pattern in NOISE_URL_PATTERNS)
 
 
+def score_search_result(result: dict, topic: str) -> float:
+    """
+    Score a search result by educational relevance using snippet signals.
+
+    Uses DDGS-provided snippet (body) as a free quality signal — no extra
+    network call required. Replaces the need to expand BLACKLIST_DOMAINS
+    for noise domains that are not hard-blocked.
+
+    Scoring signals:
+        Signal 1: Educational keywords in title + snippet → positive
+        Signal 2: Topic keywords in snippet → positive
+        Signal 3: Trusted academic domain patterns → positive boost
+        Signal 4: Generic commercial/enrollment URL patterns → penalty
+        Signal 5: Generic noise domain patterns → penalty
+
+    All penalties are domain-agnostic — no topic-specific patterns.
+    This ensures the function generalises across all subject domains
+    without overfitting to any particular topic (nail, cooking, IT, etc.)
+
+    Args:
+        result: DDGS result dict with keys 'title', 'href', 'body'.
+        topic:  User topic string for keyword matching.
+
+    Returns:
+        Float score >= 0.0. Caller should reject if below threshold.
+        Returns 0.0 for hard rejects (snippet too short).
+    """
+    body     = result.get("body",  "").lower()
+    title    = result.get("title", "").lower()
+    url      = result.get("href",  "").lower()
+    combined = body + " " + title
+
+    # Hard reject: snippet too short → nav page, login wall, catalog listing
+    if len(body) < 80:
+        return 0.0
+
+    score = 0.0
+
+    # Signal 1: Educational content keywords
+    edu_keywords_vi = [
+        "học", "giáo trình", "bài giảng", "khái niệm",
+        "thuật toán", "phương pháp", "định nghĩa", "kiến thức",
+        "chương", "mục", "giới thiệu", "cơ bản", "nâng cao",
+    ]
+    edu_keywords_en = [
+        "course", "textbook", "lecture", "algorithm", "chapter",
+        "introduction", "fundamentals", "tutorial", "definition",
+        "concept", "theory", "method", "approach", "technique",
+    ]
+    edu_hits = sum(1 for kw in edu_keywords_vi + edu_keywords_en
+                   if kw in combined)
+    score += min(edu_hits * 0.15, 1.5)  # cap at 1.5
+
+    # Signal 2: Topic keywords in snippet
+    topic_words = [w for w in topic.lower().split() if len(w) > 2]
+    topic_hits  = sum(1 for w in topic_words if w in body)
+    score += min(topic_hits * 0.2, 0.6)  # cap at 0.6
+
+    # Signal 3: Trusted academic domain boost
+    trusted_patterns = [
+        ".edu", ".ac.", "university", "stanford", "mit.edu",
+        "wikipedia", "arxiv", "openstax", "encyclopedia",
+        "ncbi.nlm", "pmc.", "scholar", "ocw.", "openlearn",
+        "slds-lmu", "cs.cmu", "mlhp", "geeksforgeeks",
+    ]
+    if any(p in url for p in trusted_patterns):
+        score += 0.5
+
+    # Signal 4: Generic commercial/enrollment URL penalty
+    # Applies to ALL domains — booking pages across any topic (nail, cooking,
+    # IT, yoga, etc.) share the same URL path patterns regardless of subject.
+    commercial_url_patterns = [
+        "/booking", "/enroll", "/register", "/checkout",
+        "/payment", "/buy-now", "/purchase", "/sign-up",
+        "/book-now", "/get-started", "/join-now",
+        "/course-booking", "/training-course/",
+    ]
+    if any(p in url for p in commercial_url_patterns):
+        score -= 0.5
+
+    # Signal 5: Generic noise domain penalty
+    # Only truly domain-agnostic noise sources — no topic-specific patterns.
+    generic_noise_patterns = [
+        "wordpress", "blogspot",   # personal blogs, unreliable
+        "baomoi", "vnexpress",     # news aggregators, not educational
+        "ebooks.com", "perlego",   # book retail, content behind paywall
+        "udacity", "lunartech",    # course platforms (login-gated)
+        "scribd", "slideshare",    # document sharing (login-gated)
+    ]
+    if any(p in url for p in generic_noise_patterns):
+        score -= 0.4
+
+    return max(0.0, score)
+
 def search_web(
     query: str,
     max_results: int = 10,
@@ -121,7 +214,28 @@ def search_web(
         logger.error(f"DDGS search failed (region={region}): {e}", exc_info=True)
 
     # Apply noise filter
-    filtered = [r for r in raw_results if not _is_noise_url(r.get("href", ""))]
+    # Stage 1: Hard noise filter (social, e-commerce, job sites)
+    hard_filtered = [r for r in raw_results if not _is_noise_url(r.get("href", ""))]
+
+    # Stage 2: Snippet quality score
+    # Extract topic from query — use query itself as topic signal
+    MIN_SNIPPET_SCORE = 0.3
+    scored = [
+        (r, score_search_result(r, query))
+        for r in hard_filtered
+    ]
+    filtered = [r for r, s in scored if s >= MIN_SNIPPET_SCORE]
+
+    # Log score distribution for tuning
+    if scored:
+        scores = [s for _, s in scored]
+        rejected = len(hard_filtered) - len(filtered)
+        logger.info(
+            f"Snippet filter: {len(hard_filtered)} → {len(filtered)} results "
+            f"({rejected} low-quality removed) "
+            f"[scores: min={min(scores):.2f} max={max(scores):.2f} "
+            f"avg={sum(scores)/len(scores):.2f}] [region={region}]"
+        )
     noise_count = len(raw_results) - len(filtered)
 
     if noise_count > 0:
@@ -147,11 +261,13 @@ def search_web_multi_region(
     while noise is excluded early.
 
     Deduplication is done on URL to avoid crawling the same page twice.
+    Note: this function returns URLs only (backward compatible).
+    For full result dicts with snippet metadata, call search_web() directly
+    and collect results — as done in ingester.py perform_ingestion().
 
     Args:
         query:                  Search query (from QueryExpansion)
         max_results_per_region: Raw results to request per region before filtering.
-                                Default 30 → up to 50 raw, ~30-40 after noise filter.
 
     Returns:
         Deduplicated list of noise-filtered URLs from both regions,
@@ -180,17 +296,21 @@ def search_web_multi_region(
             except Exception as e:
                 logger.warning(f"Region {region} failed: {e}")
 
-    # Deduplicate by href while preserving insertion order
+    # Preserve snippet metadata for url_filter.py downstream scoring
     seen: set[str] = set()
-    unique_urls: List[str] = []
+    
+    unique_urls:    List[str]            = []
+
     for r in all_results:
         url = r.get("href", "")
         if url and url not in seen:
             seen.add(url)
             unique_urls.append(url)
+           
 
     logger.info(
         f"Multi-region search complete: {len(unique_urls)} unique URLs "
-        f"(from up to {max_results_per_region * len(regions)} raw, after noise filter)"
+        f"(from up to {max_results_per_region * len(regions)} raw, "
+        f"after noise + snippet filter)"
     )
-    return unique_urls
+    return unique_urls  # backward compatible — callers receive URLs only

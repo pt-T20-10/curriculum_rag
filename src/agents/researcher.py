@@ -173,7 +173,19 @@ class ResearcherAgent:
             embedding_function=get_embedding_model(),
             collection_name="dynamic_context",
         )
+        self._retrieved_ids: set[str] = set()
 
+
+    def reset_retrieved_ids(self) -> None:
+        """
+        Reset retrieved chunk blacklist.
+        Must be called before each new subsection to prevent
+        cross-subsection blacklist contamination.
+        """
+        self._retrieved_ids.clear()
+        logger.debug("Retrieved IDs blacklist reset")
+    
+    
     def retrieve_context(
         self,
         query:         str,
@@ -183,16 +195,21 @@ class ResearcherAgent:
         """
         Retrieve the top-k most relevant document chunks for a given query.
 
-        Performs cosine similarity search via ChromaDB, writes the full
-        retrieval record to logs/rag_context.log, then returns a formatted
-        string suitable for injection into the Writer's system prompt.
+        Performs MMR search via ChromaDB for diversity, applies cross-call
+        deduplication via _retrieved_ids blacklist (source URL + chunk level),
+        writes the full retrieval record to logs/rag_context.log, then returns
+        a formatted string suitable for injection into the Writer's system prompt.
+
+        Deduplication strategy:
+            - Chunk level: same source + same content prefix → skip
+            - Source level: same URL already contributed >= 2 chunks → skip
+              Prevents a single high-similarity page from dominating context
+              across multiple tool call rounds.
 
         Args:
-            query:         Search query string (typically subsection.search_query).
-            k:             Maximum number of chunks to retrieve.
-            context_label: Human-readable label written to the RAG log
-                           (e.g. "Chapter 1.2 Ten muc"). Auto-populated by
-                           perform_research() from the curriculum position.
+            query:         Search query string.
+            k:             Maximum number of fresh chunks to return.
+            context_label: Human-readable label written to the RAG log.
 
         Returns:
             Formatted string of retrieved chunks with source metadata.
@@ -203,15 +220,54 @@ class ResearcherAgent:
         try:
             results = self.vector_db.max_marginal_relevance_search(
                 query,
-                k=k,
-                fetch_k=k * 4,
+                k=k + len(self._retrieved_ids),
+                fetch_k=(k + len(self._retrieved_ids)) * 4,
                 lambda_mult=0.7,
             )
 
-            if not results:
-                logger.warning(f"No content found for query: '{query}'")
-                return ""
+            # Dedup: chunk-level + source-level
+            fresh_results = []
+            for doc in results:
+                source_url = doc.metadata.get("source", "")
+                chunk_id   = source_url + doc.page_content[:50]
 
+                # Skip: exact chunk already retrieved
+                if chunk_id in self._retrieved_ids:
+                    continue
+
+                # Skip: source URL already contributed >= 2 chunks
+                # Prevents one noisy page dominating across tool call rounds
+                # Domain-aware quota:
+                # Trusted educational sources → 3 chunks (rich content, worth more)
+                # General domains → 1 chunk (avoid noise domination)
+                _TRUSTED_EDU_DOMAINS = (
+                    "wikipedia.org", "slds-lmu", "cs.cmu", "stanford",
+                    "mit.edu", "geeksforgeeks", "machinelearningcoban",
+                    "arxiv", "pmc.ncbi", "iosrjournals", "ijirt",
+                )
+                max_quota = 3 if any(d in source_url for d in _TRUSTED_EDU_DOMAINS) else 1
+
+                source_count = sum(
+                    1 for cid in self._retrieved_ids
+                    if cid.startswith(source_url)
+                )
+                if source_count >= max_quota:
+                    logger.debug(
+                        f"Source quota reached ({max_quota}): {source_url[:60]} — skipping"
+                    )
+                    continue
+
+                self._retrieved_ids.add(chunk_id)
+                fresh_results.append(doc)
+
+                if len(fresh_results) >= k:
+                    break
+
+            results = fresh_results
+
+            if not results:
+                logger.warning(f"No fresh content found for query: '{query}'")
+                return ""
             # ----------------------------------------------------------------
             # Build chunk list for both the RAG log and the formatted string.
             # Content is kept in its original form (newlines preserved) for

@@ -97,11 +97,18 @@ REJECT — Rule 2–3 (content violation):
 [FORMAT]
 Return a single JSON object only. No markdown, no additional explanation.
 Fields:
-  valid      : true if the topic has sufficient learning signal and no constraint violations
-  reason     : Vietnamese string ≤15 words explaining the rejection reason (empty if valid)
-  suggestion : 2–3 more specific topic alternatives in Vietnamese, separated by " | " (empty if valid)
+  valid        : true if the topic has sufficient learning signal and no constraint violations
+  reason       : Vietnamese string ≤15 words explaining the rejection reason (empty if valid)
+  suggestion   : 2–3 more specific topic alternatives in Vietnamese, separated by " | " (empty if valid)
+  content_type : one of "scholarly" | "technical" | "practical" | "lifestyle" (always set, even if valid=false)
 
-Output: {{"valid": true, "reason": "", "suggestion": ""}}
+Classification guide for content_type:
+  scholarly  — formal academic subjects: mathematics, physics, history, literature, biology, economics
+  technical  — engineering/IT/applied science: programming, networking, machine learning, electronics
+  practical  — vocational/skill-based: cooking, sewing, nail art, carpentry, accounting, driving
+  lifestyle  — personal development/wellness: yoga, meditation, photography, personal finance, gardening
+
+Output: {{{{"valid": true, "reason": "", "suggestion": "", "content_type": "technical"}}}}
 [/FORMAT]
 """
 
@@ -122,6 +129,8 @@ def validate_topic_node(state: AgentState) -> dict:
 
     Writes validation_failed=True to state when the topic is rejected,
     which triggers the conditional edge to route to END instead of planner.
+    Also writes content_type to state for downstream Source-Aware RAG routing
+    in QueryExpansion and url_filter.
 
     Args:
         state: Current LangGraph workflow state.
@@ -132,13 +141,19 @@ def validate_topic_node(state: AgentState) -> dict:
     topic  = state["request"]
     result = validate_topic(topic)
 
-    if result.get("valid", True):
-        return {"messages": [f"✓ Topic validated: '{topic}'"]}
+    content_type = result.get("content_type", "technical")  # default fallback
 
-    # Signal to graph router to route to END instead of planner
+    if result.get("valid", True):
+        logger.info(f"content_type detected: '{content_type}' for topic: '{topic}'")
+        return {
+            "messages":    [f"✓ Topic validated: '{topic}' [{content_type}]"],
+            "content_type": content_type,
+        }
+
     return {
         "messages":              [f"✗ Invalid topic: {result.get('reason', '')}"],
         "validation_failed":     True,
         "validation_reason":     result.get("reason", ""),
         "validation_suggestion": result.get("suggestion", ""),
+        "content_type":          content_type,
     }
