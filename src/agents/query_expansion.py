@@ -21,9 +21,9 @@ import warnings
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
-from langchain_anthropic import ChatAnthropic
 
-from src.config import LLM_MODEL_CHEAP,ANTHROPIC_API_KEY
+
+from src.config import LLM_MODEL_CHEAP, OPENAI_API_KEY
 from src.log_config import setup_logger, setup_prompt_logger
 
 logger = setup_logger(name="QueryExpansion", logfile="logs/agents.log")
@@ -60,23 +60,13 @@ class QueryExpansionAgent:
         targeting textbooks, one targeting syllabi, one targeting papers)
         rather than producing near-identical phrasings.
         """
-        self.llm = ChatAnthropic(
-            model_name=LLM_MODEL_CHEAP,
-            api_key=ANTHROPIC_API_KEY,        # type: ignore[arg-type]
+        
+        self.llm = ChatOpenAI(
+            model=LLM_MODEL_CHEAP,
+            api_key=OPENAI_API_KEY, # type: ignore[arg-type]
             temperature=0.5,
-            max_tokens_to_sample=512,
-        )
-        # ── INACTIVE: OpenAI GPT (uncomment to switch back) ─────────────────────
-        # from langchain_openai import ChatOpenAI
-        # from src.config import OPENAI_API_KEY
-        # self.llm = ChatOpenAI(
-        #     model=LLM_MODEL_CHEAP,
-        #     api_key=OPENAI_API_KEY,
-        #     temperature=0.5,
-        #     max_tokens=512,
-        # )
-        # Source hints per content_type — injected into query expansion prompt
-        # to guide LLM toward high-quality sources for each domain type.
+     )
+    
         
         self.prompt_logger = setup_prompt_logger("query_expansion")
 
@@ -153,42 +143,56 @@ class QueryExpansionAgent:
         hint_vi   = hints["vi"]
         hint_en   = hints["en"]
 
-        system_prompt = f"""
-        [CONTEXT]
-        You are a neutral search query optimizer for an educational content platform
-        that covers all learning domains — not limited to formal academic subjects.
-        Users may submit vague or natural-language topics; your job is to infer
-        learning intent and generate targeted search queries regardless of domain.
-        [/CONTEXT]
+        system_prompt = """
+[CONTEXT]
+You are a search query optimizer for an educational content platform covering all learning domains.
+Users submit topics ranging from formal academics to practical skills. Your job: generate diverse,
+targeted search queries that capture content from multiple source types and angles.
+[/CONTEXT]
 
-        [TASK]
-        Given the user's topic, generate:
-        - 3 Vietnamese search queries targeting Vietnamese syllabi, curricula,
-            textbooks, or course materials (for vn-vn region search).
-        - 3 English search queries targeting English academic papers, textbooks,
-            or university courses on the same topic (for us-en region search).
+[TASK]
+Given the user's topic, generate 6 search queries per language:
+- 6 Vietnamese queries (for vn-vn region)
+- 6 English queries (for us-en region)
 
-        If the topic is too broad, default to "Basic/Fundamental" level.
-        Content type detected: {content_type}
-        [/TASK]
+Each set of 6 must cover DIFFERENT content types and angles:
+1. Academic textbook/syllabus
+2. Practical tutorial/how-to guide
+3. Wiki/encyclopedia entry
+4. Technical documentation/reference
+5. Case study/example/application
+6. Community content (forum, blog, Q&A)
 
-        [CRITERION]
-        Each query must:
-        (a) Target a different angle of the topic — textbook, syllabus, or paper.
-        (b) Be specific enough to return relevant educational resources.
-        (c) Match the domain tone — academic for scholarly topics, practical for
-            skill-based topics (e.g. cooking, nail art, woodworking).
+Content type detected: """ + content_type + """
+If topic is vague, default to beginner/fundamental level.
+[/TASK]
 
-        Source guidance for this content type:
-        VI queries: {hint_vi}
-        EN queries: {hint_en}
-        [/CRITERION]
+[CRITERION]
+Each query must:
+✓ Target a DIFFERENT source type (textbook ≠ tutorial ≠ wiki ≠ docs ≠ case study ≠ forum)
+✓ Be specific enough to return relevant results
+✓ Match domain tone:
+  - scholarly/technical → formal terminology
+  - practical/lifestyle → action-oriented language
 
-        [FORMAT]
-        Return ONLY a JSON object with keys "vi" and "en". No markdown, no preamble.
-        Example for input "Nấu ăn":
-        {{{{"vi": ["Giáo trình Kỹ thuật Chế biến món ăn", "Tài liệu nhập môn Nấu ăn cơ bản", "Giáo trình Ẩm thực học đại cương"], "en": ["culinary arts fundamentals textbook", "food science and cooking academic course", "gastronomy introduction university syllabus"]}}}}
-        [/FORMAT]"""
+AVOID repetitive patterns like:
+✗ "Giáo trình X cơ bản", "Tài liệu X nhập môn", "Giáo trình X đại cương" (too similar!)
+✓ "Giáo trình X", "Hướng dẫn thực hành X", "X là gì", "Tài liệu tham khảo X", "Ví dụ ứng dụng X", "Thảo luận X"
+
+Source guidance for """ + content_type + """:
+VI: """ + hint_vi + """
+EN: """ + hint_en + """
+[/CRITERION]
+
+[FORMAT]
+Return ONLY valid JSON with this structure:
+- Key "vi": array of 6 Vietnamese query strings
+- Key "en": array of 6 English query strings
+No markdown, no preamble, no explanation.
+
+Example format (without actual content):
+The response should be pure JSON starting with opening brace, containing "vi" and "en" keys with arrays of strings, ending with closing brace.
+[/FORMAT]"""
         user_prompt = f"User Input: {user_input}"
 
         prompt = ChatPromptTemplate.from_messages([
@@ -200,14 +204,20 @@ class QueryExpansionAgent:
         # count in ingester.py (3 VI + 3 EN = 6 concurrent searches).
         fallback: dict[str, list[str]] = {
             "vi": [
-                f"Giáo trình {user_input} cơ bản",
-                f"Tài liệu nhập môn {user_input}",
-                f"Giáo trình {user_input} đại học",
+                f"Giáo trình {user_input}",
+                f"Hướng dẫn {user_input} thực hành",
+                f"{user_input} là gì",
+                f"Tài liệu tham khảo {user_input}",
+                f"Ví dụ {user_input}",
+                f"Kinh nghiệm học {user_input}",
             ],
             "en": [
-                f"{user_input} fundamentals textbook",
-                f"introduction to {user_input} university course",
-                f"{user_input} academic syllabus",
+                f"{user_input} textbook",
+                f"{user_input} tutorial",
+                f"{user_input} wikipedia",
+                f"{user_input} documentation",
+                f"{user_input} examples",
+                f"{user_input} forum",
             ],
         }
 

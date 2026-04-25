@@ -12,6 +12,7 @@ All phases share stream_workflow() with an injected app parameter.
 import queue
 import threading
 from queue import Queue
+from src.agents.ingester import set_ingestion_callback
 
 from src.graph.workflow import (
     create_workflow,
@@ -56,6 +57,8 @@ def build_initial_state(topic: str, **config) -> dict:
         "validation_reason":        "",
         "validation_suggestion":    "",
         "chapter1_content":         "",
+        "content_type":             "",     
+        "section_summaries":        [], 
     }
 
 
@@ -95,6 +98,7 @@ def build_content_initial_state(
         "messages":                 [],
         "final_filepath":           None,
         "final_docx_filepath":      None,
+        "section_summaries":        [], 
     }
 
 
@@ -152,6 +156,15 @@ def stream_workflow(
     if app is None:
         app = create_workflow()
 
+    
+    def _ingestion_progress(message: str) -> None:
+        print(f"[DEBUG BACKEND] putting event to queue: {message}", flush=True)
+        event_q.put(WorkflowEvent(
+            type=EventType.INGESTION_PROGRESS,
+            progress_message=message,
+        ))
+
+    set_ingestion_callback(_ingestion_progress) 
     cumulative: dict = dict(initial_state)
 
     curriculum = initial_state.get("curriculum")

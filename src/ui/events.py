@@ -5,11 +5,12 @@ from typing import Any, Optional
 
 class EventType(str, Enum):
     INGESTION_START   = "ingestion_start"
+    INGESTION_PROGRESS = "ingestion_progress"
     INGESTION_DONE    = "ingestion_done"
     PLANNER_DONE      = "planner_done"
     CONTENT_UPDATE    = "content_update"
     CHECKPOINT        = "checkpoint"
-    CHAPTER1_PREVIEW  = "chapter1_preview"   # Phase 5: Chapter 1 done, awaiting user decision
+    CHAPTER1_PREVIEW  = "chapter1_preview"   
     PUBLISHER_DONE    = "publisher_done"
     STOPPED           = "stopped"
     ERROR             = "error"
@@ -52,3 +53,6 @@ class WorkflowEvent:
     # VALIDATION_FAILED
     validation_reason:     str = ""
     validation_suggestion: str = ""
+    
+    # INGESTION_PROGRESS
+    progress_message: str = ""

@@ -39,7 +39,7 @@ from urllib.parse import urlparse
 from pathlib import Path
 from PIL import Image
 
-from src.config import OPENAI_API_KEY, SERPER_API_KEY, BASE_DIR, LLM_MODEL_CHEAP, INDICATE_LINKS_FOR_PICS, IMAGE_MODEL_DEFAULT, IMAGE_MODEL_PREMIUM
+from src.config import OPENAI_API_KEY, SERPER_API_KEY, BASE_DIR, INDICATE_LINKS_FOR_PICS, IMAGE_MODEL_DEFAULT, IMAGE_MODEL_PREMIUM, LLM_MODEL_CHEAP
 
 from src.log_config import setup_logger, setup_prompt_logger
 from src.graph.state import AgentState
@@ -156,6 +156,8 @@ class IllustratorAgent:
     # ------------------------------------------------------------------
     # LLM helper methods
     # ------------------------------------------------------------------
+
+    
 
     def build_image_query(self, description: str) -> str:
         """
@@ -281,6 +283,8 @@ class IllustratorAgent:
         except Exception as e:
             logger.warning(f"Description sanitize failed ({e}), using original")
             return description
+
+
 
     def route_image_request(self, description: str) -> str:
         """
@@ -421,24 +425,34 @@ class IllustratorAgent:
                 model=image_model,
                 prompt=dalle_prompt,
                 size="1024x1024",
-                quality="standard",
+                quality="medium",
                 n=1,
             )
 
-            image_url = response.data[0].url  # type: ignore
-            if not image_url:
-                logger.warning(f"{image_model} returned empty URL — triggering fallback")
+            # gpt-image-1 returns base64 by default, not a URL.
+            # Use b64_json response format and decode directly to avoid
+            # empty URL issues that occur when the model omits the URL field.
+            image_data = response.data[0] # type: ignore
+ 
+            if image_data.b64_json:
+                # Decode base64 directly — no download step needed.
+                import base64
+                img_bytes = base64.b64decode(image_data.b64_json)
+            elif image_data.url:
+                # Fallback: some model versions may still return a URL.
+                dl_response = requests.get(image_data.url, timeout=15)
+                if dl_response.status_code != 200:
+                    logger.warning(
+                        f"{image_model} image download failed "
+                        f"({dl_response.status_code}) — triggering fallback"
+                    )
+                    return ""
+                img_bytes = dl_response.content
+            else:
+                logger.warning(f"{image_model} returned neither URL nor b64_json — triggering fallback")
                 return ""
 
-            dl_response = requests.get(image_url, timeout=15)
-            if dl_response.status_code != 200:
-                logger.warning(
-                    f"{image_model} image download failed "
-                    f"({dl_response.status_code}) — triggering fallback"
-                )
-                return ""
-
-            img = Image.open(io.BytesIO(dl_response.content)).convert("RGB")
+            img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
             img.thumbnail((IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT))
 
             uid = uuid.uuid4().hex[:12]
@@ -556,6 +570,62 @@ class IllustratorAgent:
         urls = self.find_image_urls(query)
         return urls[0] if urls else ""
 
+    def _validate_image_relevance(
+        self,
+        local_path: str,
+        description: str,
+    ) -> bool:
+        """
+        Verify downloaded image matches the intended description using vision API.
+
+        Calls gpt-4o-mini with the image + description and asks for a pass/fail
+        judgment. Returns True (use image) or False (try next candidate).
+        Fails open — returns True on any API error to avoid blocking pipeline.
+
+        Args:
+            local_path:  Absolute path to the locally saved PNG.
+            description: Original English description from the IMAGE tag.
+
+        Returns:
+            True if image is relevant to description, False otherwise.
+        """
+        try:
+            import base64
+            with open(local_path, "rb") as f:
+                img_b64 = base64.b64encode(f.read()).decode()
+
+            validator = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+            response = validator.invoke([
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                f"Does this image match the following description for an "
+                                f"educational textbook?\n\nDescription: {description}\n\n"
+                                "Reply ONLY with 'PASS' if the image is relevant and appropriate, "
+                                "or 'FAIL' if it is wrong, irrelevant, or low quality."
+                            ),
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{img_b64}"},
+                        },
+                    ],
+                }
+            ])
+            result = str(response.content).strip().upper()
+            passed = result.startswith("PASS")
+            logger.info(
+                f"Image validation: {'✓ PASS' if passed else '✗ FAIL'} — "
+                f"'{description[:50]}'"
+            )
+            return passed
+        except Exception as e:
+            logger.warning(f"Image validation failed ({e}) — defaulting to PASS")
+            return True  # Fail open
+
     # ------------------------------------------------------------------
     # Main orchestration
     # ------------------------------------------------------------------
@@ -626,39 +696,97 @@ class IllustratorAgent:
             # -- Route ---------------------------------------------------------
             action = self.route_image_request(description)
 
-            
+            # ── DRAW ──────────────────────────────────────────────────────────
             if action == "DRAW":
-                local_path = self.generate_image_openai( description, is_search_fallback=False, section_type=section_type)
-                if not local_path:
-                    logger.info(f"DRAW failed — falling back to SEARCH: '{label[:50]}'")
-                    action = "SEARCH"
+                local_path = self.generate_image_openai(
+                    description, is_search_fallback=False, section_type=section_type
+                )
+                if local_path:
+                    if not self._validate_image_relevance(local_path, description):
+                        logger.info("DRAW attempt 1 failed validation — retrying once")
+                        retry_path = self.generate_image_openai(
+                            description, is_search_fallback=False, section_type=section_type
+                        )
+                        if retry_path:
+                            if self._validate_image_relevance(retry_path, description):
+                                local_path = retry_path   # retry tốt hơn → dùng retry
+                                logger.info("✓ DRAW retry passed validation")
+                            else:
+                                logger.info(
+                                    "DRAW retry also failed validation — "
+                                    "falling back to SEARCH (keeping retry as last resort)"
+                                )
+                                last_resort = retry_path  # giữ lại phòng SEARCH fail
+                                local_path  = ""
+                                action      = "SEARCH"
+                        else:
+                            logger.info("DRAW retry generation failed — falling back to SEARCH")
+                            last_resort = local_path  # giữ attempt 1 phòng SEARCH fail
+                            local_path  = ""
+                            action      = "SEARCH"
+                else:
+                    logger.info("DRAW attempt 1 generation failed — falling back to SEARCH")
+                    last_resort = ""
+                    action      = "SEARCH"
 
-            # DIAGRAM and SEARCH (including DRAW fallback) → Serper + download retry
+            # ── SEARCH / DIAGRAM (bao gồm fallback từ DRAW) ───────────────────
             if action in ("SEARCH", "DIAGRAM"):
-                candidate_urls = self.find_image_urls(description)
+                _MAX_SEARCH_ROUNDS = 3   # số lần thử tối đa với các candidate khác nhau
+                candidate_urls     = self.find_image_urls(description)
+                
+
+                round_path   = ""
+                last_valid   = ""   # ảnh cuối cùng download được dù chưa pass validate
 
                 for attempt, image_url in enumerate(candidate_urls, 1):
-                    local_path = download_and_convert_image(image_url, IMAGE_OUTPUT_DIR)
-                    if local_path:
+                    if attempt > _MAX_SEARCH_ROUNDS:
                         logger.info(
-                            f"✓ Download succeeded on candidate "
-                            f"{attempt}/{len(candidate_urls)}: {image_url[:60]}"
+                            f"Reached max search rounds ({_MAX_SEARCH_ROUNDS}) — "
+                            f"keeping last downloaded result"
                         )
                         break
-                    logger.warning(
-                        f"✗ Download failed candidate "
-                        f"{attempt}/{len(candidate_urls)}: {image_url[:60]}"
-                    )
 
-                # All Serper candidates exhausted — fall back to DALL-E DRAW.
-                # This covers two cases: Serper returned no valid URLs at all,
-                # or every downloaded URL failed content-type / Pillow checks.
-                if not local_path:
+                    dl_path = download_and_convert_image(image_url, IMAGE_OUTPUT_DIR)
+                    if not dl_path:
+                        logger.warning(f"✗ Download failed candidate {attempt}: {image_url[:60]}")
+                        continue
+
+                    last_valid = dl_path  # lưu lại mọi ảnh download được
+
+                    if self._validate_image_relevance(dl_path, description):
+                        logger.info(f"✓ Download + validated on candidate {attempt}")
+                        round_path = dl_path
+                        break
+                    else:
+                        logger.warning(
+                            f"✗ Validation failed candidate {attempt} — trying next"
+                        )
+
+                # Resolve kết quả theo ưu tiên:
+                # 1. Ảnh pass validate
+                # 2. Ảnh download được nhưng chưa pass (last_valid)
+                # 3. DRAW result giữ lại từ trước (last_resort)
+                if round_path:
+                    local_path = round_path
+                elif last_valid:
                     logger.info(
-                        f"All Serper candidates failed for '{label[:50]}' "
-                        f"— falling back to DALL-E DRAW"
+                        "No candidate passed validation — using last downloaded result"
                     )
-                    local_path = self.generate_image_openai(description, is_search_fallback=True, section_type=section_type)
+                    local_path = last_valid
+                elif last_resort:
+                    logger.info(
+                        "All SEARCH candidates failed — falling back to DRAW result"
+                    )
+                    local_path = last_resort
+                else:
+                    # Serper hoàn toàn thất bại → thử DALL-E lần cuối
+                    logger.info(
+                        f"All candidates failed for '{label[:50]}' — "
+                        f"last-resort DALL-E DRAW"
+                    )
+                    local_path = self.generate_image_openai(
+                        description, is_search_fallback=True, section_type=section_type
+                    )
             # -- Build figure block --------------------------------------------
             if local_path:
                 # Caption: prefer TITLE (short, often already Vietnamese).

@@ -10,6 +10,14 @@ from langgraph.graph.state import CompiledStateGraph
 from src.graph.state import AgentState
 from src.log_config import setup_logger
 
+
+from src.graph.state import (
+    AgentState,
+    SubSection,
+    get_chapter_and_subsection,
+    clean_section_title,
+)
+from src.agents.writer import extract_section_summary
 from src.agents.ingester import perform_ingestion
 from src.agents.planner import plan_curriculum
 from src.agents.researcher import perform_research
@@ -66,16 +74,36 @@ def append_and_update_subsection(state: AgentState) -> dict:
     current_chapter    = state["current_chapter_index"]
     current_subsection = state["current_subsection_index"]
     new_subsection     = current_subsection + 1
+
     logger.info(
         f"Checkpoint: Completed Chapter {current_chapter + 1}, "
-        f"Subsection {current_subsection + 1} → Moving to Subsection {new_subsection + 1}"
+        f"Subsection {current_subsection + 1} → Moving to {new_subsection + 1}"
     )
+
     content_update = _accumulate_content(state)
+
+    # Extract summary từ section vừa approve để Writer dùng ở section tiếp theo
+    completed_content = state.get("current_content", "")
+    display_sec       = f"{current_chapter + 1}.{current_subsection + 1}"
+    try:
+        curriculum  = state["curriculum"]
+        _, subsection = get_chapter_and_subsection(curriculum, current_chapter, current_subsection)
+        sec_title   = subsection.title if isinstance(subsection, SubSection) else subsection.get("title", "")
+        sec_title   = clean_section_title(sec_title)
+        new_summary = extract_section_summary(completed_content, display_sec, sec_title)
+        prior       = state.get("section_summaries", [])
+        updated_summaries = prior + [new_summary]
+    except Exception as e:
+        logger.warning(f"Failed to extract section summary: {e}")
+        updated_summaries = state.get("section_summaries", [])
+
     return {
         **content_update,
         "current_subsection_index": new_subsection,
         "revision_number":          0,
         "chapter_header_written":   False,
+        "section_summaries":        updated_summaries,
+        "used_rag_queries":   [],
         "messages": [
             f"✓ Completed: Chapter {current_chapter + 1}, "
             f"Subsection {current_subsection + 1}"
@@ -83,21 +111,33 @@ def append_and_update_subsection(state: AgentState) -> dict:
     }
 
 
+# Cập nhật append_and_update_chapter() — thêm cùng logic
 def append_and_update_chapter(state: AgentState) -> dict:
-    """
-    Checkpoint node: accumulate content and advance to the next chapter.
-
-    When this fires for Chapter 1 (current_chapter_index == 0), the
-    accumulated final_content is also snapshot into chapter1_content so
-    the UI preview gate can display it without touching final_content.
-    """
     current_chapter = state["current_chapter_index"]
     new_chapter     = current_chapter + 1
+
     logger.info(
         f"Checkpoint: Completed Chapter {current_chapter + 1} → "
         f"Moving to Chapter {new_chapter + 1}"
     )
+
     content_update = _accumulate_content(state)
+
+    # Extract summary cho subsection cuối của chapter
+    completed_content  = state.get("current_content", "")
+    current_subsection = state["current_subsection_index"]
+    display_sec        = f"{current_chapter + 1}.{current_subsection + 1}"
+    try:
+        curriculum = state["curriculum"]
+        _, subsection = get_chapter_and_subsection(curriculum, current_chapter, current_subsection)
+        sec_title  = subsection.title if isinstance(subsection, SubSection) else subsection.get("title", "")
+        sec_title  = clean_section_title(sec_title)
+        new_summary = extract_section_summary(completed_content, display_sec, sec_title)
+        prior       = state.get("section_summaries", [])
+        updated_summaries = prior + [new_summary]
+    except Exception as e:
+        logger.warning(f"Failed to extract section summary: {e}")
+        updated_summaries = state.get("section_summaries", [])
 
     result: dict = {
         **content_update,
@@ -105,11 +145,11 @@ def append_and_update_chapter(state: AgentState) -> dict:
         "current_subsection_index": 0,
         "revision_number":          0,
         "chapter_header_written":   False,
-        "messages": [f"✓ Completed: Chapter {current_chapter + 1} (all subsections)"],
+        "section_summaries":        updated_summaries,
+        "used_rag_queries":   [],
+        "messages": [f"✓ Completed: Chapter {current_chapter + 1}"],
     }
 
-    # Snapshot Chapter 1 content for the preview gate.
-    # Only captured once — when the first chapter finishes.
     if current_chapter == 0:
         result["chapter1_content"] = content_update["final_content"]
         logger.info("Chapter 1 content snapshot saved for preview gate")

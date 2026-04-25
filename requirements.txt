@@ -4,7 +4,7 @@ langchain-community
 langchain-core
 langchain-openai
 langgraph       # Orchestrating multi-step agent workflows
-
+huggingface_hub[hf_xet]
 
 
 # --- Web Interface ---

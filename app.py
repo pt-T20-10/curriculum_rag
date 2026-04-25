@@ -84,7 +84,6 @@ st.markdown(
 # ============================================================================
 render_sidebar()
 topic, _default_config = render_input_row()
-config = render_config_panel() or _default_config
 
 # ============================================================================
 # Phase snapshot — read ONCE at top, never re-read mid-script
@@ -96,6 +95,8 @@ _is_active = _phase in (
     "generating_rest", "publishing_early",
     "done",
 )
+
+config = render_config_panel() or _default_config
 
 # ============================================================================
 # Progress bar + status text
@@ -384,7 +385,7 @@ if (_active_phase in ("planning", "generating_ch1", "generating_rest")
         first = True
         while True:
             try:
-                event: WorkflowEvent = event_q_live.get(timeout=0.5 if first else 0)
+                event: WorkflowEvent = event_q_live.get(timeout=0.1 if first else 0)
                 first = False
             except queue.Empty:
                 needs_rerun = True
@@ -415,6 +416,13 @@ if (_active_phase in ("planning", "generating_ch1", "generating_rest")
                     st.session_state.status_text    = (
                         "**Bước 1/4:** Đang mở rộng truy vấn và thu thập dữ liệu..."
                     )
+                    
+                case EventType.INGESTION_PROGRESS:
+                    print(f"[DEBUG APP] received INGESTION_PROGRESS, status_text updated", flush=True)
+                    st.session_state.status_text = (
+                        f"**Bước 1/4:** {event.progress_message}"
+                    )
+
 
                 case EventType.INGESTION_DONE:
                     st.session_state.progress_value = 0.05
@@ -516,6 +524,7 @@ if (_active_phase in ("planning", "generating_ch1", "generating_rest")
                     st.session_state.is_running = False
                     if is_planning_phase:
                         st.session_state.workflow_phase = "reviewing"
+                        st.session_state.config_expanded = False
                     elif is_ch1_phase:
                         # Check if preview was set (multi-chapter) or publisher ran (single-chapter)
                         if st.session_state.get("_chapter1_preview_content"):

@@ -24,7 +24,7 @@ import re
 
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_anthropic import ChatAnthropic
+
 from src.log_config import setup_logger, setup_prompt_logger
 from src.graph.state import (
     AgentState,
@@ -33,7 +33,7 @@ from src.graph.state import (
     get_chapter_and_subsection,
     clean_section_title,
 )
-from src.config import LLM_MODEL_CHEAP,ANTHROPIC_API_KEY
+from src.config import LLM_MODEL_CHEAP,OPENAI_API_KEY
 
 logger = setup_logger(name="ReviewerAgent", logfile="logs/agents.log")
 
@@ -65,20 +65,12 @@ class ReviewerAgent:
         (delimiter replacement, header normalization) where creativity is
         undesirable and consistency is critical.
         """
-        self.llm = ChatAnthropic(
-            model_name=LLM_MODEL_CHEAP,
-            api_key=ANTHROPIC_API_KEY,        # type: ignore[arg-type]
+
+        self.llm = ChatOpenAI(
+            model=LLM_MODEL_CHEAP,
+            api_key=OPENAI_API_KEY, # type: ignore[arg-type]
             temperature=0.1,
-            max_tokens_to_sample=4096,
-)
-        # ── INACTIVE: OpenAI GPT (uncomment to switch back) ─────────────────────
-        # from langchain_openai import ChatOpenAI
-        # from src.config import OPENAI_API_KEY
-        # self.llm = ChatOpenAI(
-        #     model=LLM_MODEL_CHEAP,
-        #     api_key=OPENAI_API_KEY,
-        #     temperature=0.1,
-        # )
+        )
         self.prompt_logger = setup_prompt_logger("reviewer")
 
     def should_revise(
@@ -197,6 +189,54 @@ class ReviewerAgent:
             logger.error(f"Quality gate unexpected error: {e}", exc_info=True)
             return False, ""
 
+    @staticmethod
+    def _fix_heading_levels(content: str, section_num: str, section_title: str) -> str:
+        """
+        Deterministic post-processing to fix heading level violations.
+
+        The LLM occasionally outputs #### instead of ### for sub-sections,
+        or strips numeric prefixes from ## and ### headings.
+        This method enforces correct levels without touching heading text.
+
+        Rules applied:
+        - Any #### (or deeper) heading → downgrade to ###
+        - Ensure exactly one ## {section_num} {section_title} exists at the top
+        """
+        lines = content.split('\n')
+        fixed_lines = []
+        section_header_found = False
+        expected_section = f"## {section_num} {section_title}"
+
+        for line in lines:
+            # Downgrade #### (and deeper) to ### — sub-sections are always level 3.
+            if re.match(r'^#{4,} ', line):
+                line = re.sub(r'^#{4,} ', '### ', line)
+
+            # Detect if the correct ## section header is present.
+            if line.strip().startswith('## ') and section_num in line:
+                section_header_found = True
+
+            fixed_lines.append(line)
+
+        result = '\n'.join(fixed_lines)
+
+        # If ## section header is missing or stripped, inject it after # CHƯƠNG line.
+        if not section_header_found:
+            # Find insertion point: after # CHƯƠNG line if present, else at start.
+            chap_match = re.search(r'^# CHƯƠNG.*$', result, flags=re.MULTILINE)
+            if chap_match:
+                insert_pos = chap_match.end()
+                result = (
+                    result[:insert_pos]
+                    + f"\n\n{expected_section}\n"
+                    + result[insert_pos:]
+                )
+            else:
+                # No chapter header — prepend section header at top.
+                result = f"{expected_section}\n\n" + result.lstrip('\n')
+
+        return result
+
     def review_content(
         self,
         course_topic: str,
@@ -296,15 +336,32 @@ class ReviewerAgent:
 
     --- Phase 2: STRUCTURE RULES ---
 
-    Rule 6 — Chapter header: DO NOT add or modify any # (level-1) heading.
+    Rule 6 — Chapter header: DO NOT add, modify, OR REMOVE any # (level-1) heading.
     The Writer node owns chapter headers exclusively.
+    Copy any existing # heading verbatim to your output — it is not yours to touch.
     {chap_cmd}
 
-    Rule 7 — Section header must be exactly: ## {section_num} {section_title}
-    Remove colon:          ## 1.1: Title        → ## 1.1 Title
-    Remove double number:  ## 1.1. Muc 1.1 Title → ## 1.1 {section_title}
-    Do NOT use # (Header 1) unless it is the chapter title line.
+    Rule 7 — HEADING FORMAT (PRESERVE NUMBERS — non-negotiable):
+    Section header MUST be exactly: ## {section_num} {section_title}
+    Sub-section headers MUST follow: ### {section_num}.N Title (N = 1, 2, 3...)
 
+    HEADING LEVEL RULES — strictly enforced:
+    - # (1 hash)   → ONLY for chapter title (# CHƯƠNG ...). Governed by Rule 6.
+    - ## (2 hashes) → ONLY for section header (## {section_num} {section_title})
+    - ### (3 hashes) → ONLY for sub-sections (### {section_num}.N Title)
+    - #### and deeper → STRICTLY FORBIDDEN. Convert any #### to ### immediately.
+
+    PRESERVE numbering — NEVER strip the numeric prefix from any heading:
+    ✓ KEEP: ## {section_num} {section_title}
+    ✓ KEEP: ### {section_num}.1 Title  |  ### {section_num}.2 Title
+    ✗ WRONG: ## {section_title}              ← stripped section number
+    ✗ WRONG: ### Title                       ← stripped sub-section number
+    ✗ WRONG: #### Title                      ← forbidden level, must be ###
+
+    Fix malformed formats but keep the number:
+    ❌ ## {section_num}: Title  → ✅ ## {section_num} Title  (remove colon only)
+    ❌ #### {section_num}.1 Title → ✅ ### {section_num}.1 Title (fix level)
+    Do NOT use # (Header 1) unless it is the chapter title line.
     --- Phase 5: FORMAT RULES ---
 
     Rule 8 — Every heading (`#`, `##`, `###`) MUST have a blank line immediately
@@ -422,14 +479,21 @@ class ReviewerAgent:
                 "chap_cmd":            chapter_cmd,
             })
 
+            polished = str(response.content)
+            # Apply deterministic heading level fix as safety layer.
+            # LLMs occasionally output #### instead of ### or strip numeric prefixes.
+            polished = self._fix_heading_levels(polished, section_num, section_title)
             logger.info("✓ Review complete")
-            return response.content  # type: ignore
+            return polished  # type: ignore
+        
 
         except Exception as e:
             logger.error(f"Error during review: {e}", exc_info=True)
             # Return original draft to keep the workflow moving — the quality
             # gate in should_revise() will catch remaining issues on next pass.
             return draft_content
+
+
 
 
 def review_section(state: AgentState) -> dict:
@@ -521,10 +585,10 @@ def review_section(state: AgentState) -> dict:
         chap_cmd_text = ""
         if sub_idx == 0 and state.get("chapter_header_written", False):
             chap_cmd_text = (
-                f"VERIFY ONLY (do NOT add): Confirm a '# CHƯƠNG {display_chap_num}' "
-                f"heading exists at the very top of the draft. "
-                f"If missing, that is acceptable — do not add it."
-            )
+            f"PRESERVE: The draft begins with '# CHƯƠNG {display_chap_num}: ...'. "
+            f"This line MUST appear as the very first line of your output — "
+            f"copy it verbatim. Do NOT remove, modify, or rewrite it under any circumstance."
+        )
 
         draft = state.get("current_content", "")
 

@@ -222,6 +222,8 @@ class AgentState(TypedDict):
 
     content_type: str  # "scholarly" | "technical" | "practical" | "lifestyle"
 
+
+    used_rag_queries: List[str]   # accumulate across revision attempts
     # ---- Preview (Phase 5) ----
     chapter1_content: str
     """
@@ -229,7 +231,14 @@ class AgentState(TypedDict):
     update_chapter checkpoint. Surfaced to the UI for the preview gate.
     Empty string before Chapter 1 completes.
     """
-
+    section_summaries: List[str]
+    """
+    Ordered list of one-line summaries for each completed subsection.
+    Injected into Writer's context retrieval and content generation calls
+    to prevent repetition and ensure logical progression across sections.
+    Format per entry: "Mục X.Y 'Title': <prose preview>..."
+    Populated by checkpoint nodes after Reviewer approves each section.
+    """
 
 # ============================================================================
 # HELPERS
@@ -288,7 +297,9 @@ def build_initial_state(
     min_chars_per_section: int = 0,
     max_subsections_per_chapter: int = 5,
     content_level: str = "Trung Bình",
+    section_summaries: list = None, #type: ignore
     export_formats: list | None = None,
+    
 ) -> dict:
     """
     Factory function for constructing the initial AgentState dict.

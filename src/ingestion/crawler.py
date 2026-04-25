@@ -26,16 +26,16 @@ from bs4 import BeautifulSoup
 from langchain_chroma import Chroma
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
-from src.config import get_embedding_model
-from src.agents.query_expansion import QueryExpansionAgent
+from torch import embedding_bag
 
+from src.agents.query_expansion import QueryExpansionAgent
 from src.log_config import setup_logger
-from src.config import CHROMA_DB_DIR, CRAWL_MAX_WORKERS, CRAWL_MAX_SUB_LINKS, MIN_CHUNK_CHARS, MIN_ALPHA_RATIO, MAX_DIGIT_RATIO, MIN_RELEVANCE_SCORE, MAX_CITATION_LINE_RATIO, MAX_DUPLICATE_LINE_RATIO, MIN_RELEVANCE_SCORE, MAX_BOOKING_SIGNALS, MAX_CHUNKS_PER_DOMAIN, CRAWL_MAX_DEPTH2_LINKS
-from src.ingestion.url_filter import WHITELIST_DOMAINS
+from src.config import CHROMA_DB_DIR, CRAWL_MAX_WORKERS, CRAWL_MAX_SUB_LINKS, MIN_CHUNK_CHARS, MIN_ALPHA_RATIO, MAX_DIGIT_RATIO, MIN_RELEVANCE_SCORE, MAX_CITATION_LINE_RATIO, MAX_DUPLICATE_LINE_RATIO, MIN_RELEVANCE_SCORE, MAX_BOOKING_SIGNALS, MAX_CHUNKS_PER_DOMAIN, CRAWL_MAX_DEPTH2_LINKS, MIN_RELEVANCE_BY_TYPE, CHUNK_SIZE, get_embedding_model, CHUNK_OVERLAP
 from src import stop_signal
 
 logger = setup_logger(name="Crawler", logfile="logs/crawler.log")
 
+embedding_model = get_embedding_model()
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -198,55 +198,47 @@ def is_quality_chunk(text: str) -> bool:
 
 
 
-def compute_relevance_scores(
-    chunks: List[Document],
-    topic_embedding: np.ndarray,
-    embedding_model,
-) -> List[float]:
+def compute_relevance_scores(chunks, topic_emb, embedding_model):
     """
-    Compute cosine similarity between each chunk and the topic query.
-
-    Embeddings are computed in a single batch call where possible.
-    Falls back to per-chunk calls if batch is unavailable.
-
+    Compute cosine similarity scores for chunks using batch encoding.
+    
+    Uses LangChain's embed_documents() which internally batches requests.
+    While we can't control batch_size directly through the wrapper,
+    the underlying HuggingFace model still processes in batches automatically.
+    
     Args:
-        chunks:          List of Document chunks to score
-        topic_embedding: Pre-computed topic embedding vector (np.ndarray).
-                         Compute once in the caller and reuse across calls.
-        embedding_model: HuggingFaceEmbeddings instance from get_embedding_model()
-
+        chunks: List of Document objects with page_content
+        topic_emb: Pre-computed bilingual topic embedding (numpy array)
+        embedding_model: BAAI/bge-m3 embedding model (LangChain wrapper)
+    
     Returns:
-        List of float scores (same length as chunks), range 0.0–1.0.
-        Returns list of 1.0 (pass-through) on any embedding error.
+        List of float scores (same length as chunks)
+    
+    Performance:
+        - Batch encoding via LangChain wrapper: ~60-80s for 300 chunks
+        - Vectorized similarity: NumPy matrix operations
     """
-    try:
-        topic_emb = topic_embedding
-        topic_norm = np.linalg.norm(topic_emb)
-
-        if topic_norm == 0:
-            logger.warning("Pre-computed topic embedding is zero vector — skipping relevance filter")
-            return [1.0] * len(chunks)
-
-        # Batch embed all chunks
-        texts = [c.page_content for c in chunks]
-        chunk_embs = np.array(embedding_model.embed_documents(texts))
-
-        # Vectorised cosine similarity
-        dot_products  = chunk_embs @ topic_emb
-        chunk_norms   = np.linalg.norm(chunk_embs, axis=1)
-        denominators  = chunk_norms * topic_norm
-
-        # Avoid division by zero
-        scores = np.where(
-            denominators > 0,
-            dot_products / denominators,
-            0.0,
-        )
-        return scores.tolist()
-
-    except Exception as e:
-        logger.warning(f"Relevance scoring failed ({e}) — skipping filter")
-        return [1.0] * len(chunks)
+    if not chunks:
+        return []
+    
+    from sklearn.metrics.pairwise import cosine_similarity
+    import numpy as np
+    
+    # Batch encode all chunks using LangChain wrapper
+    # LangChain's HuggingFaceEmbeddings internally uses batch processing
+    chunk_texts = [c.page_content for c in chunks]
+    chunk_embeddings = embedding_model.embed_documents(chunk_texts)
+    
+    # Convert to numpy arrays for vectorized operations
+    chunk_embeddings_np = np.array(chunk_embeddings)
+    topic_emb_np = np.array(topic_emb).reshape(1, -1)
+    
+    # Vectorized cosine similarity computation
+    # Returns shape (n_chunks, 1) — flatten to 1D list
+    similarities = cosine_similarity(chunk_embeddings_np, topic_emb_np)
+    scores = similarities.flatten().tolist()
+    
+    return scores
 
 
 def _apply_domain_diversity_cap(
@@ -273,11 +265,32 @@ def _apply_domain_diversity_cap(
     capped: List[Document] = []
 
     for chunk in chunks:
-        source  = chunk.metadata.get("source", "")
-        domain  = urlparse(source).netloc.lower()
-        current = domain_counts.get(domain, 0)
+        source     = chunk.metadata.get("source", "")
+        raw_domain = urlparse(source).netloc.lower()
 
-        if current < max_per_domain:
+        # Normalize mobile subdomains to their desktop equivalent.
+        # vi.m.wikipedia.org and vi.wikipedia.org serve the same content —
+        # counting them separately would give one source double the intended quota.
+        # Handles patterns: m.domain.com, vi.m.domain.com, en.m.domain.com
+        domain = re.sub(
+            r'^([a-z]{2,3}\.)?m\.',   # optional lang prefix + mobile subdomain
+            lambda m: m.group(1) or '', # keep lang prefix, strip "m."
+            raw_domain,
+        )
+        
+
+        current = domain_counts.get(domain, 0)
+        _TRUSTED_EDU_CAP_DOMAINS = (
+            "arxiv.org", "stanford.edu", "mit.edu", "cs.cmu.edu",
+            "cambridge.org", "harvard.edu", "geeksforgeeks.org",
+            "wikipedia.org", "britannica.com",
+        )
+        max_for_domain = (
+            max_per_domain * 2
+            if any(t in domain for t in _TRUSTED_EDU_CAP_DOMAINS)
+            else max_per_domain
+        )
+        if current < max_for_domain:
             domain_counts[domain] = current + 1
             capped.append(chunk)
 
@@ -479,71 +492,486 @@ MIN_SENTENCE_PUNCT_RATIO = 0.08
 MIN_WORD_DIVERSITY_RATIO = 0.45
 
 
-def _is_content_page(text: str) -> bool:
+# ---------------------------------------------------------------------------
+# Page-level classifier — three-way classification replacing _is_content_page().
+#
+# Three outcomes determine how each crawled page is processed:
+#   EDUCATIONAL → store page content + crawl sublinks
+#   NAVIGATION  → skip page content, crawl sublinks (may link to good content)
+#   JUNK        → skip page content AND skip sublinks entirely
+#
+# Content-type aware: what counts as "educational" differs per domain.
+#   scholarly/technical → formal prose, definitions, analysis
+#   practical           → step-by-step instructions, numbered guides
+#   lifestyle           → technique descriptions, health/wellness content
+# ---------------------------------------------------------------------------
+
+_PAGE_EDUCATIONAL = "educational"
+_PAGE_NAVIGATION  = "navigation"
+_PAGE_JUNK        = "junk"
+
+# Promotional / commercial language — topic-agnostic, fires across all domains.
+# Covers both VI and EN patterns.
+_PROMO_PATTERN = re.compile(
+    r'miễn phí|free download|tải ngay|click here|đăng ký ngay'
+    r'|enroll now|sign up|get started|join now|buy now'
+    r'|giảm giá|khuyến mãi|ưu đãi|coupon|discount'
+    r'|thay vì tốn tiền|hoàn toàn có thể tận dụng'
+    r'|top \d+ (best|tốt nhất|hay nhất)'
+    r'|recommended for you|you might also like'
+    r'|limited time offer|act now|claim your',
+    re.IGNORECASE,
+)
+
+# Personal blog / course review language — opinions without instructions.
+_REVIEW_PATTERN = re.compile(
+    r'thầy\s+\w+\s+(dạy|giảng)|cô\s+\w+\s+(dạy|giảng)'
+    r'|nếu bạn học\s+(thầy|cô)\s+\w+'
+    r'|học\s+(thầy|cô)\s+\w+\s+thì'       
+    r'|nếu bạn học\s+thầy|nếu bạn học\s+cô'
+    r'|theo (mình|tôi|cá nhân mình)'
+    r'|mình nghĩ|mình thấy|kinh nghiệm (của mình|bản thân)'
+    r'|review (môn|khóa học)|chia sẻ kinh nghiệm học'
+    r'|in my (opinion|experience)|i (think|feel|believe)'
+    r'|my favorite|personally i|from my experience',
+    re.IGNORECASE,
+)
+
+# Login-gated content — page requires authentication to view content.
+_LOGIN_PATTERN = re.compile(
+    r'đăng nhập để (xem|tải|đọc|truy cập)'
+    r'|vui lòng đăng nhập|please (log in|sign in)'
+    r'|login to (view|download|read|access)'
+    r'|nội dung chỉ dành cho thành viên|members only'
+    r'|create (a free )?account to|sign up to (access|view)',
+    re.IGNORECASE,
+)
+
+# Step-by-step instruction markers — strong EDUCATIONAL signal for practical/lifestyle.
+_STEP_PATTERN = re.compile(
+    r'^(bước|step)\s+\d+\s*[:\.\-]'             # "Bước 1:" or "Step 1:"
+    r'|^\d+\.\s+[A-ZÀÁẢÃẠ\w]'                   # "1. Do something" numbered list
+    r'|(cách|how to)\s+\w+\s+(để|to)\s+\w+',    # "cách X để Y" / "how to X"
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# Technique / concept definition markers — EDUCATIONAL for scholarly/technical.
+_DEFINITION_PATTERN = re.compile(
+    r'(là|được định nghĩa (là|như)|có nghĩa là)'   # VI definitions
+    r'|(is defined as|refers to|is a (type|form|method|process|technique) of)'  # EN
+    r'|(bao gồm|consists of|encompasses|comprises)'  # inclusion
+    r'|(cho phép|enables|allows|facilitates)',        # capability statements
+    re.IGNORECASE,
+)
+
+# Booking / spa / service page signals — strong JUNK for lifestyle topics.
+_BOOKING_PATTERN = re.compile(
+    r'đặt (lịch|phòng|chỗ)|book (a session|appointment|class)'
+    r'|giá (dịch vụ|khóa học|vé)|pricing|our (services|packages|rates)'
+    r'|lịch học|class schedule|available (times|slots)'
+    r'|contact us (to|for)|liên hệ để (đăng ký|biết thêm)',
+    re.IGNORECASE,
+)
+
+_NAV_URL_PATTERNS = re.compile(
+    r'/abs/\d+|/abstract|/book\b|mlbook|/catalog|/index\.html$'
+    
+    # Course/enrollment URL patterns
+    r'|/khoa-hoc/|/course/|/courses/|/class/|/enroll'
+    r'|/hoc-vien/|/tuyen-sinh/|/dang-ky/'
+    r'|/products/khoa-hoc|/products/course'
+    r'|course-details|class-details',
+    
+    re.IGNORECASE,
+)
+
+
+_COURSE_MARKETING_PATTERN = re.compile(
+    # Enrollment CTAs
+    r'(enroll|sign up|join|register|đăng ký)\s+(now|today|for free|ngay|miễn phí)'
+    r'|(enroll|đăng ký)\s+(here|tại đây)'
+    
+    # Speed claims
+    r'|learn\s+\w+\s+in \d+ (days|weeks|months)'
+    r'|học\s+\w+\s+trong \d+ (ngày|tuần|tháng)'
+    
+    # Career promises
+    r'|(boost|advance|kickstart)\s+your\s+(career|skills)'
+    r'|(nâng cao|phát triển)\s+(sự nghiệp|kỹ năng)'
+    r'|industry.ready|job.ready|placement (assistance|guarantee)'
+    
+    # Batch/cohort scheduling
+    r'|batch (starts|starting)|next batch|upcoming (batch|cohort)'
+    r'|khai giảng|lịch khai giảng|lớp khai giảng'
+    
+    # Pricing
+    r'|học phí|course fee|tuition fee|phí khóa học'
+    r'|\d+[\.,]\d+\s*(vnđ|vnd|đồng|usd|\$)'  # Price amounts
+    
+    # Certificates
+    r'|chứng chỉ (được cấp|hoàn thành)|certificate of completion'
+    r'|cấp chứng chỉ|nhận chứng chỉ'
+    
+    # Course structure keywords
+    r'|khóa học\s+(gồm có|\d+\s+(buổi|tiết))'  # "Khóa học 20 buổi"
+    r'|course (includes|comprises)\s+\d+\s+(sessions?|lessons?)'
+    
+    # Contact for enrollment
+    r'|liên hệ để (đăng ký|tham gia)|contact (us )?(to|for) (enroll|register)'
+    r'|hotline|phone|số điện thoại.*đăng ký',
+    
+    re.IGNORECASE,
+)
+
+
+# ============================================================================
+# NEWS SITE DETECTION
+# Domain-agnostic news/journalism patterns — fires on attribution, bylines,
+# copyright notices common to news articles regardless of topic.
+# Bilingual (VI + EN) to catch both Vietnamese news sites and international
+# news aggregators that appear in us-en search results.
+# ============================================================================
+_NEWS_PATTERN = re.compile(
+    # Vietnamese news markers
+    r'phóng viên|tác giả|biên tập viên|nguồn tin|bản quyền thuộc'
+    r'|theo\s+(VnExpress|Dantri|Tuoitre|VTC|Thanh\s+Niên|Vietnamnet)'
+    r'|nguồn:\s*\w+|trích dẫn từ'
+    
+    # English news markers
+    r'|staff writer|correspondent|byline|all rights reserved'
+    r'|copyright\s+\d{4}|published\s+\d{1,2}\s+(hours?|days?)\s+ago'
+    r'|source:\s*\w+|according to\s+[A-Z][\w]+'
+    
+    # Generic journalism patterns (both languages)
+    r'|breaking news|tin tức|bài viết liên quan|related articles'
+    r'|đọc thêm:|read more:|xem thêm:|see also:',
+    
+    re.IGNORECASE,
+)
+
+
+# ============================================================================
+# LISTING/DIRECTORY PAGE DETECTION
+# Detects ranking pages, directory listings, "top N places" compilations.
+# These pages aggregate multiple entities (schools, gyms, restaurants) without
+# providing substantive educational content about the subject itself.
+# Bilingual to catch both Vietnamese listicles and English directory sites.
+# ============================================================================
+_LISTING_PATTERN = re.compile(
+    # Vietnamese listing markers
+    r'top\s+\d+\s+(trung\s+tâm|địa\s+chỉ|khóa\s+học|nơi\s+học|lớp\s+học|phòng\s+tập|quán\s+ăn|nhà\s+hàng)'
+    r'|danh\s+sách\s+\d+\s+(trung\s+tâm|khóa|lớp|địa\s+điểm|quán)'
+    r'|\d+\s+địa\s+chỉ\s+(học|tập|ăn|mua)'
+    
+    # English listing markers
+    r'|top\s+\d+\s+(centers?|schools?|classes?|gyms?|studios?|restaurants?|places?)'
+    r'|best\s+\d+\s+(centers?|schools?|places?)\s+(to|for|in)'
+    r'|\d+\s+best\s+(places?|schools?|centers?)'
+    
+    # Structural listing patterns (language-agnostic)
+    # Repeated "#1 Name... #2 Name..." or "1. Place A... 2. Place B..."
+    r'|#\d+[\s\.\-:]+[\w\s]{5,50}#\d+'  # "#1 Yoga Studio A #2 Studio B"
+    r'|\d+\.[\s]+[\w\s]{10,60}\n\d+\.'   # "1. Some Place\n2. Another Place"
+    
+    # Review aggregate patterns
+    r'|rating:?\s*\d+[\.,]\d+/\d+|⭐{2,5}|\d+\s+reviews?|\d+\s+đánh\s+giá',
+    
+    re.IGNORECASE | re.MULTILINE,
+)
+# ============================================================================
+# NEWS DOMAIN BLACKLIST
+# Known Vietnamese and international news sites that should ALWAYS return JUNK
+# regardless of content analysis. Domain-level blocking is more reliable than
+# pattern matching for well-known news organizations.
+# ============================================================================
+_NEWS_DOMAINS = (
+    # Vietnamese news sites
+    "dantri.com", "vnexpress.net", "tuoitre.vn",
+    "thanhnien.vn", "vietnamnet.vn", "vtc.vn",
+    "baomoi.com", "tienphong.vn", "nld.com.vn",
+    
+    # International news (Vietnamese sections)
+    "bbc.com/vietnamese", "voanews.com/vietnamese",
+    "rfi.fr/vi",
+    
+    # Exclude these from the blacklist if they have educational sections:
+    # - None currently, but could add exceptions here
+)
+
+# ============================================================================
+# TRUSTED PRACTICAL DOMAINS WHITELIST
+# High-quality instructional sites that consistently provide step-by-step
+# educational content for practical/lifestyle topics. These domains bypass
+# all scoring and return EDUCATIONAL immediately to prevent false negatives
+# (e.g., wikihow being marked JUNK due to footer signup forms).
+# 
+# Only applies when content_type is 'practical' or 'lifestyle'.
+# Domain-agnostic quality threshold: must have established reputation for
+# accurate, beginner-friendly, step-by-step instructional content.
+# ============================================================================
+_PRACTICAL_TRUSTED_DOMAINS = (
+    # Step-by-step how-to guides
+    "wikihow.com",
+    "instructables.com",
+    
+    # Health and wellness (lifestyle)
+    "healthline.com",
+    "mayoclinic.org",
+    "webmd.com",
+    
+    # Cooking and food (practical)
+    "allrecipes.com",
+    "seriouseats.com",
+    "bonappetit.com",
+    "foodnetwork.com",
+    
+    # Educational platforms with practical courses
+    "masterclass.com",
+    "skillshare.com",  # Note: may be login-gated, but content is educational
+)
+def classify_page(text: str, url: str, content_type: str = "technical") -> str:
     """
-    Determine whether a crawled HTML page contains substantive educational
-    content, as opposed to a homepage, navigation hub, or landing page.
+    Three-way page classifier to determine crawl strategy per page.
 
-    Four complementary signals are evaluated — a page must pass ALL of them
-    to be classified as a content page worth storing in ChromaDB:
+    Replaces the binary _is_content_page() with a content-type-aware
+    scoring system. Each content_type uses different signal weights
+    to correctly classify pages across all educational domains.
 
-    Signal 1 — Minimum length:
-        Homepages and nav hubs extract to very short text after BeautifulSoup
-        strips scripts/nav/footer. A genuine article or chapter page produces
-        at least MIN_ROOT_CONTENT_CHARS characters of body text.
-
-    Signal 2 — Long line ratio:
-        Navigation pages consist mostly of short anchor texts (menu items,
-        breadcrumbs, sidebar links). Content pages contain prose paragraphs
-        that span many words and exceed 80 characters per line.
-
-    Signal 3 — Sentence punctuation ratio:
-        Prose ends sentences with '.', '!', or '?'. Navigation menus and
-        course index pages rarely contain sentence-ending punctuation.
-        A low ratio indicates link-list content rather than explanatory text.
-
-    Signal 4 — Word diversity:
-        Navigation menus repeat the same anchor words (Home, About, Course,
-        Chapter, Next, Previous). Educational content pages use a rich and
-        varied vocabulary. Low unique/total word ratio flags nav-heavy pages.
+    Enhancements:
+        - Trusted domain whitelist for practical/lifestyle content
+        - News site detection (bilingual)
+        - Listing/directory page detection (bilingual)
 
     Args:
-        text: Raw text extracted by fetch_text_from_url() after BeautifulSoup
-              stripping of script/style/nav/footer tags.
+        text:         Extracted page text from fetch_text_from_url().
+        url:          Page URL — used for domain-level signals.
+        content_type: One of 'scholarly'|'technical'|'practical'|'lifestyle'.
 
     Returns:
-        True  — page passes all four signals → worth storing as a Document.
-        False — page fails one or more signals → skip root, still crawl sublinks.
+        _PAGE_EDUCATIONAL — store content, crawl sublinks
+        _PAGE_NAVIGATION  — skip content, crawl sublinks
+        _PAGE_JUNK        — skip content AND sublinks
     """
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # EARLY RETURN: News domain blacklist
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Domain-level blocking for known news organizations
+    # More reliable than pattern matching alone
+    url_lower = url.lower()
+    if any(domain in url_lower for domain in _NEWS_DOMAINS):
+        logger.info(f"News domain blacklist hit: {url[:60]}")
+        return _PAGE_JUNK
+    
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # EARLY RETURN: Trusted practical domain whitelist
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Bypass all scoring for known high-quality practical instructional sites.
+    # Prevents false negatives like wikihow.com being marked JUNK due to
+    # footer signup forms triggering promo pattern.
+    if content_type in ("practical", "lifestyle"):
+        url_lower = url.lower()
+        if any(domain in url_lower for domain in _PRACTICAL_TRUSTED_DOMAINS):
+            logger.info(f"Trusted practical domain whitelist hit: {url[:60]}")
+            return _PAGE_EDUCATIONAL
+    
     stripped = text.strip()
 
-    # Signal 1: minimum character length
-    if len(stripped) < MIN_ROOT_CONTENT_CHARS:
-        return False
+    # Hard floor: too short to classify — treat as navigation
+    if len(stripped) < 500:
+        return _PAGE_NAVIGATION
 
-    lines = [l.strip() for l in stripped.split('\n') if l.strip()]
-    if not lines:
-        return False
+    lines      = [l.strip() for l in stripped.split('\n') if l.strip()]
+    total_lines = len(lines)
+    if not total_lines:
+        return _PAGE_NAVIGATION
 
-    # Signal 2: long line ratio (prose paragraphs vs short nav links)
+    words       = stripped.lower().split()
+    total_words = len(words)
+
+    edu_score  = 0.0
+    junk_score = 0.0
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # SIGNAL 1: Hard junk detection — applies to ALL content types
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    # 1a. Login-gated pages: never have retrievable content
+    if _LOGIN_PATTERN.search(stripped):
+        return _PAGE_JUNK
+
+    # 1b. News sites: articles about topics, not educational material - STRENGTHENED
+    # Fires on bylines, copyright, news attribution (bilingual)
+    news_hits = len(_NEWS_PATTERN.findall(stripped))
+    if news_hits >= 3:
+        junk_score += 2.5  # strong news signal
+    elif news_hits >= 2:
+        junk_score += 2.0  # Increased from 1.5
+    elif news_hits >= 1:
+        junk_score += 1.0  # Increased from 0.5 - KEY FIX for weak signals
+
+    # 1c. Listing/directory pages: "top 10 gyms/schools/restaurants" - STRENGTHENED
+    # No substantive educational content, just aggregated links
+    listing_hits = len(_LISTING_PATTERN.findall(stripped))
+    if listing_hits >= 3:
+        junk_score += 3.0  # confirmed listing page (increased from 2.5)
+    elif listing_hits >= 2:
+        junk_score += 2.5  # increased from 2.0
+    elif listing_hits >= 1:
+        junk_score += 1.5  # increased from 0.8 - KEY FIX for weak signals
+
+    # 1d. Heavy promotional language
+    promo_hits = len(_PROMO_PATTERN.findall(stripped))
+    if promo_hits >= 4:
+        return _PAGE_JUNK
+    elif promo_hits >= 2:
+        junk_score += 1.8
+    elif promo_hits >= 1:
+        junk_score += 0.3
+
+    # 1e. Booking/service page (especially harmful for lifestyle topics)
+    booking_hits = len(_BOOKING_PATTERN.findall(stripped))
+    if booking_hits >= 3:
+        return _PAGE_JUNK
+    elif booking_hits >= 1:
+        junk_score += 0.5 if content_type == "lifestyle" else 0.2
+
+    # 1f. Resource aggregator: page is mostly a list of URLs
+    url_count = len(re.findall(r'https?://', stripped))
+    if url_count >= 8 and url_count / total_lines > 0.25:
+        junk_score += 1.5
+
+    # 1g. Personal course review / blog opinion
+    review_hits = len(_REVIEW_PATTERN.findall(stripped))
+    if review_hits >= 3:
+        junk_score += 1.5
+    elif review_hits >= 1:
+        junk_score += 0.5
+
+    # 1h. Landing/hub URL patterns — these pages link to real content elsewhere
+    # Demote edu_score to prevent storing hub pages as educational content
+    if _NAV_URL_PATTERNS.search(url):
+        junk_score += 1.5  
+
+   # 1i. Course marketing - STRENGTHENED for enrollment pages
+    marketing_hits = len(_COURSE_MARKETING_PATTERN.findall(stripped))
+    if marketing_hits >= 3:
+        return _PAGE_JUNK  
+    elif marketing_hits >= 2:
+        junk_score += 2.5  
+    elif marketing_hits >= 1:
+        junk_score += 1.0  #
+    # 1j. Combined signals amplify junk score
+    if review_hits >= 1 and promo_hits >= 1:
+        junk_score += 1.5
+        
+    
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # SIGNAL 2: Prose quality — universal positive signal (REDUCED WEIGHT)
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    # Long lines ratio: prose paragraphs are longer than nav link texts
+    # REDUCED WEIGHT: news articles also have long lines
     long_lines = sum(1 for l in lines if len(l) > 80)
-    if long_lines / len(lines) < MIN_LONG_LINE_RATIO:
-        return False
+    prose_ratio = long_lines / total_lines
+    if prose_ratio >= 0.25:
+        edu_score += 0.8  # Reduced from 1.0
+    elif prose_ratio >= 0.15:
+        edu_score += 0.4  # Reduced from 0.5
 
-    # Signal 3: sentence-ending punctuation ratio
-    punct_lines = sum(1 for l in lines if l[-1] in '.!?')
-    if punct_lines / len(lines) < MIN_SENTENCE_PUNCT_RATIO:
-        return False
+    # Sentence-ending punctuation ratio: prose ends sentences
+    punct_lines = sum(1 for l in lines if l and l[-1] in '.!?')
+    sent_ratio = punct_lines / total_lines
+    if sent_ratio >= 0.15:
+        edu_score += 0.5
+    elif sent_ratio < 0.04:
+        junk_score += 0.3
 
-    # Signal 4: word diversity (unique/total ratio)
-    words = [w.lower() for w in stripped.split() if len(w) > 2]
-    if len(words) > 20:
-        diversity = len(set(words)) / len(words)
-        if diversity < MIN_WORD_DIVERSITY_RATIO:
-            return False
+    # Word diversity: educational content uses varied vocabulary
+    # REDUCED WEIGHT: news also has high diversity
+    if total_words > 30:
+        diversity = len(set(words)) / total_words
+        if diversity >= 0.52:
+            edu_score += 0.3  # Reduced from 0.5
+        elif diversity < 0.32:
+            junk_score += 0.5
 
-    return True
+    # Page length bonus: very long pages are more likely substantive
+    if len(stripped) > 15000:
+        edu_score += 0.5
+    if len(stripped) > 30000:
+        edu_score += 0.5
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # SIGNAL 3: Content-type specific signals
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+    if content_type in ("scholarly", "technical"):
+        # Definitions and explanations — strong educational signal
+        def_hits = len(_DEFINITION_PATTERN.findall(stripped))
+        if def_hits >= 3:
+            edu_score += 1.0
+        elif def_hits >= 1:
+            edu_score += 0.5
+
+        # Personal opinion without instructions — junk for scholarly
+        if review_hits >= 1 and def_hits == 0:
+            junk_score += 0.5
+
+        # Code blocks in technical content
+        if content_type == "technical":
+            code_blocks = stripped.count("```") + stripped.count("    ") // 3
+            if code_blocks >= 2:
+                edu_score += 0.5
+
+    elif content_type in ("practical", "lifestyle"):
+        # Step-by-step instructions — strongest educational signal
+        step_hits = len(_STEP_PATTERN.findall(stripped))
+        if step_hits >= 4:
+            edu_score += 1.5
+        elif step_hits >= 2:
+            edu_score += 0.8
+        elif step_hits >= 1:
+            edu_score += 0.3
+
+        # For practical/lifestyle: personal experience WITH instructions is OK
+        # Only penalize opinion without any instructional content
+        if review_hits >= 2 and step_hits == 0:
+            junk_score += 0.5
+
+        # Technique / health keyword density for lifestyle
+        if content_type == "lifestyle":
+            wellness_pattern = re.compile(
+                r'\b(tư thế|pose|kỹ thuật|technique|hít thở|breathing'
+                r'|lợi ích|benefit|sức khỏe|health|thực hành|practice'
+                r'|bài tập|exercise|hướng dẫn|instruction)\b',
+                re.IGNORECASE,
+            )
+            wellness_hits = len(wellness_pattern.findall(stripped))
+            if wellness_hits >= 5:
+                edu_score += 0.8
+            elif wellness_hits >= 2:
+                edu_score += 0.3
+                
+    logger.info(f"classify_page scores | edu={edu_score:.2f} junk={junk_score:.2f} | {url[:50]}")
+    
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # DECISION LOGIC
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Strong junk: skip page AND sublinks
+# LOWERED THRESHOLD: from 2.5 to 2.0, margin from 0.5 to 0.3
+    if junk_score >= 2.0 and junk_score > edu_score + 0.3:
+        return _PAGE_JUNK
+
+# Moderate junk with no educational signal: skip page, try sublinks
+    if junk_score >= 1.5 and edu_score < 0.5:
+        return _PAGE_NAVIGATION
+
+    # Educational: sufficient positive signals
+    if edu_score >= 1.0 and edu_score >= junk_score:
+        return _PAGE_EDUCATIONAL
+
+    # Borderline: enough content to maybe be worth crawling sublinks
+    return _PAGE_NAVIGATION
 
 # Compiled once at module level for performance
 _TOC_LINE_PATTERN = re.compile(
@@ -617,22 +1045,23 @@ def clean_toc_lines(text: str) -> str:
 
 def process_deep_crawl(link_info: Dict[str, str]) -> List[Document]:
     """
-        Process a single root URL with adaptive depth crawling.
+    Process a single root URL with adaptive depth crawling.
 
-        PDF: extract text with PyMuPDF (or pypdf fallback).
-        HTML: extract root page + sublinks with content-driven depth logic:
-            - Root page passes _is_content_page()  → stored, sublinks crawled
-            - Root page fails _is_content_page()   → skipped, sublinks crawled
-            - Depth-1 passes _is_content_page()    → stored, no further crawl
-            - Depth-1 fails _is_content_page()     → skipped, depth-2 triggered
-        Depth-2 is content-driven — no domain hardcoding required.
+    PDF: extract text with PyMuPDF (or pypdf fallback).
+    HTML: three-way page classification drives crawl strategy:
+        EDUCATIONAL → store content + crawl sublinks
+        NAVIGATION  → skip content, crawl sublinks (hub pages)
+        JUNK        → skip content AND sublinks entirely
 
-        Args:
-            link_info: Dict with keys 'url' (str) and 'type' ('pdf' | 'html')
+    Depth-2 triggered only when root classified as NAVIGATION —
+    avoids unnecessary deep crawl when root has real content.
 
-        Returns:
-            List of LangChain Document objects. Empty list on failure or stop signal.
-        """
+    Args:
+        link_info: Dict with keys 'url', 'type', and 'content_type'.
+
+    Returns:
+        List of LangChain Document objects.
+    """
     url          = link_info["url"]
     doc_type     = link_info["type"]
     content_type = link_info.get("content_type", "technical")
@@ -640,6 +1069,9 @@ def process_deep_crawl(link_info: Dict[str, str]) -> List[Document]:
 
     try:
         # ── PDF ──────────────────────────────────────────────────────────────
+        # PDFs from trusted academic sources are stored without classification —
+        # quality filtering happens downstream in is_quality_chunk() and
+        # relevance scoring. PDF structure is already clean (no nav, no ads).
         if doc_type == "pdf":
             text = extract_pdf_text(url)
             if len(text) > 300:
@@ -649,72 +1081,107 @@ def process_deep_crawl(link_info: Dict[str, str]) -> List[Document]:
                 ))
             return results
 
-        # ── HTML (depth-1) ───────────────────────────────────────────────────
+        # ── HTML ─────────────────────────────────────────────────────────────
         main_text, soup = fetch_text_from_url(url)
 
-        if len(main_text) > 300:
-            if _is_content_page(main_text):
-                logger.info(f"[ROOT] {url[:60]} ({len(main_text)} chars)")
-                results.append(Document(
-                    page_content=main_text,
-                    metadata={"source": url, "type": "html", "depth": 0},
-                ))
-                root_is_nav = False   # ← thêm
-            else:
-                logger.info(
-                    f"[ROOT/NAV] {url[:60]} ({len(main_text)} chars) "
-                    f"— low content density, root skipped, sublinks will be crawled"
-                )
-                root_is_nav = True   # ← thêm
+        if len(main_text) <= 300:
+            return results
 
+        page_class = classify_page(main_text, url, content_type)
+
+        if page_class == _PAGE_EDUCATIONAL:
+            # Store root content — it has substantive educational value.
+            logger.info(
+                f"[ROOT/EDU] {url[:60]} ({len(main_text)} chars) "
+                f"[{content_type}]"
+            )
+            results.append(Document(
+                page_content=main_text,
+                metadata={"source": url, "type": "html", "depth": 0},
+            ))
+            root_is_nav = False
+
+        elif page_class == _PAGE_JUNK:
+            # Hard skip — junk root pages link to more junk.
+            # Do NOT crawl sublinks to avoid polluting corpus.
+            logger.info(
+                f"[ROOT/JUNK] {url[:60]} ({len(main_text)} chars) "
+                f"— promotional/login-gated, skipping page and sublinks"
+            )
+            return results
+
+        else:  # _PAGE_NAVIGATION
+            # Navigation hub — skip root content but crawl sublinks.
+            # Sublinks may point to high-value content pages.
+            logger.info(
+                f"[ROOT/NAV] {url[:60]} ({len(main_text)} chars) "
+                f"— navigation hub, crawling sublinks only"
+            )
+            root_is_nav = True
+
+        if stop_signal.is_stopped():
+            return results
+
+        # ── Sublink crawl ─────────────────────────────────────────────────────
+        if not soup:
+            return results
+
+        sub_links = get_internal_links(soup, url, limit=CRAWL_MAX_SUB_LINKS)
+        if not sub_links:
+            return results
+
+        logger.info(f"  ↳ Crawling {len(sub_links)} sub-links from {url[:50]}")
+
+        for sub in sub_links:
             if stop_signal.is_stopped():
                 return results
 
-            if soup:
-                sub_links = get_internal_links(soup, url, limit=CRAWL_MAX_SUB_LINKS)
-                if sub_links:
-                    logger.info(f"  ↳ Crawling {len(sub_links)} sub-links from {url[:50]}")
-                    for sub in sub_links:
+            sub_text, sub_soup = fetch_text_from_url(sub)
+            sub_class = classify_page(sub_text, sub, content_type)
+
+            if sub_class == _PAGE_EDUCATIONAL:
+                results.append(Document(
+                    page_content=sub_text,
+                    metadata={
+                        "source": sub,
+                        "type":   "html",
+                        "depth":  1,
+                        "parent": url,
+                    },
+                ))
+
+            elif sub_class == _PAGE_JUNK:
+                # Junk sublink — skip and do not recurse deeper
+                logger.debug(f"  [SUB/JUNK] {sub[:60]} — skipping")
+
+            else:
+                # Navigation sublink: only go deeper if root was also nav.
+                # Avoids unnecessary depth-2 when root had real content.
+                if root_is_nav and sub_soup is not None and not stop_signal.is_stopped():
+                    depth2_links = get_internal_links(
+                        sub_soup, sub, limit=CRAWL_MAX_DEPTH2_LINKS
+                    )
+                    if depth2_links:
+                        logger.info(
+                            f"    ↳↳ Depth-2: {len(depth2_links)} sub-sub-links "
+                            f"from nav depth-1 {sub[:50]}"
+                        )
+                    for d2_url in depth2_links:
                         if stop_signal.is_stopped():
                             return results
-
-                        sub_text, sub_soup = fetch_text_from_url(sub)
-
-                        if _is_content_page(sub_text):
+                        d2_text, _ = fetch_text_from_url(d2_url)
+                        # Depth-2 uses minimum length check only —
+                        # full classification too slow for this depth.
+                        if len(d2_text) > 500:
                             results.append(Document(
-                                page_content=sub_text,
+                                page_content=d2_text,
                                 metadata={
-                                    "source": sub,
+                                    "source": d2_url,
                                     "type":   "html",
-                                    "depth":  1,
-                                    "parent": url,
+                                    "depth":  2,
+                                    "parent": sub,
                                 },
                             ))
-                        elif root_is_nav and sub_soup is not None and not stop_signal.is_stopped():
-                            # Depth-2 only when root was also nav — avoids
-                            # unnecessary deep crawl when root had real content.
-                            depth2_links = get_internal_links(
-                                sub_soup, sub, limit=CRAWL_MAX_DEPTH2_LINKS
-                            )
-                            if depth2_links:
-                                logger.info(
-                                    f"    ↳↳ Depth-2: {len(depth2_links)} sub-sub-links "
-                                    f"from nav depth-1 {sub[:50]}"
-                                )
-                            for d2_url in depth2_links:
-                                if stop_signal.is_stopped():
-                                    return results
-                                d2_text, _ = fetch_text_from_url(d2_url)
-                                if len(d2_text) > 500:
-                                    results.append(Document(
-                                        page_content=d2_text,
-                                        metadata={
-                                            "source": d2_url,
-                                            "type":   "html",
-                                            "depth":  2,
-                                            "parent": sub,
-                                        },
-                                    ))
 
     except Exception as e:
         logger.warning(f"Error processing {url[:60]}: {e}")
@@ -730,6 +1197,7 @@ def ingest_dynamic_data(
     topic: str,
     clean_links: List[Dict[str, str]],
     content_type: str = "technical",
+    progress_callback=None,
 ) -> bool:
     """
     Ingest data from filtered URLs into ChromaDB.
@@ -764,6 +1232,8 @@ def ingest_dynamic_data(
     # can check whitelist without a separate parameter channel.
     for link in clean_links:
         link["content_type"] = content_type
+    crawled_count = 0
+    total_links   = len(clean_links)
     with concurrent.futures.ThreadPoolExecutor(max_workers=CRAWL_MAX_WORKERS) as executor:
         futures = [
             executor.submit(process_deep_crawl, link)
@@ -779,20 +1249,33 @@ def ingest_dynamic_data(
                 for doc in docs:
                     doc.metadata["topic"] = topic
                     all_docs.append(doc)
+            crawled_count += 1
+            if progress_callback and (crawled_count % 3 == 0 or crawled_count == total_links):
+                print(f"[DEBUG CRAWLER] emitting progress: {crawled_count} URLs done", flush=True)
+                progress_callback(
+                    f"Đang crawl: {crawled_count}/{total_links} trang nguồn "
+                    f"({len(all_docs)} trang có nội dung)..."
+                )
 
     if not all_docs:
         logger.error("No content crawled — check URL filter and network connectivity")
         return False
-
+    
     logger.info(f"Crawled: {len(all_docs)} documents (roots + sub-pages)")
+    if progress_callback:
+        progress_callback(f"Đã thu thập {len(all_docs)} trang — đang chia nhỏ nội dung...")
 
     # ── Step 2: Chunking ─────────────────────────────────────────────────────
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=200,
+        chunk_size=CHUNK_SIZE,
+        chunk_overlap=CHUNK_OVERLAP,
     )
     chunks = text_splitter.split_documents(all_docs)
     logger.info(f"Chunked: {len(chunks)} total chunks")
+
+    logger.info(f"Chunked: {len(chunks)} total chunks")
+    if progress_callback:
+        progress_callback(f"Đã chia {len(chunks)} đoạn — đang lọc chất lượng...")
 
     # ── Step 3: Quality heuristic filter ────────────────────────────────────
     quality_chunks = [c for c in chunks if is_quality_chunk(c.page_content)]
@@ -806,11 +1289,18 @@ def ingest_dynamic_data(
         logger.error("All chunks removed by quality filter — data may be entirely noise")
         return False
 
+    logger.info(f"Quality filter: {len(chunks)} → {len(quality_chunks)} chunks ...")
+    if progress_callback:
+        progress_callback(
+            f"Lọc chất lượng: còn {len(quality_chunks)} đoạn — "
+            f"đang tính độ liên quan..."
+        )
     # ── Step 4: Relevance filter ─────────────────────────────────────────────
     t4 = time.time()
+    min_relevance = MIN_RELEVANCE_BY_TYPE.get(content_type, MIN_RELEVANCE_SCORE)
     logger.info(
-        f"Relevance scoring {len(quality_chunks)} chunks "
-        f"(threshold={MIN_RELEVANCE_SCORE})..."
+    f"Relevance scoring {len(quality_chunks)} chunks "
+    f"(threshold={min_relevance}, content_type={content_type})..."
     )
     embedding_model = get_embedding_model()
 
@@ -819,7 +1309,7 @@ def ingest_dynamic_data(
     # → Stanford PDF, CMU lecture bị loại hoàn toàn dù chất lượng cao
     try:
         _qe = QueryExpansionAgent()
-        en_queries = _qe.expand_query_bilingual(topic).get("en", [])
+        en_queries = _qe.expand_query_bilingual(topic, content_type=content_type).get("en", [])
         en_topic   = en_queries[0] if en_queries else topic
 
         topic_emb_vi  = np.array(embedding_model.embed_query(topic))
@@ -839,8 +1329,8 @@ def ingest_dynamic_data(
     scores = compute_relevance_scores(quality_chunks, topic_emb, embedding_model)
 
     relevant_chunks = [
-        chunk for chunk, score in zip(quality_chunks, scores)
-        if score >= MIN_RELEVANCE_SCORE
+    chunk for chunk, score in zip(quality_chunks, scores)
+    if score >= min_relevance
     ]
     removed_irrelevant = len(quality_chunks) - len(relevant_chunks)
     logger.info(
@@ -854,13 +1344,20 @@ def ingest_dynamic_data(
     relevant_chunks = _apply_domain_diversity_cap(relevant_chunks, MAX_CHUNKS_PER_DOMAIN)
     if not relevant_chunks:
         logger.warning(
-            f"All chunks scored below {MIN_RELEVANCE_SCORE} — "
+            f"All chunks scored below {min_relevance} — "
             f"consider lowering MIN_RELEVANCE_SCORE or broadening search queries"
         )
         # Fallback: use quality_chunks without relevance filter
         # to avoid complete ingestion failure
         logger.warning("Falling back to quality-only chunks (relevance filter bypassed)")
         relevant_chunks = quality_chunks
+
+    logger.info(f"Relevance filter: {len(quality_chunks)} → {len(relevant_chunks)} chunks ...")
+    if progress_callback:
+        progress_callback(
+            f"Lọc liên quan: còn {len(relevant_chunks)} đoạn — "
+            f"đang lưu vào ChromaDB..."
+        )
 
     # ── Step 5: Save to ChromaDB ─────────────────────────────────────────────
     t5 = time.time()
@@ -884,4 +1381,9 @@ def ingest_dynamic_data(
         f"(from {len(chunks)} raw chunks, "
         f"{removed_noise} noise + {removed_irrelevant} off-topic removed)"
     )
+    logger.info(f"✓ ChromaDB save complete [{time.time() - t5:.1f}s]")
+    if progress_callback:
+        progress_callback(
+            f"✓ Hoàn tất: {len(relevant_chunks)} đoạn đã lưu vào ChromaDB"
+        )
     return True

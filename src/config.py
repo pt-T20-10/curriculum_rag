@@ -43,12 +43,13 @@ DATA_DIR = BASE_DIR / "data"
 CHROMA_DB_DIR = DATA_DIR / "chroma_db"    
 
 # -- AI MODELS --
-EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-# LLM_MODEL_CHEAP =   "gpt-4o-mini" #"gpt-4o"
-# LLM_MODEL_PREMIUM = "gpt-4o-mini" #"gpt-5.4-mini"
+EMBEDDING_MODEL_NAME = "BAAI/bge-m3"
 
-LLM_MODEL_CHEAP   = "claude-sonnet-4-20250514"
-LLM_MODEL_PREMIUM = "claude-sonnet-4-20250514"
+LLM_MODEL_CHEAP =   "gpt-4o-mini" #"gpt-4o"
+LLM_MODEL_PREMIUM = "gpt-4o" #"gpt-5.4-mini"
+
+# LLM_MODEL_CHEAP   = "claude-sonnet-4-20250514"
+# LLM_MODEL_PREMIUM = "claude-sonnet-4-20250514"
 
 # -- IMAGE GENERATION MODELS --
 IMAGE_MODEL_DEFAULT  = "gpt-image-1-mini"   # light / medium sections
@@ -56,8 +57,8 @@ IMAGE_MODEL_PREMIUM  = "gpt-image-1.5"      # deep / applied sections
 
 
 # -- CHUNKINGS --
-CHUNK_SIZE = 1000
-CHUNK_OVERLAP = 200
+CHUNK_SIZE = 2000
+CHUNK_OVERLAP = 400
 
 # ============================================================================
 # INGESTION SPEED CONTROLS
@@ -80,7 +81,7 @@ CHUNK_OVERLAP = 200
 # ============================================================================
  
 # Số kết quả DuckDuckGo mỗi query (3 VI + 3 EN queries = tổng raw URLs)
-SEARCH_RESULTS_PER_QUERY: int = 20
+SEARCH_RESULTS_PER_QUERY: int = 30
  
 # Số worker crawl song song (ingester.py ThreadPoolExecutor)
 SEARCH_MAX_WORKERS: int = 6
@@ -96,9 +97,13 @@ URL_FILTER_MAX_WORKERS: int = 5
 
 INDICATE_LINKS_FOR_PICS = 12
 
-MAX_CHUNKS_PER_DOMAIN: int = 20
+MAX_CHUNKS_PER_DOMAIN: int = 25
 
 CRAWL_MAX_DEPTH2_LINKS: int = 3
+
+
+_MIN_SUBSTANTIVE_SENTENCES: int = 2   # minimum prose sentences to keep chunk
+_MIN_AVG_SENTENCE_LEN: int      = 30 
 
 RAG_TOP_K: int = 8
 RAG_INITIAL_K: int = 3      # initial chunks từ Researcher
@@ -121,7 +126,15 @@ MAX_DIGIT_RATIO = 0.40
 # Minimum cosine similarity between chunk embedding and topic embedding.
 # Chunks below this threshold are considered off-topic and discarded.
 # Range 0.0–1.0. Typical values: 0.20 (lenient) to 0.35 (strict).
-MIN_RELEVANCE_SCORE = 0.22
+
+MIN_RELEVANCE_SCORE = 0.22 
+MIN_RELEVANCE_BY_TYPE: dict[str, float] = {
+    "scholarly": 0.30,
+    "technical": 0.25,
+    "practical": 0.22,
+    "lifestyle": 0.22,
+}
+
 
 # Maximum ratio of duplicate lines (bibliography sections repeat citations)
 MAX_DUPLICATE_LINE_RATIO = 0.4
@@ -139,4 +152,8 @@ def get_embedding_model():
     Singleton embedding model — loaded once, reused everywhere.
     """
     from langchain_huggingface import HuggingFaceEmbeddings
-    return HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
+    return HuggingFaceEmbeddings(
+        model_name="BAAI/bge-m3",
+        model_kwargs={"device": "cpu"},      # or "cuda" if GPU available
+        encode_kwargs={"normalize_embeddings": True},  # BGE requires normalization
+    )

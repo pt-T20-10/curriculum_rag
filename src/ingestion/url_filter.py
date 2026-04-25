@@ -78,6 +78,29 @@ BLACKLIST_DOMAINS = [
     "marketingai.vn",        # marketing blog
     "dichvuseohot.com",      # SEO blog
     "cuuduongthancong.com",  # student sharing site (noisy)
+    "blog.baitaptracnghiem.com", 
+    "baitaptracnghiem.com",        
+    "tracnghiem.net",             
+    "tracnghiem.vn",
+    "dethi.com",
+    "vndoc.com",                   
+    "taimienphi.vn",             
+    "123doc.net",                
+    "tailieu.vn",               
+    "metaisach.com",              
+    "zbook.vn",                 
+    "zun.vn",        
+     # High school lesson plan / solution / exam sites (VI)
+    "kenhgiaovien.com",    # THCS/THPT lesson plans
+    "giaoanmau.com",       # lesson plan templates
+    "loigiaihay.com",      # high school exercise solutions
+    "hoc24.vn",            # student Q&A forum
+    "vietjack.com",        # high school study guides
+    "dethi.org",           # exam question bank
+    "sgkvn.com",           # THCS textbook content
+    "loigiai.io",          # solution aggregator
+    "giaitoan.com",        # math solution site
+    "toanmath.com",        # math exercise site
 ]
 
 # ---------------------------------------------------------------------------
@@ -87,7 +110,7 @@ BLACKLIST_DOMAINS = [
 # ---------------------------------------------------------------------------
 WHITELIST_DOMAINS: dict[str, tuple[str, ...]] = {
     "scholarly": (
-    "wikipedia.org"
+    "wikipedia.org",
     "openstax.org",
     "ocw.mit.edu",
     "arxiv.org",
