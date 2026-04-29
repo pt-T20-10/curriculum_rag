@@ -1,42 +1,166 @@
-# --- Core Framework & Orchestration ---
-langchain
-langchain-community
-langchain-core
-langchain-openai
-langgraph       # Orchestrating multi-step agent workflows
-huggingface_hub[hf_xet]
+# ==================== AI Textbook Generator - Requirements ====================
+# Production-ready dependencies with all conflicts resolved
+# Last updated: 2026-04-26
+# Python version: 3.11+
+#
+# Installation:
+#   pip install -r requirements.txt
+#
+# For clean install:
+#   pip install -r requirements.txt --upgrade --force-reinstall
 
+# ==================== Core LangChain Stack ====================
+langchain>=0.3.0
+langchain-core>=1.3.0,<2.0.0
+langchain-community>=0.3.0
+langchain-text-splitters>=1.0.0,<2.0.0
+langsmith>=0.7.0,<1.0.0
+langgraph>=0.4.0
 
-# --- Web Interface ---
-streamlit
-watchdog              # Speeding up Streamlit hot-reload during development
+# LangChain Extensions
+langchain-openai>=0.2.0
+langchain-groq>=1.1.2
+langchain-anthropic>=1.4.0
+langchain-chroma>=1.1.0
+langchain-google-genai>=4.2.1
+langchain-huggingface>=1.2.0
+langgraph-prebuilt>=0.1.8
 
-# --- Vector Database ---
-chromadb            # Storing and querying vector embeddings
+# ==================== Vector Database ====================
+chromadb>=1.3.5,<2.0.0
+chroma-hnswlib>=0.7.3
 
-# --- AI Models & Embeddings (Local) ---
-sentence-transformers # Running local embeddings model (all-MiniLM-L6-v2)
-scikit-learn          # Supporting NMF/TF-IDF  (Planner)
+# ==================== AI Models & Embeddings ====================
+# HuggingFace - IMPORTANT: Keep <1.0 for transformers compatibility
+huggingface-hub>=0.34.0,<1.0
+transformers>=4.57.0
+sentence-transformers>=2.2.0
 
-# --- Data Processing & Utilities ---
-python-dotenv         # Loading environment variables from .env
-beautifulsoup4        # Scraping and parsing web data (Ingestion)
-lxml                  # Accelerating HTML/XML parsing for BeautifulSoup
-pandas                # Handling tabular data for preprocessing 
-numpy                 # Supporting numerical operations
-tiktoken              # Counting tokens for LLM requests
-tqdm                  # Displaying progress bar for long-running tasks
-pymupdf
-# --- Network & Media ---
-requests              # Sending HTTP request to external services (API calling, download pictures)
-google-genai          # Google GenAI SDK (Imagen 3 image generation)
-Pillow                # Converting and processing image format
-fake-useragent        # Rotating user agents to avoid scraping blocks(Tránh bị chặn)
+# OpenAI
+openai>=1.0.0
+tiktoken>=0.5.0
 
-# --- PDF Generation ---
-pypandoc              # Converting markdown to PDF via Pandoc
-pypdf                 # Reading and manipulating PDF
+# Google GenAI
+google-genai>=1.56.0,<2.0.0
 
+# Scikit-learn
+scikit-learn>=1.3.0
 
-Pillow>=10.0.0
+# ==================== FastAPI Backend ====================
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.6
+starlette>=0.35.1
+
+# ==================== Database ====================
+sqlalchemy>=2.0.25
+pymysql>=1.1.0
+aiomysql>=0.2.0
+alembic>=1.13.1
+
+# ==================== Authentication & Security ====================
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+cryptography>=47.0.0
+ecdsa>=0.19.0
+authlib>=1.3.0
+
+# ==================== Pydantic ====================
+pydantic>=2.7.4,<3.0.0
+pydantic-core>=2.18.0
+pydantic-settings>=2.1.0
+
+# ==================== Task Queue (Celery + Redis) ====================
+celery>=5.3.6
+redis>=5.0.1
+kombu>=5.6.2
+billiard>=4.2.4
+vine>=5.1.0
+
+# ==================== Web Interface (Streamlit - Optional) ====================
+streamlit>=1.30.0
+watchdog>=3.0.0
+
+# ==================== Data Processing ====================
+pandas>=2.0.0
+numpy>=1.26.0,<2.0.0
+python-dotenv>=1.0.0
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+tqdm>=4.66.0
+
+# ==================== Network & HTTP ====================
+requests>=2.31.0
+httpx[brotli,http2,socks]>=0.28.1
+fake-useragent>=1.4.0
+
+# ==================== Document Processing ====================
+pymupdf>=1.23.0
+pypandoc>=1.11
+pypdf>=3.0.0
 python-docx>=1.1.0
+Pillow>=10.0.0
+
+# ==================== Protobuf - CRITICAL VERSION ====================
+# IMPORTANT: Must be <6.0 for google-ai-generativelanguage compatibility
+protobuf>=5.26.1,<6.0.0dev
+
+# ==================== OpenTelemetry - PINNED VERSIONS ====================
+# IMPORTANT: All must be exactly 0.60b1 for compatibility
+opentelemetry-semantic-conventions==0.60b1
+opentelemetry-instrumentation==0.60b1
+opentelemetry-instrumentation-asgi==0.60b1
+opentelemetry-instrumentation-fastapi==0.60b1
+
+# ==================== Testing ====================
+pytest>=7.4.4
+pytest-asyncio>=0.23.3
+
+# ==================== Additional Utilities ====================
+tenacity>=8.5.0
+packaging>=24.0
+click>=8.1.0
+websockets>=14.0
+
+# ==================== IMPORTANT NOTES ====================
+#
+# Critical Version Constraints:
+#
+# 1. protobuf MUST be <6.0
+#    - google-ai-generativelanguage requires <6.0.0dev
+#    - If you get protobuf 6.x, reinstall: pip install "protobuf>=5.26.1,<6.0.0dev" --force-reinstall
+#
+# 2. opentelemetry packages MUST be exactly 0.60b1
+#    - Newer versions (0.62b1+) cause conflicts
+#    - If auto-upgraded, reinstall: pip install opentelemetry-semantic-conventions==0.60b1 --force-reinstall
+#
+# 3. huggingface-hub MUST be <1.0
+#    - transformers requires <1.0
+#    - If you get 1.x, reinstall: pip install "huggingface-hub>=0.34.0,<1.0" --force-reinstall
+#
+# 4. langchain packages upgraded to 0.3.x
+#    - Old 0.2.x versions incompatible with langchain-core 1.3.x
+#
+# Installation Troubleshooting:
+#
+# If you see dependency conflicts after installation:
+#   pip check
+#
+# If conflicts appear, force reinstall critical packages:
+#   pip install "protobuf>=5.26.1,<6.0.0dev" opentelemetry-semantic-conventions==0.60b1 "huggingface-hub<1.0" --force-reinstall
+#   pip check
+#
+# For clean install (recommended):
+#   pip install -r requirements.txt --upgrade --force-reinstall
+#   pip check
+#
+# Key Changes from Original Dependencies:
+#   ✅ langchain: 0.2.17 → 0.3.x (upgraded)
+#   ✅ langchain-core: 0.2.43 → 1.3.x (upgraded)
+#   ✅ chromadb: 0.5.0 → 1.3.5+ (upgraded)
+#   ✅ google-genai: 1.2.0 → 1.56.0+ (upgraded)
+#   ✅ pydantic: 2.5.3 → 2.7.4+ (upgraded)
+#   ✅ httpx: 0.26.0 → 0.28.1+ (upgraded)
+#   ⬇️ protobuf: 6.33.6 → 5.x (downgraded - CRITICAL)
+#   ⬇️ opentelemetry: 0.62b1 → 0.60b1 (downgraded)
+#   ⬇️ huggingface-hub: 1.12.0 → 0.9x (downgraded)

@@ -55,3 +55,19 @@ list_models.py
 seed_chromadb.py
 docs/
 .claude/
+# Backend
+backend/data/chroma_db/*
+!backend/data/chroma_db/.gitkeep
+backend/data/uploads/*
+!backend/data/uploads/.gitkeep
+backend/data/textbooks/*
+!backend/data/textbooks/.gitkeep
+backend/.env
+
+# Keep existing patterns
+__pycache__/
+*.pyc
+.env
+venv/
+.vscode/
+.idea/

@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  # ==================== MySQL Database ====================
+  mysql:
+    image: mysql:8.0
+    container_name: ai_textbook_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password_change_me
+      MYSQL_DATABASE: ai_textbook_db
+      MYSQL_USER: admin
+      MYSQL_PASSWORD: kankyo113
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./backend/scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - textbook_network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  
+  # ==================== Redis (for Celery - Future) ====================
+  redis:
+    image: redis:7-alpine
+    container_name: ai_textbook_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    networks:
+      - textbook_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  
+  # ==================== phpMyAdmin (Optional - for DB management) ====================
+  phpmyadmin:
+    image: phpmyadmin:latest
+    container_name: ai_textbook_phpmyadmin
+    restart: unless-stopped
+    environment:
+      PMA_HOST: mysql
+      PMA_PORT: 3306
+      PMA_USER: admin
+      PMA_PASSWORD: kankyo113
+    ports:
+      - "8080:80"
+    depends_on:
+      - mysql
+    networks:
+      - textbook_network
+
+volumes:
+  mysql_data:
+    driver: local
+
+networks:
+  textbook_network:
+    driver: bridge
