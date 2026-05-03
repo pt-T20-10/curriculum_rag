@@ -1,0 +1,143 @@
+import { useState } from 'react'
+import { useNavigate, Link } from 'react-router-dom'
+import { useAuth } from '../context/AuthContext'
+import { Input } from '../components/common/Input'
+import { Button } from '../components/common/Button'
+
+export function LoginPage() {
+  const navigate = useNavigate()
+  const { login } = useAuth()
+
+  const [formData, setFormData] = useState({
+    email: '',
+    password: '',
+  })
+  const [rememberMe, setRememberMe] = useState(false)
+  const [errors, setErrors] = useState({})
+  const [loading, setLoading] = useState(false)
+  const [apiError, setApiError] = useState('')
+
+  const handleChange = (e) => {
+    const { name, value } = e.target
+    setFormData(prev => ({ ...prev, [name]: value }))
+    if (errors[name]) {
+      setErrors(prev => ({ ...prev, [name]: '' }))
+    }
+    setApiError('')
+  }
+
+  const validate = () => {
+    const newErrors = {}
+
+    if (!formData.email) {
+      newErrors.email = 'Email là bắt buộc'
+    } else if (!/\S+@\S+\.\S+/.test(formData.email)) {
+      newErrors.email = 'Email không hợp lệ'
+    }
+
+    if (!formData.password) {
+      newErrors.password = 'Mật khẩu là bắt buộc'
+    } else if (formData.password.length < 6) {
+      newErrors.password = 'Mật khẩu phải có ít nhất 6 ký tự'
+    }
+
+    setErrors(newErrors)
+    return Object.keys(newErrors).length === 0
+  }
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+
+    if (!validate()) return
+
+    setLoading(true)
+    setApiError('')
+
+    try {
+      await login(formData.email, formData.password, rememberMe)
+      navigate('/dashboard', { replace: true })
+    } catch (error) {
+      setApiError(
+        error.response?.data?.detail ||
+        'Đăng nhập thất bại. Vui lòng kiểm tra lại thông tin.'
+      )
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center p-4">
+      <div className="bg-white rounded-lg shadow-lg p-8 w-full max-w-md">
+        <h1 className="text-3xl font-bold text-center text-primary mb-2">
+          Chào mừng trở lại
+        </h1>
+        <p className="text-center text-gray-600 mb-6">
+          Đăng nhập vào tài khoản Hệ Thống Tạo Giáo Trình AI
+        </p>
+
+        <form onSubmit={handleSubmit}>
+          <Input
+            label="Email"
+            type="email"
+            name="email"
+            value={formData.email}
+            onChange={handleChange}
+            error={errors.email}
+            placeholder="email@cuaban.com"
+            autoFocus
+          />
+
+          <Input
+            label="Mật khẩu"
+            type="password"
+            name="password"
+            value={formData.password}
+            onChange={handleChange}
+            error={errors.password}
+            placeholder="Nhập mật khẩu của bạn"
+          />
+
+          {/* Remember Me checkbox */}
+          <div className="flex items-center gap-2 mb-4">
+            <input
+              id="rememberMe"
+              type="checkbox"
+              checked={rememberMe}
+              onChange={(e) => setRememberMe(e.target.checked)}
+              className="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary cursor-pointer"
+            />
+            <label
+              htmlFor="rememberMe"
+              className="text-sm text-gray-700 cursor-pointer select-none"
+            >
+              Ghi nhớ đăng nhập
+              <span className="text-xs text-gray-400 ml-1">(30 ngày)</span>
+            </label>
+          </div>
+
+          {apiError && (
+            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+              <p className="text-sm text-red-600">{apiError}</p>
+            </div>
+          )}
+
+          <Button
+            type="submit"
+            className="w-full"
+            loading={loading}
+          >
+            Đăng nhập
+          </Button>
+        </form>
+
+        <p className="mt-6 text-center text-sm text-gray-600">
+          Chưa có tài khoản?{' '}
+          <Link to="/register" className="text-primary hover:underline font-medium">
+            Đăng ký ngay
+          </Link>
+        </p>
+      </div>
+    </div>
+  )
+}

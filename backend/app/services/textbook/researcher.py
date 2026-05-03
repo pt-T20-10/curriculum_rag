@@ -47,7 +47,7 @@ from langchain_chroma import Chroma
 from app.schemas.curriculum import AgentState, Chapter, SubSection, get_chapter_and_subsection
 from app.utils.log_config import setup_logger
 
-logger = setup_logger(name="ResearcherAgent", logfile="backend/logs/agents.log")
+logger = setup_logger(name="ResearcherAgent", logfile="logs/agents.log")
 
 
 # ============================================================================
@@ -74,6 +74,94 @@ logger = setup_logger(name="ResearcherAgent", logfile="backend/logs/agents.log")
 _rag_log_counter: int = 0
 _rag_log_lock = threading.Lock()
 
+
+def _detect_chunk_language(text: str) -> str:
+    """
+    Detect whether a text chunk is Vietnamese or English.
+    
+    Uses Vietnamese diacritic pattern for fast, accurate detection.
+    This heuristic works well because Vietnamese uses extensive diacritics
+    that are absent in English text.
+    
+    Args:
+        text: Text content to classify (samples first 500 chars for speed)
+    
+    Returns:
+        'vi' if Vietnamese detected, 'en' otherwise
+    
+    Examples:
+        _detect_chunk_language("Machine learning algorithms...") → 'en'
+        _detect_chunk_language("Thuật toán học máy...") → 'vi'
+    """
+    import re
+    
+    # Vietnamese diacritics - presence indicates Vietnamese text
+    vi_pattern = re.compile(
+        r'[àáảãạăắằẳẵặâấầẩẫậđèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵ]',
+        re.IGNORECASE
+    )
+    
+    # Sample first 500 chars for speed (sufficient for language detection)
+    sample = text[:500]
+    
+    return 'vi' if vi_pattern.search(sample) else 'en'
+
+
+def _compute_retrieval_bilingual_stats(chunks: list[dict]) -> dict:
+    """
+    Compute bilingual distribution of retrieved chunks.
+    
+    Used for logging and demonstration purposes. Proves that the system
+    successfully retrieves content from both Vietnamese and English sources,
+    demonstrating cross-lingual retrieval capability of the bge-m3 model.
+    
+    Args:
+        chunks: List of chunk dictionaries with 'source' and 'content' keys
+    
+    Returns:
+        Dictionary containing:
+            - total: Total number of chunks retrieved
+            - vi_count: Number of Vietnamese chunks
+            - en_count: Number of English chunks
+            - vi_ratio: Ratio of Vietnamese chunks (0.0 to 1.0)
+            - en_ratio: Ratio of English chunks (0.0 to 1.0)
+            - languages: List of language codes in retrieval order
+    
+    Example output:
+        {
+            'total': 5,
+            'vi_count': 2,
+            'en_count': 3,
+            'vi_ratio': 0.4,
+            'en_ratio': 0.6,
+            'languages': ['en', 'vi', 'en', 'en', 'vi']
+        }
+    """
+    if not chunks:
+        return {
+            'total': 0,
+            'vi_count': 0,
+            'en_count': 0,
+            'vi_ratio': 0.0,
+            'en_ratio': 0.0,
+            'languages': []
+        }
+    
+    # Detect language for each chunk
+    languages = [_detect_chunk_language(c['content']) for c in chunks]
+    
+    vi_count = languages.count('vi')
+    en_count = languages.count('en')
+    total = len(chunks)
+    
+    return {
+        'total': total,
+        'vi_count': vi_count,
+        'en_count': en_count,
+        'vi_ratio': vi_count / total if total > 0 else 0.0,
+        'en_ratio': en_count / total if total > 0 else 0.0,
+        'languages': languages,
+    }
 
 class RAGContextLogger:
     """
@@ -400,17 +488,35 @@ class ResearcherAgent:
                     "content": doc.page_content,
                 })
 
+            # Compute bilingual distribution statistics
+            bilingual_stats = _compute_retrieval_bilingual_stats(chunks)
+
+            # Log retrieval to RAG audit file
             entry_num = _get_rag_logger().log(
                 query         = query,
                 chunks        = chunks,
                 context_label = context_label,
             )
+            
+            # Enhanced logging with bilingual information
             logger.info(
                 f"Retrieved {len(chunks)} chunks "
+                f"({bilingual_stats['vi_count']} VI, {bilingual_stats['en_count']} EN, "
+                f"VI ratio: {bilingual_stats['vi_ratio']:.1%}) "
                 f"({sum(len(c['content']) for c in chunks)} chars) "
                 f"— logged as RAG #{entry_num} in logs/rag_context.log"
             )
+            
+            # Debug-level logging: language sequence for detailed analysis
+            # Useful for verifying cross-lingual retrieval patterns
+            if bilingual_stats['languages']:
+                lang_sequence = ' → '.join([
+                    f"{i+1}:{lang.upper()}" 
+                    for i, lang in enumerate(bilingual_stats['languages'])
+                ])
+                logger.debug(f"  Language sequence: {lang_sequence}")
 
+            # Format chunks for Writer's prompt (unchanged)
             formatted_content = ""
             for i, chunk in enumerate(chunks, 1):
                 inline_content = chunk["content"].replace("\n", " ")
@@ -883,12 +989,11 @@ def perform_research(state: AgentState) -> dict:
 
     Reads curriculum position from state indexes, extracts the subsection's
     search_query, and performs a similarity search against ChromaDB.
-    Passes a context_label to retrieve_context() so every RAG log entry
-    is tagged with the chapter.subsection position for easy cross-reference.
+    Expands queries based on user_requirements to find requirement-specific content.
 
     Workflow integration:
         Input:  state["curriculum"], state["current_chapter_index"],
-                state["current_subsection_index"]
+                state["current_subsection_index"], state["user_requirements"]
         Output (success):
                 state["rag_context"]  — formatted chunk string for Writer
                 state["messages"]     — milestone log entry
@@ -911,6 +1016,7 @@ def perform_research(state: AgentState) -> dict:
     curriculum = state["curriculum"]
     chap_idx   = state["current_chapter_index"]
     sub_idx    = state["current_subsection_index"]
+    user_requirements = state.get("user_requirements", "")
 
     try:
         # Unified accessor — handles both Pydantic CurriculumOutline and dict
@@ -924,16 +1030,45 @@ def perform_research(state: AgentState) -> dict:
             subsection.title if isinstance(subsection, SubSection)
             else subsection.get("title", "Unknown")
         )
-        query = (
+        base_query = (
             subsection.search_query if isinstance(subsection, SubSection)
             else subsection.get("search_query", f"{chap_title} - {sec_title}")
         )
 
         logger.info(f"Target: Chapter {chap_idx + 1}.{sub_idx + 1} - {sec_title}")
-        logger.info(f"Query:  {query}")
+        logger.info(f"Base query: {base_query}")
 
-        # Human-readable label written into the RAG log entry header.
-        # Format: "Chapter 1.2 Ten muc" for cross-reference with other logs.
+        
+        enhanced_query = base_query
+        if user_requirements:
+            logger.info(f"User requirements: {user_requirements}")
+            
+            req_lower = user_requirements.lower()
+            query_extensions = []
+            
+            # Parse specific requirement types
+            if "bài tập" in user_requirements or "exercise" in req_lower:
+                query_extensions.extend(["exercises", "practice problems", "worked examples"])
+                logger.info("  → Adding exercise-focused keywords")
+            
+            if "ví dụ" in user_requirements or "example" in req_lower or "code" in req_lower:
+                query_extensions.extend(["code examples", "sample code", "implementation examples"])
+                logger.info("  → Adding example-focused keywords")
+            
+            if "ứng dụng" in user_requirements or "thực tế" in user_requirements or "real" in req_lower or "application" in req_lower:
+                query_extensions.extend(["real world applications", "use cases", "practical examples"])
+                logger.info("  → Adding application-focused keywords")
+            
+            if "project" in req_lower or "dự án" in user_requirements:
+                query_extensions.extend(["project examples", "hands-on project"])
+                logger.info("  → Adding project-focused keywords")
+            
+            # Build enhanced query
+            if query_extensions:
+                enhanced_query = f"{base_query} {' '.join(query_extensions[:3])}"
+                logger.info(f"Enhanced query: {enhanced_query}")
+
+        # Human-readable label written into the RAG log entry header
         context_label = f"Chapter {chap_idx + 1}.{sub_idx + 1} {sec_title}"
 
         # Extract content_type from curriculum if available
@@ -947,7 +1082,7 @@ def perform_research(state: AgentState) -> dict:
             pass
 
         context = _get_researcher().retrieve_context(
-            query         = query,
+            query         = enhanced_query,  # ⭐ Use enhanced query
             k             = RAG_INITIAL_K,
             context_label = f"[INITIAL] {context_label}",
             content_type  = curr_content_type,
@@ -963,7 +1098,7 @@ def perform_research(state: AgentState) -> dict:
             "rag_context": context,
             "messages": [
                 f"✓ Retrieved context for: '{sec_title}' "
-                f"(query: '{query[:40]}...') — see logs/rag_context.log"
+                f"(enhanced query: '{enhanced_query[:50]}...') — see logs/rag_context.log"
             ],
         }
 

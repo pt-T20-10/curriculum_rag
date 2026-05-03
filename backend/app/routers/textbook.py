@@ -1,7 +1,5 @@
 """
 Textbook management endpoints.
-
-Phase 2.2: Pre-validation + content_type detection.
 """
 
 from typing import Optional
@@ -14,8 +12,10 @@ from app.models.textbook import Textbook, TextbookStatus
 from app.models.user import User
 from app.schemas.textbook import (
     TextbookCreate,
+    TextbookProgressResponse,
     TextbookResponse,
-    TextbookListResponse
+    TextbookListResponse,
+    CurriculumConfirmRequest,
 )
 from app.security.jwt import get_current_user_id
 from app.services.textbook.validator import validate_topic
@@ -31,137 +31,113 @@ async def create_textbook(
 ):
     """
     Create new textbook with topic validation.
-    
+
     Flow:
-    1. Validate topic → detect content_type
+    1. Validate topic → detect content_type + extract core_topic + user_requirements
     2. If invalid → return 400 (credits NOT deducted)
-    3. If valid → check credits → create → trigger task
-    
-    Returns:
-        201: Textbook created with detected content_type
-        400: Invalid topic or insufficient credits
+    3. If valid → check credits → create → trigger planning task
     """
-    
-   # ================ VALIDATE TOPIC ================
+
+    # ================ VALIDATE TOPIC ================
     validation = validate_topic(textbook_data.topic)
 
-   
-    if not validation:  # Validator returned None or empty
+    if not validation:
         raise HTTPException(
             status_code=500,
             detail="Topic validation service unavailable. Please try again."
         )
 
-    
-    if not validation.get("valid", False): 
-        reason = validation.get("reason", "Không thể xác thực topic")
-        suggestion = validation.get("suggestion", "")
-        error_msg = f"{reason}. Gợi ý: {suggestion}" if suggestion else reason
-        
+    if not validation.get("valid", False):
         raise HTTPException(
             status_code=400,
             detail={
-                "error": "Invalid topic",
-                "message": error_msg,
-                "suggestions": suggestion.split(" | ") if suggestion else []
+                "validation_failed": True,
+                "reason": validation.get("reason", "Chủ đề không hợp lệ"),
+                "suggestion": validation.get("suggestion", ""),
             }
         )
 
-    # Extract detected content_type
+    
     detected_type = validation.get("content_type", "technical")
+    core_topic = validation.get("core_topic", textbook_data.topic)
+    user_requirements = validation.get("user_requirements", "")
     
     # ================ CHECK CREDITS ================
     result = await db.execute(select(User).where(User.id == current_user_id))
     user = result.scalar_one_or_none()
-    
-    if not user or user.credits < 1: #type: ignore
+
+    if not user or user.credits < 1:  # type: ignore
         raise HTTPException(
             status_code=400,
             detail="Insufficient credits. Please top up to create textbooks."
         )
-    
+
     # ================ CREATE TEXTBOOK ================
     textbook = Textbook(
         user_id=current_user_id,
-        topic=textbook_data.topic,
-        title=textbook_data.topic,  # AI will update this
+        topic=textbook_data.topic, 
+        core_topic=core_topic,  
+        user_requirements=user_requirements,  
+        title=core_topic,  # To be filled by planner
         num_chapters=textbook_data.num_chapters,
-        min_words_per_section=textbook_data.min_words_per_section,
+        content_level=textbook_data.content_level,
+        max_subsections_per_chapter=textbook_data.max_subsections_per_chapter,
         enable_images=textbook_data.enable_images,
-        content_type=detected_type,  # ⭐ Save detected type
+        content_type=detected_type,
         status=TextbookStatus.PENDING,
         credits_used=1,
     )
-    
+
     db.add(textbook)
-    
-    # Deduct credit
-    user.credits -= 1 #type: ignore
-    
+    user.credits -= 1  # type: ignore
     await db.commit()
     await db.refresh(textbook)
-    
-    # ================ TRIGGER TASK ================
+
+    # ================ TRIGGER PLANNING TASK ================
     from app.tasks.textbook_tasks import generate_textbook_task
     generate_textbook_task.delay(textbook.id)
-    
+
     return textbook
 
 
 @router.get("/", response_model=TextbookListResponse)
 async def list_textbooks(
-    content_type: Optional[str] = None,  # Filter by type
-    status: Optional[str] = None,         # Filter by status
+    content_type: Optional[str] = None,
+    status: Optional[str] = None,
     page: int = 1,
     size: int = 10,
     current_user_id: int = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_async_db),
 ):
-    """
-    List user's textbooks with filtering.
-    
-    Query params:
-        content_type: Filter by type (scholarly/technical/practical/lifestyle)
-        status: Filter by status (pending/generating/completed/failed)
-        page: Page number (default: 1)
-        size: Items per page (default: 10, max: 50)
-    """
-    
-    # Validate size
+    """List user's textbooks with filtering and pagination."""
     size = min(size, 50)
     offset = (page - 1) * size
-    
-    # Build query
+
     query = select(Textbook).where(Textbook.user_id == current_user_id)
-    
-    # Apply filters
+
     if content_type:
         query = query.where(Textbook.content_type == content_type)
     if status:
         query = query.where(Textbook.status == status)
-    
-    # Order by newest first
+
     query = query.order_by(Textbook.created_at.desc())
-    
-    # Count total matching items
+
     count_query = select(func.count()).select_from(query.subquery())
     total_result = await db.execute(count_query)
     total = total_result.scalar()
-    
-    # Paginate
+
     query = query.offset(offset).limit(size)
     result = await db.execute(query)
     textbooks = result.scalars().all()
-    
-    # Calculate total pages
-    pages = (total + size - 1) // size if total > 0 else 0 #type: ignore
-    
+
+    pages = (total + size - 1) // size if total > 0 else 0  # type: ignore
+
     return {
         "items": textbooks,
         "total": total,
         "page": page,
         "size": size,
-        "pages": pages
+        "pages": pages,
     }
 
 
@@ -175,14 +151,14 @@ async def get_textbook(
     result = await db.execute(
         select(Textbook).where(
             Textbook.id == textbook_id,
-            Textbook.user_id == current_user_id
+            Textbook.user_id == current_user_id,
         )
     )
     textbook = result.scalar_one_or_none()
-    
+
     if not textbook:
         raise HTTPException(status_code=404, detail="Textbook not found")
-    
+
     return textbook
 
 
@@ -196,15 +172,126 @@ async def delete_textbook(
     result = await db.execute(
         select(Textbook).where(
             Textbook.id == textbook_id,
-            Textbook.user_id == current_user_id
+            Textbook.user_id == current_user_id,
         )
     )
     textbook = result.scalar_one_or_none()
-    
+
     if not textbook:
         raise HTTPException(status_code=404, detail="Textbook not found")
-    
+
     await db.delete(textbook)
     await db.commit()
-    
     return None
+
+
+@router.get("/{textbook_id}/progress", response_model=TextbookProgressResponse)
+async def get_textbook_progress(
+    textbook_id: int,
+    current_user_id: int = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_async_db),
+):
+    """
+    Get real-time progress for textbook generation.
+
+    Polled by frontend every 2 seconds. Returns progress_data only —
+    does NOT trigger any Celery tasks.
+    """
+    result = await db.execute(
+        select(Textbook).where(
+            Textbook.id == textbook_id,
+            Textbook.user_id == current_user_id,
+        )
+    )
+    textbook = result.scalar_one_or_none()
+
+    if not textbook:
+        raise HTTPException(status_code=404, detail="Textbook not found")
+
+    return TextbookProgressResponse(
+        id=textbook.id,  # type: ignore
+        status=textbook.status,  # type: ignore
+        progress_data=textbook.progress_data,  # type: ignore
+    )
+
+
+@router.post("/{textbook_id}/confirm-curriculum")
+async def confirm_curriculum(
+    textbook_id: int,
+    request: CurriculumConfirmRequest,
+    current_user_id: int = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_async_db),
+):
+    """
+    Confirm edited curriculum and start content generation.
+
+    Receives user-confirmed curriculum, updates progress_data,
+    then triggers the content generation Celery task.
+    """
+    result = await db.execute(
+        select(Textbook).where(
+            Textbook.id == textbook_id,
+            Textbook.user_id == current_user_id,
+        )
+    )
+    textbook = result.scalar_one_or_none()
+
+    if not textbook:
+        raise HTTPException(status_code=404, detail="Textbook not found")
+
+    chapters = request.curriculum.get("chapters", [])
+    chapter_titles = [
+        ch.get("title", f"Chương {i + 1}")
+        for i, ch in enumerate(chapters)
+    ]
+    total_subsections = sum(len(ch.get("subsections", [])) for ch in chapters)
+
+    progress_data = dict(textbook.progress_data or {}) #type: ignore
+    progress_data.update({ #type: ignore
+        "phase": "generating",
+        "progress_value": 0.20,
+        "status_text": "**Bước 3/4:** Đang tạo nội dung giáo trình...",
+        "curriculum_data": request.curriculum,
+        "chapter_titles": chapter_titles,
+        "total_chapters": len(chapter_titles),
+        "total_subsections": total_subsections,
+    })
+
+    textbook.progress_data = progress_data  # type: ignore
+    await db.commit()
+
+    # Trigger content generation task
+    from app.tasks.textbook_tasks import continue_textbook_generation_task
+    continue_textbook_generation_task.delay(textbook_id, request.curriculum)
+
+    return {"message": "Content generation started", "textbook_id": textbook_id}
+
+
+@router.post("/{textbook_id}/stop")
+async def stop_generation(
+    textbook_id: int,
+    current_user_id: int = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_async_db),
+):
+    """Stop textbook generation."""
+    result = await db.execute(
+        select(Textbook).where(
+            Textbook.id == textbook_id,
+            Textbook.user_id == current_user_id,
+        )
+    )
+    textbook = result.scalar_one_or_none()
+
+    if not textbook:
+        raise HTTPException(status_code=404, detail="Textbook not found")
+
+    textbook.status = "failed"  # type: ignore
+    textbook.error_message = "Generation stopped by user"  # type: ignore
+    textbook.progress_data = {  # type: ignore
+        "phase": "idle",
+        "progress_value": 0.0,
+        "status_text": "Generation stopped",
+    }
+
+    await db.commit()
+    return {"message": "Generation stopped"}

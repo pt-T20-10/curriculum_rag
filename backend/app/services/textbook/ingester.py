@@ -1,5 +1,5 @@
 """
-Ingestion Agent for AI Textbook Generator.
+Ingester Agent for AI Textbook Generator.
 
 This agent orchestrates the full document ingestion pipeline that populates
 ChromaDB before the Planner runs. It is the first node in the workflow graph.

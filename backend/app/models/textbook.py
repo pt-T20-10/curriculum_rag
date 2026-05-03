@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -21,15 +21,13 @@ class Textbook(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     title = Column(String(500), nullable=False)
     topic = Column(String(500), nullable=False)
+    core_topic = Column(String(500), nullable=True)
+    user_requirements = Column(String(1000), nullable=True)
     num_chapters = Column(Integer, default=3, nullable=False)
-    min_words_per_section = Column(Integer, default=500, nullable=False)
+    content_level = Column(String(50), default="Trung Bình", nullable=False)
+    max_subsections_per_chapter = Column(Integer, default=3, nullable=False)
     enable_images = Column(Boolean, default=False, nullable=False)
-    content_type = Column(
-        String(50), 
-        nullable=False, 
-        default="technical",
-        index=True  # For filtering/stats
-    )
+    content_type = Column(String(50), nullable=False, default="technical", index=True)
     status = Column(String(20), default=TextbookStatus.PENDING.value, nullable=False)
     pdf_path = Column(String(1000), nullable=True)
     docx_path = Column(String(1000), nullable=True)
@@ -37,5 +35,5 @@ class Textbook(Base):
     credits_used = Column(Integer, default=0, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     completed_at = Column(DateTime, nullable=True)
-
+    progress_data = Column(JSON, nullable=True, default=None)
     owner = relationship("User", back_populates="textbooks")

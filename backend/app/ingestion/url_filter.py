@@ -26,7 +26,7 @@ import requests
 
 from app.utils.log_config import setup_logger
 
-logger = setup_logger(name="URLFilter", logfile="backend/logs/url_filter.log")
+logger = setup_logger(name="URLFilter", logfile="logs/url_filter.log")
 
 # ---------------------------------------------------------------------------
 # Static blocklists — checked without network calls

@@ -22,14 +22,12 @@ import warnings
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 
-
 from app.config import settings
-
 LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
 OPENAI_API_KEY = settings.OPENAI_API_KEY
 from app.utils.log_config import setup_logger, setup_prompt_logger
 
-logger = setup_logger(name="QueryExpansion", logfile="backend/logs/agents.log")
+logger = setup_logger(name="QueryExpansion", logfile="logs/agents.log")
 
 
 class QueryExpansionAgent:

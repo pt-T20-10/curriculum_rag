@@ -51,7 +51,7 @@ IMAGE_MODEL_PREMIUM = settings.IMAGE_MODEL_PREMIUM
 LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
 from app.schemas.curriculum import AgentState
 
-logger = setup_logger(name="IllustratorAgent", logfile="backend/logs/agents.log")
+logger = setup_logger(name="IllustratorAgent", logfile="logs/agents.log")
 
 # ---------------------------------------------------------------------------
 # A4 image size constraints

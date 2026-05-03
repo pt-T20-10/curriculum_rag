@@ -9,7 +9,7 @@ GROQ_API_KEY = settings.GROQ_API_KEY
 from app.schemas.curriculum import AgentState
 from app.utils.log_config import setup_logger
 
-logger = setup_logger(name="ValidatorAgent", logfile="backend/logs/agents.log")
+logger = setup_logger(name="ValidatorAgent", logfile="logs/agents.log")
 
 
 def validate_topic(topic: str) -> dict:
@@ -21,7 +21,9 @@ def validate_topic(topic: str) -> dict:
             "valid": bool,
             "reason": str,
             "suggestion": str,
-            "content_type": str
+            "content_type": str,
+            "core_topic": str,         
+            "user_requirements": str, 
         }
         
         On error: Returns {"valid": False, ...} to REJECT by default
@@ -38,12 +40,14 @@ def validate_topic(topic: str) -> dict:
 
         prompt = f"""
 [CONTEXT]
-You are a strict validator for educational content generation. Your role is to 
-reject vague, single-word topics that lack sufficient context to build a 
-structured curriculum, while accepting topics with clear learning scope.
+You are a strict validator AND topic parser for educational content generation.
+
+Your dual role:
+1. VALIDATE if the topic is suitable (reject vague/inappropriate topics)
+2. EXTRACT the core topic and user requirements (if any)
 [/CONTEXT]
 
-[TASK]
+[TASK 1 - VALIDATION]
 Evaluate this topic: "{topic}"
 
 Decision criteria:
@@ -51,7 +55,39 @@ Decision criteria:
 2. Does it violate content policies?
 
 Return valid=true ONLY if both conditions are met.
-[/TASK]
+[/TASK 1]
+
+[TASK 2 - EXTRACTION]
+If valid, parse the topic into TWO parts:
+
+A. CORE TOPIC: The main subject/skill to teach
+B. USER REQUIREMENTS: Optional additional requests (exercises, examples, etc.)
+
+Examples:
+  Input: "Toán cao cấp 1"
+  → core_topic: "Toán cao cấp 1"
+  → user_requirements: ""
+
+  Input: "Học Python có bài tập"
+  → core_topic: "Python"
+  → user_requirements: "có bài tập"
+
+  Input: "Machine Learning với nhiều ví dụ code và ứng dụng thực tế"
+  → core_topic: "Machine Learning"
+  → user_requirements: "với nhiều ví dụ code và ứng dụng thực tế"
+
+  Input: "Lập trình web React kèm project thực tế"
+  → core_topic: "Lập trình web React"
+  → user_requirements: "kèm project thực tế"
+
+Requirement indicators (extract these phrases):
+  - "có bài tập" / "with exercises"
+  - "nhiều ví dụ" / "many examples"
+  - "ứng dụng thực tế" / "real-world applications"
+  - "kèm project" / "with projects"
+  - "code examples" / "sample code"
+  - "hands-on" / "thực hành"
+[/TASK 2]
 
 [CRITICAL RULES]
 
@@ -62,19 +98,11 @@ Rule 1 — SINGLE-WORD REJECTION:
     ❌ "AI" (no level, no context)
     ❌ "toán" (no grade, no subject area)
     ❌ "lập trình" (no language, no level)
-    ❌ "math" | "coding" | "science" | "business"
-    ❌ "xyz" | "abc" (meaningless)
   
   Examples of SUFFICIENT topics (ACCEPT):
     ✅ "Toán lớp 10" (has level)
-    ✅ "Toán cao cấp 1" (has level + subject)
     ✅ "Lập trình Python cơ bản" (has language + level)
-    ✅ "Giải tích 1" (specific course)
     ✅ "AI cho người mới bắt đầu" (has level)
-  
-  The difference: Context transforms ambiguity into specificity.
-  "toán" alone → infinite possible scopes → REJECT
-  "toán lớp 10" → clear scope → ACCEPT
 
 Rule 2 — INAPPROPRIATE CONTENT:
   Reject topics containing adult, violent, or harmful content.
@@ -83,21 +111,6 @@ Rule 3 — ILLEGAL CONTENT:
   Reject topics promoting illegal activities, hate speech, or dangerous substances.
 [/CRITICAL RULES]
 
-[ADDITIONAL EXAMPLES]
-
-✅ ACCEPT — these have sufficient context:
-  "Giáo trình học Trí tuệ nhân tạo chuẩn bị cho học thạc sĩ"
-  "Học máy cơ bản cho người mới"
-  "Nấu ăn Nhật Bản truyền thống"
-  "Lịch sử Việt Nam thế kỷ 20"
-  "Vật lý đại cương 1"
-
-❌ REJECT — insufficient context:
-  "vật lý" → Which physics? What level?
-  "lịch sử" → Which period? What region?
-  "AI" → Which aspect? What level?
-  "programming" → Which language? What level?
-
 [FORMAT]
 Return ONLY a JSON object. No markdown, no explanation.
 
@@ -105,7 +118,9 @@ Return ONLY a JSON object. No markdown, no explanation.
   "valid": true/false,
   "reason": "Vietnamese explanation if rejected (empty if valid, max 20 words)",
   "suggestion": "2-3 specific alternatives separated by ' | ' (empty if valid)",
-  "content_type": "scholarly|technical|practical|lifestyle"
+  "content_type": "scholarly|technical|practical|lifestyle",
+  "core_topic": "extracted core subject (same as input if no requirements)",
+  "user_requirements": "extracted requirements (empty string if none)"
 }}
 
 Content type classification:
@@ -114,7 +129,16 @@ Content type classification:
   practical  — vocational skills: cooking, sewing, carpentry, accounting
   lifestyle  — personal development: yoga, meditation, photography, finance, gardening
 
-Example output: {{"valid": false, "reason": "Chủ đề quá chung chung, thiếu ngữ cảnh về cấp độ hoặc phạm vi", "suggestion": "Toán lớp 10 đại số | Toán cao cấp 1 | Giải tích cơ bản", "content_type": "scholarly"}}
+Example outputs:
+
+Input: "Toán cao cấp 1"
+{{"valid": true, "reason": "", "suggestion": "", "content_type": "scholarly", "core_topic": "Toán cao cấp 1", "user_requirements": ""}}
+
+Input: "Python có bài tập"
+{{"valid": true, "reason": "", "suggestion": "", "content_type": "technical", "core_topic": "Python", "user_requirements": "có bài tập"}}
+
+Input: "học"
+{{"valid": false, "reason": "Thiếu ngữ cảnh về chủ đề cụ thể", "suggestion": "Học toán lớp 10 | Học lập trình Python | Học tiếng Anh giao tiếp", "content_type": "technical", "core_topic": "", "user_requirements": ""}}
 [/FORMAT]
 """
 
@@ -128,14 +152,16 @@ Example output: {{"valid": false, "reason": "Chủ đề quá chung chung, thi�
         result = json.loads(raw)
         
         # Validate response structure
-        required_keys = ["valid", "reason", "suggestion", "content_type"]
+        required_keys = ["valid", "reason", "suggestion", "content_type", "core_topic", "user_requirements"]
         if not all(key in result for key in required_keys):
             logger.error(f"[VALIDATOR] Invalid response structure: {result}")
             return {
                 "valid": False,
                 "reason": "Lỗi xác thực topic - vui lòng thử lại",
                 "suggestion": "",
-                "content_type": "technical"
+                "content_type": "technical",
+                "core_topic": "",
+                "user_requirements": "" 
             }
         
         logger.info(f"[VALIDATOR] Result: valid={result['valid']}, type={result['content_type']}")
@@ -145,19 +171,23 @@ Example output: {{"valid": false, "reason": "Chủ đề quá chung chung, thi�
         logger.error(f"[VALIDATOR] JSON parse error: {e}")
         logger.error(f"[VALIDATOR] Raw response was: {raw if 'raw' in locals() else 'N/A'}")
         return {
-            "valid": False,  # ⭐ REJECT on error
+            "valid": False, 
             "reason": "Lỗi hệ thống xác thực - vui lòng thử lại",
             "suggestion": "",
-            "content_type": "technical"
+            "content_type": "technical",
+            "core_topic": "",  
+            "user_requirements": "" 
         }
         
     except Exception as e:
         logger.error(f"[VALIDATOR] LLM invocation failed: {e}", exc_info=True)
         return {
-            "valid": False,  # ⭐ REJECT on error  
+            "valid": False, 
             "reason": "Dịch vụ xác thực tạm thời không khả dụng",
             "suggestion": "",
-            "content_type": "technical"
+            "content_type": "technical",
+            "core_topic": "",  
+            "user_requirements": ""
         }
 
 
@@ -172,7 +202,7 @@ def validate_topic_node(state: AgentState) -> dict:
 
     content_type = result.get("content_type", "technical")
 
-    if result.get("valid", False):  # ⭐ Changed default from True to False
+    if result.get("valid", False):  
         logger.info(f"[VALIDATOR NODE] ✓ Accepted: '{topic}' [{content_type}]")
         return {
             "messages": [f"✓ Topic validated: '{topic}' [{content_type}]"],

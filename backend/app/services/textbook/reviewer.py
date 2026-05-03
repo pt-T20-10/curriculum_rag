@@ -38,7 +38,7 @@ from app.config import settings
 LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
 OPENAI_API_KEY = settings.OPENAI_API_KEY
 
-logger = setup_logger(name="ReviewerAgent", logfile="backend/logs/agents.log")
+logger = setup_logger(name="ReviewerAgent", logfile="logs/agents.log")
 
 # Maximum number of revision cycles per subsection before forcing approval.
 # Also imported by graph.py for the graph-level defense-in-depth ceiling.

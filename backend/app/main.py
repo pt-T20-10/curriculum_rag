@@ -14,6 +14,10 @@ from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles 
+from fastapi.responses import FileResponse  
+from pathlib import Path  
+
 from fastapi.responses import JSONResponse
 
 from app.config import settings
@@ -78,19 +82,24 @@ app = FastAPI(
 )
 
 
-# CORS middleware configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        settings.FRONTEND_URL,  # React frontend in development
-        "http://localhost:5173",  # Vite default port
-        "http://localhost:3000",  # Alternative frontend port
+        "http://localhost:5173",     # Vite dev server
+        "http://127.0.0.1:5173",     # Alternative localhost
+        "http://localhost:3000",     # React dev server
+        "http://127.0.0.1:3000",     # Alternative
     ],
     allow_credentials=True,
-    allow_methods=["*"],  # Allow all HTTP methods
-    allow_headers=["*"],  # Allow all headers
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],  
+    allow_headers=["*"],
+    expose_headers=["*"],       
+    max_age=3600,                   
 )
+OUTPUTS_DIR = Path(__file__).parent.parent / "outputs"
+OUTPUTS_DIR.mkdir(exist_ok=True)  # Create if doesn't exist
 
+app.mount("/outputs", StaticFiles(directory=str(OUTPUTS_DIR)), name="outputs")
 
 # Include routers
 app.include_router(base.router, prefix="/api/v1", tags=["Base"])

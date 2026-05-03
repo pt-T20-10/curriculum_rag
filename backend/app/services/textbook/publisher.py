@@ -38,7 +38,7 @@ from app.utils.log_config import setup_logger
 
 BASE_DIR = settings.BASE_DIR
 
-logger = setup_logger(name="PublisherAgent", logfile="backend/logs/agents.log")
+logger = setup_logger(name="PublisherAgent", logfile="logs/agents.log")
 
 # Temporary image directory — created by Illustrator, cleaned up by Publisher.
 image_dir = BASE_DIR / "outputs" / "images"

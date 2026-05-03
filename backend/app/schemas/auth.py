@@ -8,6 +8,7 @@ class UserCreate(BaseModel):
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+    remember_me: bool = False
 
 class Token(BaseModel):
     access_token: str
@@ -22,6 +23,23 @@ class UserResponse(BaseModel):
     is_verified: bool
     credits: int
     auth_provider: str
-
+    
     class Config:
         from_attributes = True
+
+
+class UserData(BaseModel):
+    """User data returned in login/register response."""
+    id: int
+    email: str
+    full_name: str | None
+    credits: int
+    is_active: bool
+    is_verified: bool
+
+# ⭐ ADD THIS - Login/Register response
+class LoginResponse(BaseModel):
+    """Response for login and register endpoints."""
+    access_token: str
+    token_type: str = "bearer"
+    user: UserData

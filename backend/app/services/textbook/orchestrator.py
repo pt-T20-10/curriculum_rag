@@ -26,7 +26,7 @@ from app.services.textbook.publisher import publish_curriculum
 from app.services.textbook.validator import validate_topic_node
 from app.utils import stop_signal
 
-logger = setup_logger(name="WorkflowBuilder", logfile="backend/logs/workflow.log")
+logger = setup_logger(name="WorkflowBuilder", logfile="logs/workflow.log")
 
 def _with_stop_check(node_fn):
     """
@@ -270,29 +270,72 @@ def _define_content_edges(builder: StateGraph) -> None:
 # Public workflow factories
 # ---------------------------------------------------------------------------
 
-def create_workflow() -> CompiledStateGraph:
+def create_planning_only_workflow() -> CompiledStateGraph:
     """
-    Full workflow WITHOUT validator node.
-    
-    Validation already done at API level before textbook creation.
-    Workflow starts directly at ingestion.
+    Planning-only workflow: generate curriculum without crawling.
+
+    Entry point: planner → END
+
+    Used for initial curriculum generation. User reviews curriculum,
+    then triggers the content generation workflow separately.
     """
-    logger.info("Building full workflow (validator pre-executed at API)...")
+    logger.info("Building planning-only workflow (planner → END)...")
     builder = StateGraph(AgentState)
 
- 
-    builder.add_node("ingestion", perform_ingestion)
-    builder.add_node("planner",   plan_curriculum)
+    builder.add_node("planner", _with_stop_check(plan_curriculum))
+    builder.set_entry_point("planner")
+    builder.add_edge("planner", END)
+
+    graph = builder.compile()
+    logger.info("✓ Planning-only workflow compiled")
+    return graph
+
+
+def create_content_after_confirm_workflow() -> CompiledStateGraph:
+    """
+    Content generation workflow: crawl → generate → publish.
+
+    Entry point: ingestion → researcher → writer → ... → publisher → END
+
+    Used after user confirms curriculum. Curriculum already in state.
+    """
+    logger.info("Building post-confirmation workflow (ingestion → content → publish)...")
+    builder = StateGraph(AgentState)
+
+    builder.add_node("ingestion", _with_stop_check(perform_ingestion))
     _register_content_nodes(builder)
 
-
     builder.set_entry_point("ingestion")
-    builder.add_edge("ingestion", "planner")
-    builder.add_edge("planner",   "researcher")
+    builder.add_edge("ingestion", "researcher")
     _define_content_edges(builder)
 
     graph = builder.compile()
-    logger.info("✓ Full workflow compiled (no validator node)")
+    logger.info("✓ Post-confirmation workflow compiled")
+    return graph
+
+
+def create_workflow() -> CompiledStateGraph:
+    """
+    Full workflow: planner → ingestion → researcher → ... → publisher.
+
+    Legacy workflow — runs everything in one shot without a user review gate.
+    Prefer create_planning_only_workflow() + create_content_after_confirm_workflow()
+    for the two-phase flow with curriculum review.
+    """
+    logger.info("Building full workflow (planner → ingestion → content)...")
+    builder = StateGraph(AgentState)
+
+    builder.add_node("planner",   _with_stop_check(plan_curriculum))
+    builder.add_node("ingestion", _with_stop_check(perform_ingestion))
+    _register_content_nodes(builder)
+
+    builder.set_entry_point("planner")
+    builder.add_edge("planner",   "ingestion")
+    builder.add_edge("ingestion", "researcher")
+    _define_content_edges(builder)
+
+    graph = builder.compile()
+    logger.info("✓ Full workflow compiled")
     return graph
 
 def create_planning_workflow() -> CompiledStateGraph:

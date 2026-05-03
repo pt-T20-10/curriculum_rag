@@ -17,32 +17,23 @@ from app.config import settings
 security = HTTPBearer()
 
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    """
-    Create a JWT access token.
-    
-    Args:
-        data: Payload data to encode (typically {"sub": user_id})
-        expires_delta: Optional custom expiration time
-        
-    Returns:
-        Encoded JWT token string
-        
-    Example:
-        >>> token = create_access_token({"sub": "123"})
-        >>> print(token)
-        eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-    """
+from datetime import datetime, timedelta
+from jose import jwt
+from app.config import settings
+
+def create_access_token(data: dict, expires_delta: timedelta | None = None):
+    """Create JWT access token."""
     to_encode = data.copy()
     
-    # Set expiration time (timezone-aware)
-    expire = datetime.now(timezone.utc) + (
-        expires_delta or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    )
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(
+            hours=settings.ACCESS_TOKEN_EXPIRE_HOURS
+        )
     
     to_encode.update({"exp": expire})
     
-    # Encode token
     encoded_jwt = jwt.encode(
         to_encode,
         settings.SECRET_KEY,
@@ -50,7 +41,6 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     )
     
     return encoded_jwt
-
 
 def verify_token(token: str) -> dict | None:
     """
@@ -118,27 +108,37 @@ def decode_token(token: str) -> int:
         )
 
 
-async def get_current_user_id(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+def get_current_user_id(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
 ) -> int:
-    """
-    FastAPI dependency to get current user ID from Bearer token.
+    """Extract user ID from JWT token."""
     
-    Extracts user ID from Authorization header: "Bearer <token>"
-    Used as a dependency in protected route handlers.
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     
-    Args:
-        credentials: HTTP Authorization header with Bearer token
+    try:
+        # Decode JWT
+        payload = jwt.decode(
+            credentials.credentials,
+            settings.SECRET_KEY,
+            algorithms=[settings.ALGORITHM]
+        )
+        user_id: int = payload.get("sub") #type: ignore
         
-    Returns:
-        User ID as integer
+        if user_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token"
+            )
         
-    Raises:
-        HTTPException: If token is invalid or missing
+        return user_id
         
-    Usage:
-        @router.get("/protected")
-        async def protected_route(user_id: int = Depends(get_current_user_id)):
-            return {"user_id": user_id}
-    """
-    return decode_token(credentials.credentials)
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token"
+        )

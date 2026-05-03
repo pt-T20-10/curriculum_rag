@@ -27,6 +27,7 @@ Workflow node:
     write_section(state) — LangGraph node function at module level.
 """
 
+from pyexpat import model
 import re
 from typing import Optional
 from unittest import result
@@ -53,7 +54,7 @@ from app.schemas.curriculum import (
     clean_section_title,
 )
 
-logger = setup_logger(name="WriterAgent", logfile="backend/logs/agents.log")
+logger = setup_logger(name="WriterAgent", logfile="logs/agents.log")
 
 
 # ============================================================================
@@ -481,8 +482,9 @@ Adapt depth to section_type:
 {length_rule}
 
 Sub-section depth:
-- Each ### block: minimum 3 substantial paragraphs (3–5 sentences each).
-- light → 2–3 ### blocks; medium → 3–4; deep → 3–5; applied → 2–4.
+- Each ### block: minimum 4–6 substantial paragraphs (4–6 sentences each).
+- light → 1–2 ### blocks; medium → 2–3; deep → 3–4; applied → 2–3.
+- PREFER fewer, deeper blocks over many shallow ones.
 
 Content standards:
 - Formal Vietnamese (Tiếng Việt học thuật). No conversational fillers.
@@ -514,16 +516,46 @@ Rule 5 — Do NOT create a '### Kết luận' or '### Conclusion' subsection.\n"
 Concluding thoughts must be woven into the last paragraph of the final ### block.\n"
 A dedicated conclusion sub-heading is redundant and breaks academic prose flow."
 
-Rule 6 — SUB-SECTION COUNT PER DEPTH LEVEL:
-- light   → maximum 3 ### blocks
-- medium  → maximum 4 ### blocks
-- deep    → maximum 5 ### blocks
-- applied → maximum 4 ### blocks
+Rule 6 — SUB-SECTION COUNT PER DEPTH LEVEL (STRICT CEILING):
+- light   → maximum 2 ### blocks
+- medium  → maximum 3 ### blocks
+- deep    → maximum 4 ### blocks
+- applied → maximum 3 ### blocks
 
-If there are more sub-topics than the limit above, MERGE related topics
-into the same ### block instead of splitting them.
-Each ### block must be substantial enough to justify its existence —
-do NOT create a ### heading for content that fits in 1–2 paragraphs.
+CRITICAL — MERGE OVER SPLIT:
+If you have more sub-topics than the limit above, MERGE related topics
+into the same ### block. Write DEEPER within each block — more paragraphs,
+richer analysis, concrete examples — instead of creating more ### headings.
+
+Each ### block must contain at least 4–6 substantial paragraphs.
+Do NOT create a ### heading for content shorter than 4 paragraphs.
+
+PREFER: Fewer ### blocks with rich, flowing prose inside each block.
+AVOID: Many ### blocks with thin content (1-2 paragraphs each).
+
+Rule 7 — EXAMPLE STRUCTURE:
+GOOD (medium section with 2 ### blocks):
+  ### 1.1.1 Định nghĩa và nguồn gốc
+  [5-6 paragraphs of deep explanation with examples]
+  
+  ### 1.1.2 Ứng dụng trong thực tế
+  [5-6 paragraphs of practical analysis]
+
+BAD (medium section with 4 ### blocks):
+  ### 1.1.1 Định nghĩa
+  [2 paragraphs — TOO THIN]
+  
+  ### 1.1.2 Nguồn gốc
+  [2 paragraphs — TOO THIN]
+  
+  ### 1.1.3 Đặc điểm
+  [2 paragraphs — TOO THIN]
+  
+  ### 1.1.4 Ứng dụng
+  [2 paragraphs — TOO THIN]
+
+The BAD example splits content unnecessarily. Merge 1.1.1 + 1.1.2 into one
+rich ### block, merge 1.1.3 + 1.1.4 into another.
 [/CONSTRAINT]
 
 [FORMAT]
@@ -1028,6 +1060,17 @@ def write_section(state: AgentState) -> dict:
             expected = f"# CHƯƠNG {display_chap}: {chap_title.upper()}"
             content  = expected + "\n\n" + content.lstrip('\n')
             logger.warning(f"⚠️  Prepended missing # CHƯƠNG: '{expected}'")
+
+        # Layer 2c — Normalize chapter title text to uppercase
+        # Fires when LLM outputs "# CHƯƠNG 1: Tiêu đề" instead of "# CHƯƠNG 1: TIÊU ĐỀ"
+        if emit_header:
+            content = re.sub(
+                r'^(# CHƯƠNG [^:]+: )(.+)$',
+                lambda m: m.group(1) + m.group(2).upper(),
+                content,
+                flags=re.MULTILINE,
+                count=1,
+            )
 
         result: dict = {"current_content": content}
         if emit_header:

@@ -18,7 +18,7 @@ from ddgs import DDGS
 from app.utils.log_config import setup_logger
 from app.utils import stop_signal
 
-logger = setup_logger(name="SearchEngine", logfile="backend/logs/search_engine.log")
+logger = setup_logger(name="SearchEngine", logfile="logs/search_engine.log")
 
 # ---------------------------------------------------------------------------
 # Noise domain filter — applied BEFORE returning URLs to ingestion pipeline.
