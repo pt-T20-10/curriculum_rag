@@ -1,279 +1,389 @@
-# 📚 AI Textbook Generator (AI Curriculum Agent)
+# Curriculum RAG — Agentic AI Textbook Generator
 
-> An automated, multi-agent system powered by **LangGraph** and **OpenAI** that researches, plans, writes, reviews, and publishes comprehensive academic textbooks in Vietnamese based on a single user topic.
+An end-to-end system that turns a single topic string into a complete, publication-ready Vietnamese academic textbook. The core is a **LangGraph multi-agent workflow** that couples **bilingual web crawling** with an **agentic RAG loop** to produce grounded, peer-reviewed content at scale.
 
-![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
-![LangChain](https://img.shields.io/badge/LangChain-v0.1-green)
-![Streamlit](https://img.shields.io/badge/Frontend-Streamlit-red)
-![Status](https://img.shields.io/badge/Status-Stable-success)
-
----
-
-## 📖 Overview
-
-This project automates the entire lifecycle of educational content creation. Instead of manually writing a textbook, you simply input a topic (e.g., "Machine Learning Basics" or "Start a Bubble Tea Shop"). The system employs a team of AI Agents to browse the web, structure a curriculum, draft content with academic rigor, review for errors, and compile a final PDF.
+![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)
+![LangGraph](https://img.shields.io/badge/Orchestration-LangGraph-orange)
+![ChromaDB](https://img.shields.io/badge/VectorDB-ChromaDB-purple)
+![Status](https://img.shields.io/badge/Status-Active-success)
 
 ---
 
-## ✨ Key Features
+## System Architecture
 
-* **Multi-Agent Architecture:** Uses **LangGraph** to orchestrate 8 specialized agents — Validator, Ingester, Planner, Researcher, Writer, Reviewer, Illustrator, Publisher.
-* **RAG (Retrieval-Augmented Generation):** Bilingual web search (Vietnamese + English via DuckDuckGo) crawls real-time content and stores it in **ChromaDB** for accurate, grounded generation.
-* **Curriculum Review Gate:** After planning, users can inspect, edit, and approve the chapter/subsection structure before content generation starts.
-* **Academic Quality:**
-    * Two-phase Planner generates an academic title (`textbook_title`) and a Lời nói đầu (`preface_content`) via dedicated LLM calls.
-    * **LaTeX/Unicode math support:** Handles `$$E=mc^2$$` and Unicode math symbols in PDF output.
-    * **Vietnamese-first:** Output fully optimized for Vietnamese using Typst as PDF engine (UTF-8 native, no extra font packages).
-    * **Revision loop:** Reviewer enforces quality gate (max 2 revisions per section); approved sections advance automatically.
-* **AI Image Pipeline:**
-    * Writer tags images as `> [IMAGE: title | description]`.
-    * Illustrator routes each tag to **DRAW** (DALL-E 3), **DIAGRAM**, or **SEARCH** (Serper Google Images).
-    * Images saved locally; Pandoc embeds them as `![caption](path){width=70%}` figures.
-* **Multi-format Export:** Generates Markdown (`.md`), PDF (`.pdf` via Pandoc + Typst), and Word (`.docx`) from a single run.
-* **Modern Frontend:** **Streamlit** interface with real-time progress cards, live log streaming, curriculum editor, and one-click downloads.
-* **Configurable PDF Styling:** Font sizes, TOC title, and chapter header sizes controlled via `.env` variables.
-
----
-
-## 🏗️ System Architecture
-
-### **LangGraph Workflow (10 nodes)**
+The workflow is split into two phases separated by a human-in-the-loop curriculum review gate.
 
 ```
-validator → ingestion → planner ──► [Curriculum Review Gate — user edits & approves]
-                                              │
-                                         researcher
-                                              │
-                                           writer
-                                              │
-                                          reviewer
-                                         ╱         ╲
-                              (REVISE)→ writer   (APPROVE)
-                                                     │
-                                               illustrator
-                                              ╱     │      ╲
-                               next_subsection  next_chapter  finished
-                                      │               │          │
-                               update_subsection  update_chapter  publisher → END
-                                      └──────────────┘
-                                           researcher
+Phase 1 — Planning
+──────────────────
+Validator ──► Planner ──► [REVIEW GATE] (user edits & confirms curriculum)
+
+Phase 2 — Content Generation  (triggered after confirmation)
+─────────────────────────────
+Ingestion ──► ┌─ Researcher ─► Writer ─► Reviewer ─┐
+              │                          ↑   REVISE  │
+              │                          └───────────┘
+              │                              APPROVE
+              │                               ↓
+              │                          Illustrator
+              │                               ↓
+              └──── check_next_step ─────────────────► Publisher ──► END
+                     (next subsection / next chapter / finished)
 ```
 
-### **Agent Responsibilities**
+### Agents
 
-| Agent | Role |
-|-------|------|
-| **Validator** | Checks that the user topic is suitable for textbook generation before any costly steps run |
-| **Ingester** | Runs 6 parallel DuckDuckGo searches (3 Vietnamese × `vn-vn` + 3 English × `us-en`), crawls pages, chunks text, embeds into ChromaDB |
-| **Planner** | Builds chapter/subsection curriculum; generates academic `textbook_title` and `preface_content` (Lời nói đầu) via dedicated LLM calls |
-| **Researcher** | Retrieves RAG context from ChromaDB for each section being written |
-| **Writer** | Drafts section content in Vietnamese Markdown with word-count targets; injects `> [IMAGE: title \| description]` tags |
-| **Reviewer** | Quality gate — enforces heading hierarchy, academic tone, min word count; returns JSON `{approve/revise, feedback}`; max 2 revisions |
-| **Illustrator** | Routes each image tag to **DRAW** (DALL-E 3), **DIAGRAM**, or **SEARCH** (Serper); saves PNG locally; replaces tag with Pandoc figure block |
-| **Publisher** | Assembles all sections, adds YAML front-matter, generates centered TOC (tocloft), converts to PDF (Pandoc + Typst) and Word (.docx) |
+| Agent | Responsibility |
+|---|---|
+| **Validator** | Classifies topic suitability; extracts `content_type`, `core_topic`, `user_requirements` |
+| **Planner** | Generates chapter titles → subsections → academic title + preface (3-phase LLM pipeline, no crawling) |
+| **Ingestion** | Bilingual query expansion → parallel DuckDuckGo search → URL filter → deep crawl → ChromaDB |
+| **Researcher** | Per-subsection semantic retrieval with 3-layer quality filtering and bilingual deduplication |
+| **Writer** | Agentic RAG loop: context enrichment tool calls → draft → post-processing; enforces heading/math rules |
+| **Reviewer** | 5-phase editorial pass + JSON quality gate; routes back to Writer (max 2 revisions) or advances |
+| **Illustrator** | Resolves `[IMAGE: title \| hint]` tags → DRAW (gpt-image-1) / SEARCH / DIAGRAM (Serper) |
+| **Publisher** | Merges all sections, applies math/heading fixes, builds Typst front matter, exports PDF + Word |
 
 ---
 
-## 🛠️ Tech Stack
+## Search-Crawl Architecture
+
+### 1. Bilingual Query Expansion
+
+`QueryExpansionAgent` (gpt-4o-mini) generates six queries from the curriculum `search_query` field:
+
+```
+3 × Vietnamese  →  DuckDuckGo region "vn-vn"
+3 × English     →  DuckDuckGo region "us-en"
+```
+
+Queries are shaped by `content_type` to target appropriate source kinds:
+
+| content_type | Source hints injected |
+|---|---|
+| `scholarly` | Wikipedia, academic papers, textbook sites |
+| `technical` | GeeksForGeeks, GitHub, official docs |
+| `practical` | How-to guides, industry blogs |
+| `lifestyle` | wikihow, niche forums |
+
+### 2. Parallel Web Search
+
+`SearchEngine` runs all six queries concurrently (`SEARCH_MAX_WORKERS = 6`, `SEARCH_RESULTS_PER_QUERY = 30`) via `duckduckgo-search`, returns deduplicated URL + title + snippet dicts.
+
+### 3. URL Filtering (Two Stages)
+
+**Static filter** (`url_filter.py`):
+- Blocklisted domains (social media, CDN, shopping, paywalls)
+- Rejected extensions (`.zip`, `.exe`, `.mp4`, …)
+- Snippet pre-filter: topic relevance score must exceed threshold before any HTTP request
+
+**Dynamic filter** (parallel HTTP HEAD, `URL_FILTER_MAX_WORKERS = 5`):
+- Accept `text/html` → HTML crawl pipeline
+- Accept `application/pdf` → PDF extraction pipeline
+- Reject all other content-type headers
+
+### 4. Deep Crawl
+
+**HTML pipeline** (`crawler.py` / BeautifulSoup4):
+1. Fetch page, strip nav/footer/sidebar/ads
+2. Extract main prose (`<article>`, `<main>`, largest `<div>`)
+3. Follow up to `CRAWL_MAX_SUB_LINKS = 5` internal links at depth-1 (breadth-first)
+4. Optionally follow up to `CRAWL_MAX_DEPTH2_LINKS = 3` depth-2 links on high-value domains
+
+**PDF pipeline** (PyMuPDF / pypdf fallback):
+1. Extract text page-by-page
+2. Detect and skip TOC pages, reference pages, header/footer noise
+3. Rejoin broken line breaks from column layouts
+
+### 5. Chunk Quality Pipeline
+
+Every extracted document goes through a 4-step funnel before reaching ChromaDB:
+
+```
+RecursiveCharacterTextSplitter (2000 chars, 400 overlap)
+        ↓
+Heuristic filter
+  • MIN_CHUNK_CHARS = 200
+  • MIN_ALPHA_RATIO = 0.55   (rejects code dumps, tables of numbers)
+  • MAX_DIGIT_RATIO = 0.40
+  • MAX_DUPLICATE_LINE_RATIO = 0.4
+  • MAX_CITATION_LINE_RATIO = 0.3
+  • MAX_BOOKING_SIGNALS = 2  (rejects hotel/e-commerce noise)
+        ↓
+Relevance scoring  (MIN_RELEVANCE_SCORE = 0.22)
+  Weighted by: length · trusted-domain · structure · education-keyword density
+        ↓
+ChromaDB embed + store  (batch = 200 embeddings, 100 docs/insert)
+  Language-aware domain cap:
+    VI sources  → VI_DOMAIN_CAP = 50 chunks/domain
+    EN sources  → EN_DOMAIN_CAP = 35 chunks/domain
+    Academic    → unlimited (arxiv, ieee, acm, stanford, mit, …)
+  MAX_CHUNKS_TO_EMBED = 1000 per ingestion run
+```
+
+---
+
+## Agentic RAG Architecture
+
+### Researcher — Retrieval with 3-Layer Quality Filtering
+
+Each subsection triggers an independent retrieval call using the curriculum's `search_query` field (optionally extended with `user_requirements` keywords).
+
+**Layer 1 — Structural heuristics** (no LLM):  
+Prose density, academic metadata patterns, TOC/bibliography detection, domain trust score. Fast pass/fail before spending tokens.
+
+**Layer 2 — LLM binary classifier** (gpt-4o-mini):  
+Content-type-aware rules. E.g., for `scholarly`: rejects non-peer-reviewed opinion; for `technical`: rejects pure marketing copy. Fail-open: if classifier errors, Layer 1 result is used.
+
+**Layer 3 — Semantic deduplication**:  
+Cosine similarity threshold = 0.85 between accepted chunks. Deduplication also runs at the source level: max 3 chunks per trusted domain, 1 chunk per other domain.
+
+**Bilingual detection**: Vietnamese content identified via Unicode diacritic pattern. VI and EN chunks are tracked separately in logs (`logs/rag_context.log` — full audit trail per subsection).
+
+**Output field**: `state["rag_context"]` — a formatted string of accepted chunks passed to the Writer.
+
+### Writer — Agentic Context Enrichment Loop
+
+The Writer runs three components in sequence:
+
+**Component 1: ContextRetrievalAgent** (gpt-4o-mini + tool calling)  
+Assesses whether initial `rag_context` is sufficient. If not, calls `retrieve_context_tool` (up to **2 rounds**) with new queries, tracking already-used queries to prevent repeats. Returns enriched context.
+
+**Component 2: ContentWriter** (gpt-4o)  
+Generates Vietnamese academic prose. Key mechanics:
+
+- **Character target** = `SECTION_TYPE_CHAR_TARGETS[section_type]` × `CONTENT_LEVEL_SCALES[content_level]`
+
+  | section_type | base range (chars) |
+  |---|---|
+  | `light` | 1 500 – 2 500 |
+  | `medium` | 3 000 – 4 500 |
+  | `deep` | 4 500 – 6 500 |
+  | `applied` | 2 500 – 3 500 |
+
+  | content_level | scale |
+  |---|---|
+  | Ngắn | 0.55× |
+  | Trung Bình | 1.0× |
+  | Dài | 1.6× |
+  | Rất Dài | 2.3× |
+
+- **Section continuity**: `state["section_summaries"]` (one line per completed subsection) is injected as a `[PRIOR SECTIONS — do not repeat]` block to prevent thematic drift across a long textbook.
+
+- **Image tagging**: Writer emits `[IMAGE_NEEDED: hint]` placeholders.
+
+**Component 3: ImageDescriptionGenerator** (gpt-4o-mini)  
+Batch-replaces `[IMAGE_NEEDED: hint]` → `[IMAGE: Vietnamese title | full description]` tags that Illustrator later resolves.
+
+### Chapter Header Enforcement (3-layer defence)
+
+Chapter headings (`# CHƯƠNG N: TIÊU ĐỀ`) must appear exactly once at the start of the first subsection of each chapter and never elsewhere.
+
+| Layer | Mechanism |
+|---|---|
+| **Layer 1** | Prompt directive: explicit `EMIT`/`PROHIBIT` instruction with chapter index context |
+| **Layer 2b** | Post-processing: if `# CHƯƠNG` is missing and `emit_header=True`, prepend it deterministically |
+| **Layer 2c** | Post-processing: `re.sub` forces title text to `.upper()` even when LLM uses title-case |
+| **Layer 3** | State flag: `chapter_header_written = True` prevents re-emission on revision loops |
+
+### Reviewer — Quality Gate
+
+Two-step pipeline per subsection:
+
+**Editorial pass** (deterministic):  
+LaTeX → Typst math conversion (`\[...\]` → `$$...$$`, inline `\(` → `$`), Unicode subscript normalization, heading level safety (`####` → `###`), blank line enforcement.
+
+**Quality gate** (gpt-4o-mini JSON classifier):  
+Six failure rules: character count, naked math, wrong delimiters, tone, paragraph depth, blank lines.
+
+- Returns `{needs_revision: bool, feedback: str}`  
+- `revision_number` increments on REVISE; resets to 0 on APPROVE  
+- **MAX_REVISIONS = 2** — after two failures the section is force-approved to prevent workflow deadlock
+
+---
+
+## Illustrator — Image Resolution Pipeline
+
+```
+[IMAGE: title | description]
+        ↓
+LLM classifier → route_image_request()
+   ├── DRAW    → gpt-image-1 (conceptual/artistic)
+   │             model selection: deep/applied → premium, light/medium → default
+   │             retry loop (max 2 attempts) + vision validation
+   ├── DIAGRAM → Serper Google Images (technical structure requiring precise layout)
+   └── SEARCH  → Serper Google Images (real entity: logo, map, photo)
+                 candidate retry: max 3 URLs, vision validation per candidate
+                 fallback chain: last-downloaded → DRAW result → last-resort DALL-E
+        ↓
+Download → resize to A4 constraints (max 800×500 px) → RGB PNG conversion
+        ↓
+Save → outputs/images/<hash>.png  (hash-based deduplication)
+        ↓
+Replace tag → ![Vietnamese caption](relative/path.png){width=70%}
+```
+
+Cross-drive path issue (Typst exit 43): Publisher redirects Pandoc TEMP to `BASE_DIR/.pandoc_tmp` (same drive as `.typ` file) and passes `--pdf-engine-opt=--root` + `--pdf-engine-opt=D:\`.
+
+---
+
+## Publisher — Assembly and Export
+
+1. Merge `final_content` (all committed subsections) + `current_content` (last subsection buffer)
+2. Fix passes (deterministic, in order):
+   - `fix_unicode_math` → Unicode sub/superscripts to `$...$`
+   - `fix_markdown_headings` → headings on own lines
+   - `fix_inline_display_math` → trivial `$$x$$` → `$x$`
+   - `fix_math_formatting` → Typst-compatible math cleanup
+   - `fix_typst_deprecated_symbols` → `times.circle` → `times.o`
+   - `fix_chapter_pagebreaks` → `#pagebreak()` before each `# CHƯƠNG`
+   - `add_figure_numbers` → prefix captions with "Hình X.Y.N:"
+3. Assemble Typst front matter: title page → Mục lục → [Danh mục hình] → body (Lời nói đầu = page 1)
+4. Export via **Pandoc + Typst** (PDF) and **python-docx** (Word)
+   - Word: strip Typst blocks, inject OpenXML page breaks, Times New Roman via `reference.docx`
+
+---
+
+## Tech Stack
 
 | Layer | Technology |
-|-------|-----------|
+|---|---|
 | **Orchestration** | LangGraph, LangChain |
-| **LLM** | OpenAI GPT-4o-mini (cheap & premium slots) |
-| **Embeddings** | `sentence-transformers/all-MiniLM-L6-v2` (local, via HuggingFace) |
-| **Vector DB** | ChromaDB |
-| **Web Search** | DuckDuckGo Search (`duckduckgo-search`) — bilingual VI + EN |
-| **Image Search** | Serper Google Images API (`SERPER_API_KEY`) |
-| **Image Generation** | DALL-E 3 (reuses `OPENAI_API_KEY`) |
-| **Web Scraping** | Requests, BeautifulSoup4, lxml, fake-useragent |
-| **Document Export** | Pandoc + Typst (PDF), python-docx (Word) |
-| **Frontend** | Streamlit |
-| **Runtime** | Python 3.10+ |
+| **LLM (cheap slot)** | `gpt-4o-mini` — validator, planner, query expansion, reviewer gate, context retrieval, image description |
+| **LLM (premium slot)** | `gpt-4o` — content writer |
+| **Image generation** | `gpt-image-1` / `gpt-image-1.5` |
+| **Embeddings** | `text-embedding-3-small` (OpenAI, default) or `BAAI/bge-m3` (local HuggingFace) |
+| **Vector store** | ChromaDB (persistent, `data/chroma_db/`) |
+| **Web search** | DuckDuckGo Search — bilingual `vn-vn` + `us-en` regions |
+| **Image search** | Serper Google Images API |
+| **HTML scraping** | Requests, BeautifulSoup4, lxml, fake-useragent |
+| **PDF extraction** | PyMuPDF (`fitz`), pypdf (fallback) |
+| **Document export** | Pandoc + Typst engine (PDF), python-docx (Word) |
+| **Task queue** | Celery + Redis |
+| **API** | FastAPI, SQLAlchemy (async), MySQL, Alembic |
 
 ---
 
-## ⚙️ Installation & Prerequisites
+## Configuration Reference
 
-### **Step 1: System Tools (Mandatory)**
-
-#### 1.1 Pandoc
-
-* **Windows:** `winget install pandoc`
-* **Mac/Linux:** `brew install pandoc` / `sudo apt-get install pandoc`
-* **Verify:** `pandoc --version`
-
-#### 1.2 Typst (PDF engine)
-
-Typst is lightweight and supports UTF-8/Vietnamese natively — no extra font packages needed.
-
-* **Windows:** `winget install typst.typst`
-* **Mac:** `brew install typst`
-* **Linux:** `snap install typst`
-* **Verify:** `typst --version`
-
-### **Step 2: Python Setup**
-
-```bash
-git clone <repository-url>
-cd curriculum_rag
-
-python -m venv venv
-source venv/bin/activate      # Windows: venv\Scripts\activate
-
-pip install -r requirements.txt
-```
-
-### **Step 3: Environment Configuration**
-
-Create a `.env` file in the project root:
+Key settings in `.env` (see `backend/app/config.py` for full list):
 
 ```env
-# Required
-OPENAI_API_KEY=your_openai_api_key_here
+# API Keys
+OPENAI_API_KEY=...          # Required
+GROQ_API_KEY=...            # Required
+GEMINI_API_KEY=...          # Required
+SERPER_API_KEY=...          # Optional — enables SEARCH/DIAGRAM image modes
 
-# Optional — enables image search (Illustrator SEARCH/DIAGRAM modes)
-SERPER_API_KEY=your_serper_api_key_here
+# Embedding
+EMBEDDING_PROVIDER=openai   # "openai" (fast, API) or "local" (BAAI/bge-m3, free)
 
-# Optional — PDF styling overrides (defaults shown)
-PDF_BODY_FONTSIZE=12pt
-PDF_CHAPTER_FONTSIZE=Huge
-PDF_TOC_TITLE=MỤC LỤC
+# RAG
+RAG_INITIAL_K=3             # Researcher first retrieval
+RAG_TOOL_K=3                # Tool call retrieval (Writer enrichment rounds)
+RAG_TOP_K=8                 # Total top-k after merging rounds
+
+# Chunking
+CHUNK_SIZE=2000
+CHUNK_OVERLAP=400
+
+# Crawl speed
+SEARCH_RESULTS_PER_QUERY=30
+SEARCH_MAX_WORKERS=6
+CRAWL_MAX_WORKERS=5
+CRAWL_MAX_SUB_LINKS=5       # depth-1 internal links per page
+CRAWL_MAX_DEPTH2_LINKS=3    # depth-2 links on high-value domains
+
+# Quality gates
+MIN_CHUNK_CHARS=200
+MIN_ALPHA_RATIO=0.55
+MAX_DIGIT_RATIO=0.40
+MIN_RELEVANCE_SCORE=0.22
+
+# Domain caps
+VI_DOMAIN_CAP=50
+EN_DOMAIN_CAP=35
+MAX_CHUNKS_TO_EMBED=1000
 ```
-
-> **Note:** `OPENAI_API_KEY` is required. Without `SERPER_API_KEY`, image search is disabled; DALL-E 3 image generation still works (it reuses the OpenAI key).
 
 ---
 
-## 🖥️ Usage
+## Installation
 
-### **Running the Application**
-
-Run the Streamlit application:
+### Prerequisites
 
 ```bash
-streamlit run app.py
+# Pandoc
+winget install pandoc          # Windows
+brew install pandoc            # macOS
+
+# Typst (PDF engine — UTF-8 native, no extra font packages needed)
+winget install typst.typst     # Windows
+brew install typst             # macOS
 ```
 
-### **Using the Interface**
+### Backend
 
-1. **Open your browser:** (Usually http://localhost:8501)
+```bash
+git clone <repo>
+cd curriculum_rag/backend
 
-2. **Generate a Book:**
-   * Enter a Topic (e.g., "Giáo trình Kỹ thuật Trồng Lan")
-   * Adjust Recursion Limit if the book is long (Default: 150)
-   * Click "🚀 Bắt đầu tạo sách"
+python -m venv venv
+venv\Scripts\activate          # Windows: venv\Scripts\activate
 
-3. **Download:**
-   * Wait for the process to finish (Ingestion → Planning → Writing...)
-   * Click the "⬇️ Download PDF" button when it appears
+pip install -r requirements.txt
+cp ../.env.example .env        # fill in API keys
+
+# Database
+alembic upgrade head
+
+# Start services (separate terminals)
+uvicorn app.main:app --reload --port 8000
+celery -A app.celery_app worker --loglevel=info
+```
+
+### Frontend
+
+```bash
+cd curriculum_rag/frontend
+npm install
+npm run dev                    # http://localhost:5173
+```
 
 ---
 
-## 📂 Project Structure
+## Project Structure (Core)
 
 ```
 curriculum_rag/
-├── app.py                        # Streamlit entry point (UI phases: idle/planning/reviewing/generating/done)
-├── backend.py                    # LangGraph runner (Phase A: ingestion+planning; Phase B: content loop)
-├── requirements.txt
-├── .env                          # API keys & PDF styling (not in repo)
+├── backend/
+│   ├── app/
+│   │   ├── config.py                        # Settings singleton, embedding model factory
+│   │   ├── ingestion/
+│   │   │   ├── crawler.py                   # HTML + PDF extraction, depth-1/2 link following
+│   │   │   ├── search_engine.py             # DuckDuckGo bilingual wrapper
+│   │   │   ├── url_filter.py                # Static + dynamic URL filter (parallel HEAD)
+│   │   │   └── query_expansion.py           # LLM bilingual query generator
+│   │   └── services/textbook/
+│   │       ├── orchestrator.py              # LangGraph graph builders (planning / content)
+│   │       ├── workflow_runner.py           # Graph execution + DB progress updates
+│   │       ├── validator.py                 # Topic classification → content_type, core_topic
+│   │       ├── planner.py                   # HybridPlanner: 3-phase LLM curriculum generation
+│   │       ├── ingester.py                  # 5-step ingestion pipeline
+│   │       ├── researcher.py                # ResearcherAgent: 3-layer RAG retrieval
+│   │       ├── writer.py                    # WriterAgent: agentic context loop + content draft
+│   │       ├── reviewer.py                  # ReviewerAgent: editorial pass + quality gate
+│   │       ├── illustrator.py               # IllustratorAgent: DRAW / SEARCH / DIAGRAM routing
+│   │       └── publisher.py                 # Math/heading fix passes + Typst/Word export
+│   ├── alembic/                             # DB migrations
+│   └── logs/                               # Per-agent log files + logs/prompts/ audit trail
 │
-├── src/
-│   ├── config.py                 # API keys, paths, model names, crawl speed knobs, PDF env vars
-│   ├── log_config.py
-│   ├── stop_signal.py            # Graceful stop flag shared between UI and backend threads
-│   │
-│   ├── agents/
-│   │   ├── validator.py          # Topic suitability check (runs before ingestion)
-│   │   ├── ingester.py           # 6-query bilingual search + crawl + ChromaDB embed
-│   │   ├── planner.py            # Curriculum structure + academic title + preface
-│   │   ├── researcher.py         # RAG retrieval per section
-│   │   ├── writer.py             # Section drafting with word-count targets
-│   │   ├── reviewer.py           # Quality gate (JSON approve/revise, max 2 revisions)
-│   │   ├── illustrator.py        # Image tag router: DRAW (DALL-E 3) / SEARCH / DIAGRAM (Serper)
-│   │   ├── publisher.py          # Final assembly → Markdown, PDF (Pandoc+Typst), Word
-│   │   └── query_expansion.py    # LLM-based search query expansion
-│   │
-│   ├── graph/
-│   │   ├── state.py              # AgentState, SubSection, SECTION_TYPE_WORD_TARGETS
-│   │   └── workflow.py           # LangGraph edges, route_after_review, check_next_step
-│   │
-│   ├── ingestion/
-│   │   ├── search_engine.py      # DuckDuckGo wrapper (vn-vn + us-en regions)
-│   │   ├── crawler.py            # HTML scraper with sub-link following
-│   │   └── url_filter.py         # Parallel content-type probe (filters PDFs, binaries)
-│   │
-│   └── ui/
-│       ├── components.py         # Streamlit widgets: sidebar, curriculum editor, status cards
-│       ├── events.py             # Event queue processing (progress updates from backend)
-│       └── styles.css
-│
-├── data/
-│   └── chroma_db/                # Persistent vector store (auto-created)
-│
-├── outputs/                      # Generated files: <title>_<timestamp>.{md,pdf,docx}
-│   └── images/                   # Downloaded/generated images (PNG)
-│
-├── logs/                         # Per-module log files + prompts/ subdirectory
-│
-└── tests/
-    ├── test_image_insertion.py   # PDF image pipeline (no LLM required)
-    ├── test_dalle3.py
-    ├── test_ddgs_search.py
-    └── test_planner_pipeline.py
+├── data/chroma_db/                          # Persistent vector store (auto-created)
+└── outputs/                                 # Generated .md / .pdf / .docx + images/
 ```
 
 ---
 
-## 🐛 Troubleshooting
+## License
 
-### PDF generation fails (exit code 43 / images not found)
-
-This happens when images and the `.typ` file are on different drives. The fix is already applied in `publisher.py` (TEMP redirected to `BASE_DIR/.pandoc_tmp`, `--root D:\` passed to Typst). If you still see it:
-
-* Confirm `pandoc --version` and `typst --version` are both on PATH.
-* Run `tests/test_image_insertion.py` — it reproduces the full pipeline without any LLM calls.
-
-### Images missing in PDF
-
-* `SERPER_API_KEY` not set → SEARCH/DIAGRAM modes are disabled; only DALL-E 3 DRAW mode works.
-* Check `logs/agents.log` for `[Illustrator]` error lines.
-* Verify `outputs/images/` contains the downloaded PNGs.
-
-### Validator rejects a valid topic
-
-The Validator agent checks topic suitability before ingestion runs. If it incorrectly blocks a topic, check `logs/agents.log` for the validator response and adjust the topic wording.
-
-### Slow ingestion
-
-Tune the speed knobs in `src/config.py` (or override via `.env`):
-
-```
-SEARCH_RESULTS_PER_QUERY  # default 20 — lower to 5 for quick tests
-CRAWL_MAX_WORKERS         # default 5
-CRAWL_MAX_SUB_LINKS       # default 5 — lower to 1 for quick tests
-```
-
-### ChromaDB errors on restart
-
-The vector store in `data/chroma_db/` persists between runs. If you see schema errors, delete the folder and re-run ingestion.
-
----
-
-## 📄 License
-
-This project is licensed under the **MIT License**.
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
----
-
-## 📧 Contact
-
-For questions or support, please open an issue on GitHub.
-
----
+MIT
