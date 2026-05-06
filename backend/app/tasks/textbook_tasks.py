@@ -16,6 +16,27 @@ from sqlalchemy import select
 logger = setup_logger(name="TextbookTasks", logfile="logs/celery_tasks.log")
 
 
+async def update_textbook_progress(db, textbook_id: int, **kwargs):
+    result = await db.execute(select(Textbook).where(Textbook.id == textbook_id))
+    textbook = result.scalar_one_or_none()
+    if not textbook:
+        return None
+    for key, value in kwargs.items():
+        if hasattr(textbook, key):
+            setattr(textbook, key, value)
+    if "current_chapter" in kwargs or "current_subsection" in kwargs:
+        ch = getattr(textbook, "current_chapter", 0) or 0
+        sub = getattr(textbook, "current_subsection", 0) or 0
+        total_ch = getattr(textbook, "total_chapters", 0) or 0
+        if textbook.progress_data:
+            progress_data = dict(textbook.progress_data)
+            progress_data["status_text"] = f"Chương {ch}/{total_ch} - Mục {sub}"
+            progress_data["current_chapter"] = ch
+            progress_data["current_subsection"] = sub
+            textbook.progress_data = progress_data
+    await db.commit()
+    return textbook
+
 @celery_app.task(bind=True, name="generate_textbook")
 def generate_textbook_task(self, textbook_id: int):
     """
@@ -55,8 +76,8 @@ def generate_textbook_task(self, textbook_id: int):
                 textbook.status = TextbookStatus.GENERATING.value #type: ignore
                 textbook.progress_data = { #type: ignore
                     "phase": "planning",
-                    "progress_value": 0.05,
-                    "status_text": "**Bước 1/3:** Đang lập dàn ý...",
+                    "progress_value": 5.0,
+                    "status_text": "Bước 1/3: Đang lập dàn ý...",
                     "planner_status": "active",
                     "ingestion_status": "pending",
                     "publisher_status": "pending",
@@ -82,6 +103,19 @@ def generate_textbook_task(self, textbook_id: int):
                 )
                 
                 if result.get("success"):
+                    # ⭐ Save curriculum to dedicated field
+                    curriculum = result.get("curriculum")
+                    if curriculum:
+                        await update_textbook_progress(
+                            db, textbook_id,
+                            curriculum_json=curriculum,
+                            total_chapters=len(curriculum.get("chapters", [])),
+                            total_subsections=sum(
+                                len(ch.get("subsections", [])) 
+                                for ch in curriculum.get("chapters", [])
+                            )
+                        )
+                    
                     logger.info(f"[TASK] Planning complete for textbook {textbook_id}")
                     return {
                         "status": "success",
@@ -112,6 +146,7 @@ def generate_textbook_task(self, textbook_id: int):
         return {"status": "error", "error": str(e)}
 
 
+    
 @celery_app.task(bind=True, name="continue_textbook_generation")
 def continue_textbook_generation_task(self, textbook_id: int, confirmed_curriculum: dict):
     """
@@ -162,6 +197,14 @@ def continue_textbook_generation_task(self, textbook_id: int, confirmed_curricul
                     "export_formats": ["PDF", "Word"],
                     "content_type": textbook.content_type, #type: ignore
                 }
+                
+                # Run content generation
+                # ⭐ Initialize tracking
+                await update_textbook_progress(
+                    db, textbook_id,
+                    current_chapter=0,
+                    current_subsection=0
+                )
                 
                 # Run content generation
                 result = await continue_after_curriculum_confirmation(

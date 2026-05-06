@@ -208,10 +208,36 @@ async def get_textbook_progress(
     if not textbook:
         raise HTTPException(status_code=404, detail="Textbook not found")
 
+
+    progress_data = dict(textbook.progress_data or {})  # type: ignore
+    
+ 
+    if textbook.curriculum_json and not progress_data.get("curriculum_data"):  # type: ignore
+        progress_data["curriculum_data"] = textbook.curriculum_json  # type: ignore
+    
+   
+        progress_data.setdefault("current_chapter", textbook.current_chapter)  # type: ignore
+    if textbook.current_subsection is not None:  # type: ignore
+        progress_data.setdefault("current_subsection", textbook.current_subsection)  # type: ignore
+    if textbook.total_chapters is not None:  # type: ignore
+        progress_data.setdefault("total_chapters", textbook.total_chapters)  # type: ignore
+    if textbook.total_subsections is not None:  # type: ignore
+        progress_data.setdefault("total_subsections", textbook.total_subsections)  # type: ignore
+    
+    # ⭐ ADD: Include pdf_path, docx_path, title for completed textbooks
+    if textbook.pdf_path:  # type: ignore
+        progress_data["pdf_path"] = textbook.pdf_path  # type: ignore
+    if textbook.docx_path:  # type: ignore
+        progress_data["docx_path"] = textbook.docx_path  # type: ignore
+    if textbook.title:  # type: ignore
+        progress_data["title"] = textbook.title  # type: ignore
+    if textbook.num_chapters:  # type: ignore
+        progress_data.setdefault("num_chapters", textbook.num_chapters)  # type: ignore
+    
     return TextbookProgressResponse(
         id=textbook.id,  # type: ignore
         status=textbook.status,  # type: ignore
-        progress_data=textbook.progress_data,  # type: ignore
+        progress_data=progress_data,  # type: ignore
     )
 
 
@@ -246,11 +272,12 @@ async def confirm_curriculum(
     ]
     total_subsections = sum(len(ch.get("subsections", [])) for ch in chapters)
 
+
     progress_data = dict(textbook.progress_data or {}) #type: ignore
     progress_data.update({ #type: ignore
         "phase": "generating",
         "progress_value": 0.20,
-        "status_text": "**Bước 3/4:** Đang tạo nội dung giáo trình...",
+        "status_text": "Bước 3/4: Đang tạo nội dung giáo trình...",
         "curriculum_data": request.curriculum,
         "chapter_titles": chapter_titles,
         "total_chapters": len(chapter_titles),
@@ -258,6 +285,15 @@ async def confirm_curriculum(
     })
 
     textbook.progress_data = progress_data  # type: ignore
+    
+  
+    textbook.curriculum_json = request.curriculum  # type: ignore
+    textbook.total_chapters = len(chapter_titles)  # type: ignore
+    textbook.total_subsections = total_subsections  # type: ignore
+    textbook.current_chapter = 0  # type: ignore
+    textbook.current_subsection = 0  # type: ignore
+   
+    
     await db.commit()
 
     # Trigger content generation task

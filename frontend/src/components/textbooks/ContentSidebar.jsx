@@ -1,94 +1,89 @@
-export function ContentSidebar({ progressData }) {
-  if (!progressData || progressData.phase !== 'generating') {
-    return null
+import { useMemo } from 'react'
+import { StatsSection } from './StatsSection'
+import { ChapterList } from './ChapterList'
+
+/**
+ * Transform flat chapter_titles array into hierarchical structure
+ * This handles the case where backend only sends chapter_titles (flat list)
+ */
+function transformChapterData(progressData) {
+  const { chapter_titles = [], curriculum_data } = progressData || {}
+
+  // If we have full curriculum_data, use it
+  if (curriculum_data?.chapters) {
+    return curriculum_data.chapters.map((ch, idx) => ({
+      number: ch.number || idx + 1,
+      title: ch.title,
+      subsections: ch.subsections || []
+    }))
   }
 
-  const { 
-    chapter_titles = [],
+  // Otherwise, construct from flat chapter_titles
+  if (Array.isArray(chapter_titles) && chapter_titles.length > 0) {
+    return chapter_titles.map((title, idx) => ({
+      number: idx + 1,
+      title: title,
+      subsections: [] // No subsections in simple mode
+    }))
+  }
+
+  return []
+}
+
+export function ContentSidebar({ progressData }) {
+  // Transform chapter data (must be before early return - hooks rule)
+  const chapters = useMemo(
+    () => transformChapterData(progressData),
+    [progressData]
+  )
+
+  const {
     current_chapter = 0,
     current_subsection = 0,
-    current_content_preview = '',
-    total_chapters = 0,
-    total_subsections = 0,
-  } = progressData
+  } = progressData || {}
 
-  const chapterList = Array.isArray(chapter_titles) ? chapter_titles : []
+  // Don't render if no data or not in generating phase
+  if (!progressData || progressData.phase !== 'generating') {
+    return (
+      <div className="h-full flex items-center justify-center p-6 text-center text-gray-400">
+        <div>
+          <div className="text-4xl mb-3">📊</div>
+          <p className="text-sm">
+            Sidebar sẽ hiển thị khi đang tạo nội dung
+          </p>
+        </div>
+      </div>
+    )
+  }
+
   return (
-    <div className="space-y-4">
-      {/* Header */}
-      <div className="pb-3 border-b border-gray-300">
-        <h3 className="font-semibold text-gray-900 flex items-center gap-2">
-          <span>📊</span>
-          <span>Thống kê</span>
-        </h3>
+    <div className="h-full flex flex-col bg-white">
+      {/* Stats Section */}
+      <div className="flex-shrink-0 border-b border-gray-200">
+        <StatsSection progressData={progressData} />
       </div>
 
-      {/* Stats */}
-      <div className="space-y-3">
-        <div>
-          <div className="text-xs text-gray-600 mb-1">Số chương</div>
-          <div className="text-2xl font-bold text-primary">{total_chapters}</div>
-        </div>
-        <div>
-          <div className="text-xs text-gray-600 mb-1">Tổng số mục</div>
-          <div className="text-2xl font-bold text-primary">{total_subsections}</div>
-        </div>
+      {/* Chapter List - Scrollable */}
+      <div className="flex-1 overflow-y-auto">
+        <ChapterList
+          chapters={chapters}
+          currentChapter={current_chapter}
+          currentSubsection={current_subsection}
+        />
       </div>
 
-      <div className="border-t border-gray-300 pt-3"></div>
-
-      {/* Chapter navigation */}
-      {chapterList.length > 0 && (
-        <div>
-            <h4 className="text-xs font-semibold text-gray-700 mb-2">Tiến độ chương</h4>
-            <div className="space-y-1">
-            {chapterList.map((title, idx) => (
-              <div
-                key={idx}
-                className={`
-                  px-2 py-1.5 rounded text-xs transition-colors
-                  ${idx === current_chapter
-                    ? 'bg-blue-50 border-l-2 border-blue-500 font-semibold text-blue-900'
-                    : idx < current_chapter
-                    ? 'bg-green-50 text-green-700'
-                    : 'bg-gray-50 text-gray-500'
-                  }
-                `}
-              >
-                <div className="flex items-center gap-2">
-                  {idx < current_chapter && <span className="text-green-600 text-xs">✓</span>}
-                  {idx === current_chapter && <span className="text-blue-600 text-xs">⏳</span>}
-                  {idx > current_chapter && <span className="text-gray-400 text-xs">○</span>}
-                  <span className="line-clamp-1 text-xs">
-                    {idx + 1}. {title}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
+      {/* Footer - Current Status */}
+      <div className="flex-shrink-0 border-t border-gray-200 px-4 py-3 bg-blue-50">
+        <div className="flex items-center gap-2 text-xs text-blue-700">
+          <span className="animate-pulse">🔄</span>
+          <span className="font-medium">
+            {current_chapter > 0 && current_subsection > 0 ? (
+              <>Đang viết: Chương {current_chapter}, Mục {current_subsection}</>
+            ) : (
+              <>Đang khởi tạo...</>
+            )}
+          </span>
         </div>
-      )}
-
-      {/* Content preview */}
-      {current_content_preview && (
-        <div>
-          <h4 className="text-xs font-semibold text-gray-700 mb-2">
-            Nội dung gần nhất:
-          </h4>
-          <div className="bg-white rounded border border-gray-200 p-2 text-xs text-gray-700 leading-relaxed max-h-48 overflow-y-auto">
-            <div className="whitespace-pre-wrap font-mono text-xs">
-              {current_content_preview.split('\n').slice(-10).join('\n')}
-            </div>
-          </div>
-          <div className="mt-1 text-xs text-gray-500 text-center">
-            Cập nhật theo thời gian thực...
-          </div>
-        </div>
-      )}
-
-      {/* Current indicator */}
-      <div className="p-2 bg-blue-50 rounded text-xs text-blue-700 text-center">
-        Đang viết mục {current_subsection + 1}...
       </div>
     </div>
   )

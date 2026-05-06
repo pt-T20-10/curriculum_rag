@@ -103,8 +103,8 @@ async def run_textbook_workflow(
         if db:
             await update_progress(db, textbook_id, {
                 "phase": "planning",
-                "progress_value": 0.05,
-                "status_text": "**Bước 1/3:** Đang lập dàn ý...",
+                "progress_value": 10.0,
+                "status_text": "Bước 1/3: Đang lập dàn ý...",
                 "planner_status": "active",
                 "ingestion_status": "pending",
                 "publisher_status": "pending",
@@ -150,8 +150,8 @@ async def run_textbook_workflow(
 
                     await update_progress(db, textbook_id, {
                         "phase": "reviewing",
-                        "progress_value": 0.15,
-                        "status_text": "**Bước 1/3:** Vui lòng xem xét và xác nhận cấu trúc",
+                        "progress_value": 15.0,
+                        "status_text": "Bước 1/3: Vui lòng xem xét và xác nhận cấu trúc",
                         "planner_status": "completed",
                         "ingestion_status": "pending",
                         "curriculum_data": curriculum_data,
@@ -252,8 +252,8 @@ async def continue_after_curriculum_confirmation(
         if db:
             await update_progress(db, textbook_id, {
                 "phase": "generating",
-                "progress_value": 0.20,
-                "status_text": "**Bước 2/3:** Đang thu thập dữ liệu...",
+                "progress_value": 25.0,
+                "status_text": "Bước 2/3: Đang thu thập dữ liệu...",
                 "planner_status": "completed",
                 "ingestion_status": "active",
                 "publisher_status": "pending",
@@ -283,8 +283,8 @@ async def continue_after_curriculum_confirmation(
                 if node_name == "ingestion" and db:
                     await update_progress(db, textbook_id, {
                         "phase": "generating",
-                        "progress_value": 0.25,
-                        "status_text": "**Bước 3/3:** Đang tạo nội dung...",
+                        "progress_value": 30.0,
+                        "status_text": "Bước 3/3: Đang tạo nội dung...",
                         "planner_status": "completed",
                         "ingestion_status": "completed",
                         "publisher_status": "pending",
@@ -298,12 +298,12 @@ async def continue_after_curriculum_confirmation(
                     })
 
                 elif node_name in ("researcher", "writer", "reviewer", "illustrator") and db:
-                    progress = 0.25 + (current_chapter / len(curriculum.chapters)) * 0.65
+                    progress = 30.0 + (current_chapter / len(curriculum.chapters)) * 60.0
 
                     await update_progress(db, textbook_id, {
                         "phase": "generating",
-                        "progress_value": min(progress, 0.90),
-                        "status_text": f"**Bước 3/3:** Chương {current_chapter + 1}/{len(curriculum.chapters)} - Mục {current_subsection + 1}",
+                        "progress_value": min(progress, 90.0),
+                        "status_text": f"Bước 3/3: Chương {current_chapter + 1}/{len(curriculum.chapters)} - Mục {current_subsection + 1}",
                         "planner_status": "completed",
                         "ingestion_status": "completed",
                         "current_chapter": current_chapter,
@@ -321,8 +321,8 @@ async def continue_after_curriculum_confirmation(
                 elif node_name == "publisher" and db:
                     await update_progress(db, textbook_id, {
                         "phase": "generating",
-                        "progress_value": 0.95,
-                        "status_text": "**Bước 3/3:** Đang xuất bản...",
+                        "progress_value": 95.0,
+                        "status_text": "Bước 3/3: Đang xuất bản...",
                         "planner_status": "completed",
                         "ingestion_status": "completed",
                         "publisher_status": "active",
@@ -336,7 +336,7 @@ async def continue_after_curriculum_confirmation(
         if db:
             await update_progress(db, textbook_id, {
                 "phase": "done",
-                "progress_value": 1.0,
+                "progress_value": 100.0,
                 "status_text": "Hoàn tất!",
                 "planner_status": "completed",
                 "ingestion_status": "completed",

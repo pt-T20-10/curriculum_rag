@@ -1,4 +1,13 @@
-export function SubStageCard({ subStages, chapter, subsection, totalChapters, subsectionsInChapter }) {
+export function SubStageCard({ 
+  subStages, 
+  chapter, 
+  subsection, 
+  totalChapters,
+  curriculumData  // ⭐ NEW: For calculating subsections
+}) {
+  // Calculate subsections from curriculum if available
+  const currentChapterSubsections = curriculumData?.chapters?.[chapter]?.subsections?.length || 0
+  
   const icons = {
     researcher: '🔍',
     writer: '✍️',
@@ -30,7 +39,7 @@ export function SubStageCard({ subStages, chapter, subsection, totalChapters, su
         <div>
           <span className="text-lg">⚙️</span>
           <span className="ml-2 font-semibold">
-            Chương {chapter + 1}/{totalChapters} — Mục {subsection + 1}/{subsectionsInChapter}
+            Chương {chapter + 1}/{totalChapters} — Mục {subsection + 1}/{currentChapterSubsections}
           </span>
         </div>
         <span className={`px-3 py-1 rounded-full text-xs font-semibold ${badgeClass}`}>

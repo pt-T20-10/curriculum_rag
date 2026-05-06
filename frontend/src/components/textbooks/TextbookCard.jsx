@@ -16,6 +16,7 @@ export function TextbookCard({ textbook }) {
   }
 
   const isGenerating = textbook.status === 'generating'
+  const isCompleted = textbook.status === 'done' || textbook.status === 'completed'
 
   return (
     <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 hover:shadow-md transition-shadow">
@@ -73,16 +74,17 @@ export function TextbookCard({ textbook }) {
               Xem tiến độ →
             </span>
           </Button>
-        ) : (
+        ) : isCompleted ? (
           <Button
             onClick={() => navigate(`/textbooks/${textbook.id}`)}
             className="flex-1"
+            variant="primary"
           >
-            Xem chi tiết
+            📄 Xem chi tiết
           </Button>
-        )}
+        ) : null}
 
-        {textbook.pdf_path && (
+        {textbook.pdf_path && isCompleted && (
           <Button
             variant="secondary"
             onClick={() => {

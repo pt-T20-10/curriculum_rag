@@ -1,19 +1,23 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
+import ThreeColumnLayout from '../components/ThreeColumnLayout'
 import { useAuth } from '../context/AuthContext'
 import { textbooksAPI } from '../api/textbooks'
 import { Navbar } from '../components/layout/Navbar'
 import { Button } from '../components/common/Button'
-import { TextbookForm } from '../components/textbooks/TextbookForm'
+import { ConfigForm } from '../components/textbooks/ConfigForm'
 import { ProgressBar } from '../components/textbooks/ProgressBar'
 import { WorkflowCard } from '../components/textbooks/WorkflowCard'
 import { SubStageCard } from '../components/textbooks/SubStageCard'
 import { CurriculumEditor } from '../components/textbooks/CurriculumEditor'
 import { ContentSidebar } from '../components/textbooks/ContentSidebar'
+import { ContentPreview } from '../components/textbooks/ContentPreview'
+import { StopWarningModal } from '../components/textbooks/StopWarningModal'
+import { CompletionModal } from '../components/textbooks/CompletionModal'
 
 export function CreateTextbookPage() {
   const navigate = useNavigate()
-  const { textbookId: urlTextbookId } = useParams() // ⭐ Get textbookId from URL
+  const { textbookId: urlTextbookId } = useParams()
   const { user } = useAuth()
 
   const [textbookId, setTextbookId] = useState(urlTextbookId || null)
@@ -21,11 +25,17 @@ export function CreateTextbookPage() {
   const [progressData, setProgressData] = useState(null)
   const [configExpanded, setConfigExpanded] = useState(false)
   const [error, setError] = useState(null)
-  const [submittedTopic, setSubmittedTopic] = useState('')
-  const [sidebarExpanded, setSidebarExpanded] = useState(true) // ⭐ Sidebar toggle state
+  const [textbookTitle, setTextbookTitle] = useState('')
+  const [submittedConfig, setSubmittedConfig] = useState(null) // ⭐ NEW - actual config
+  const [sidebarExpanded, setSidebarExpanded] = useState(true)
+  const [rightSidebarExpanded, setRightSidebarExpanded] = useState(true)
+  const [confirmedCurriculum, setConfirmedCurriculum] = useState(null)
+  const [showStopModal, setShowStopModal] = useState(false)
+  const [showCompletionModal, setShowCompletionModal] = useState(false)
+  const [completedTextbookData, setCompletedTextbookData] = useState(null)
   const pollingRef = useRef(null)
 
-  // ⭐ Load existing textbook if textbookId in URL
+  // Load existing textbook
   useEffect(() => {
     if (urlTextbookId) {
       const loadTextbook = async () => {
@@ -37,10 +47,26 @@ export function CreateTextbookPage() {
             setTextbookId(urlTextbookId)
             setProgressData(data)
             setPhase(data.phase || 'idle')
-            setSubmittedTopic(data.topic || '')
+            setTextbookTitle(data.title || data.topic || '')
+            
+            
+            if (data.num_chapters || data.content_level) {
+              setSubmittedConfig({
+                topic: data.topic || '',
+                num_chapters: data.num_chapters || 3,
+                content_level: data.content_level || 'Trung Bình',
+                max_subsections_per_chapter: data.max_subsections_per_chapter || 5,
+                enable_images: data.enable_images !== undefined ? data.enable_images : true
+              })
+            }
+            
+            const curriculum = data.curriculum_data
+            if (curriculum) {
+              setConfirmedCurriculum(curriculum)
+            }
           }
         } catch (err) {
-          console.error('❌ Load textbook error:', err)
+          console.error('Load textbook error:', err)
           setError({ message: 'Không thể tải thông tin giáo trình' })
         }
       }
@@ -49,7 +75,7 @@ export function CreateTextbookPage() {
     }
   }, [urlTextbookId])
 
-  // Poll progress every 2 seconds
+  // Polling for progress
   useEffect(() => {
     if (!textbookId || phase === 'idle' || phase === 'done') {
       return
@@ -63,18 +89,20 @@ export function CreateTextbookPage() {
         if (data) {
           setProgressData(data)
           setPhase(data.phase)
+          
+          // Update title if available
+          if (data.title && !textbookTitle) {
+            setTextbookTitle(data.title)
+          }
 
           if (data.phase === 'done') {
             clearInterval(pollingRef.current)
-            setTimeout(() => {
-              navigate('/dashboard', {
-                state: { message: 'Tạo giáo trình thành công!' }
-              })
-            }, 3000)
+            setCompletedTextbookData(data)
+            setShowCompletionModal(true)
           }
         }
       } catch (err) {
-        console.error('❌ Poll error:', err)
+        console.error('Poll error:', err)
       }
     }
 
@@ -86,14 +114,12 @@ export function CreateTextbookPage() {
         clearInterval(pollingRef.current)
       }
     }
-  }, [textbookId, phase, navigate])
+  }, [textbookId, phase, navigate, textbookTitle])
 
   const handleSubmit = async (formData) => {
     setError(null)
 
     try {
-      console.log('🔵 Creating textbook:', formData)
-
       const response = await textbooksAPI.create({
         ...formData,
         export_formats: ['PDF', 'Word'],
@@ -102,16 +128,13 @@ export function CreateTextbookPage() {
       const textbook = response.data
       setTextbookId(textbook.id)
       setPhase('planning')
-      setSubmittedTopic(formData.topic)
+      setTextbookTitle(formData.topic)
+      setSubmittedConfig(formData) // ⭐ Save actual submitted config
       setConfigExpanded(false)
 
-      // ⭐ Update URL to include textbookId
       navigate(`/create/${textbook.id}`, { replace: true })
-
-      console.log('✅ Textbook created:', textbook)
-
     } catch (err) {
-      console.error('❌ Create error:', err)
+      console.error('Create error:', err)
       const errorDetail = err.response?.data?.detail
 
       if (errorDetail?.validation_failed) {
@@ -131,7 +154,11 @@ export function CreateTextbookPage() {
     }
   }
 
-  const handleStop = async () => {
+  const handleStopClick = () => {
+    setShowStopModal(true)
+  }
+
+  const handleStopConfirm = async () => {
     if (!textbookId) return
 
     try {
@@ -139,178 +166,141 @@ export function CreateTextbookPage() {
       setPhase('idle')
       setTextbookId(null)
       setProgressData(null)
-      setSubmittedTopic('')
+      setTextbookTitle('')
+      setSubmittedConfig(null) // ⭐ Clear config
+      setConfirmedCurriculum(null)
 
-      // ⭐ Navigate back to /create (new textbook)
       navigate('/create', { replace: true })
 
       if (pollingRef.current) {
         clearInterval(pollingRef.current)
       }
     } catch (err) {
-      console.error('❌ Stop error:', err)
+      console.error('Stop error:', err)
     }
   }
 
   const handleCurriculumConfirm = async (curriculum) => {
     try {
-      console.log('🔵 Confirming curriculum:', curriculum)
-
+      setConfirmedCurriculum(curriculum)
       await textbooksAPI.confirmCurriculum(textbookId, curriculum)
       setPhase('generating')
-
-      console.log('✅ Curriculum confirmed')
-
     } catch (err) {
-      console.error('❌ Confirm curriculum error:', err)
+      console.error('Confirm curriculum error:', err)
       setError({ message: 'Không thể xác nhận giáo trình' })
     }
   }
 
+  const handleViewDashboard = () => {
+    navigate('/dashboard', {
+      state: { message: 'Tạo giáo trình thành công!' }
+    })
+  }
+
   const isIdle = phase === 'idle'
   const isActive = phase !== 'idle' && phase !== 'done'
-  const showSidebar = phase === 'generating'
+  const showLeftSidebar = phase === 'generating'
+
+  // Enhanced progress data with confirmed curriculum
+  const enhancedProgressData = useMemo(() => {
+    if (!progressData) return null
+    
+    return {
+      ...progressData,
+      curriculum_data: confirmedCurriculum || progressData.curriculum_data
+    }
+  }, [progressData, confirmedCurriculum])
+
+  // Extract content for preview
+  const previewContent = useMemo(() => {
+    if (!progressData) return null
+    
+    // Backend uses 'current_content_preview' not 'current_content'!
+    const content = progressData.current_content_preview ||  // ⭐ CORRECT field name
+                   progressData.current_content || 
+                   progressData.final_content || 
+                   progressData.content ||
+                   progressData.generated_content ||
+                   progressData.text ||
+                   null
+    
+    if (phase === 'generating' && !content) {
+      console.log('ContentPreview - No content found. Available fields:', Object.keys(progressData))
+    }
+    
+    return content
+  }, [progressData, phase])
+
+  // Display topic with fallbacks
+  const displayTopic = useMemo(() => {
+    return textbookTitle || 
+           progressData?.title || 
+           progressData?.topic || 
+           progressData?.core_topic ||
+           ''
+  }, [textbookTitle, progressData])
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-gray-50 flex flex-col">
       <Navbar />
 
-      <div className="w-full">
+      <div className="flex-1">
+        <ThreeColumnLayout
+          leftSidebar={
+            showLeftSidebar ? (
+              <ContentSidebar progressData={enhancedProgressData} />
+            ) : (
+              <div className="p-6 text-center text-gray-400">
+                <p className="text-sm">Sidebar sẽ hiển thị khi đang tạo nội dung</p>
+              </div>
+            )
+          }
 
-        {/* Header */}
-        <div className="bg-white border-b border-gray-200">
-            <div className="content-container-lg py-6">
-                <h1 className="text-3xl font-bold text-center text-primary mb-2">
-                📚 Hệ Thống Tạo Giáo Trình Tự Động
+          centerPanel={
+            <div className="p-6">
+              {/* Title */}
+              <div className="mb-6 text-center">
+                <h1 className="text-2xl font-bold text-gray-800">
+                  📚 Tạo Giáo Trình AI
+                  {displayTopic && ` - ${displayTopic}`}
                 </h1>
-                <p className="text-center text-gray-600 text-sm mb-6">
-                Hệ thống AI — vui lòng kiểm tra lại kết quả trước khi sử dụng
+                <p className="text-sm text-gray-500 mt-1">
+                  Hệ thống AI — vui lòng kiểm tra lại kết quả trước khi sử dụng
                 </p>
-            </div>
-            </div>
-
-        {/* Sidebar + Main content */}
-        <div className="flex min-h-screen">
-
-          {/* ⭐ Sidebar Toggle Button (only when sidebar should show) */}
-          {showSidebar && (
-            <button
-              onClick={() => setSidebarExpanded(!sidebarExpanded)}
-              className="fixed left-4 top-32 z-50 bg-white border border-gray-300 rounded-lg p-2 shadow-lg hover:bg-gray-50 transition-all"
-              title={sidebarExpanded ? 'Ẩn sidebar' : 'Hiện sidebar'}
-            >
-              {sidebarExpanded ? (
-                <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
-                </svg>
-              ) : (
-                <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
-                </svg>
-              )}
-            </button>
-          )}
-
-          {/* ⭐ Left sidebar (collapsible with animation) */}
-          {showSidebar && (
-            <div 
-              className={`
-                flex-shrink-0 bg-gray-100 border-r border-gray-200 min-h-screen p-4
-                transition-all duration-300 ease-in-out
-                ${sidebarExpanded ? 'w-64 opacity-100' : 'w-0 opacity-0 overflow-hidden'}
-              `}
-            >
-              {sidebarExpanded && <ContentSidebar progressData={progressData} />}
-            </div>
-          )}
-
-          {/* Main content area */}
-          <div className="flex-1">
-            <div className={`${showSidebar && sidebarExpanded ? 'content-container-md' : 'content-container-sm'} py-4`}>
-
-              {/* ⭐ FORM BOX - ALWAYS VISIBLE */}
-              <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
-
-                {/* Idle: full interactive form */}
-                {isIdle && (
-                  <TextbookForm
-                    onSubmit={handleSubmit}
-                    loading={false}
-                    error={error}
-                    user={user}
-                    configExpanded={configExpanded}
-                    onToggleConfig={() => setConfigExpanded(!configExpanded)}
-                  />
-                )}
-
-                {/* Running: disabled form with config visible */}
-                {!isIdle && (
-                  <div className="space-y-4">
-                    {/* Topic display */}
-                    <div className="flex items-center justify-between gap-4 pb-4 border-b border-gray-200">
-                      <div className="min-w-0 flex-1">
-                        <p className="text-xs text-gray-500 mb-1">Chủ đề</p>
-                        <p className="font-semibold text-gray-900 truncate">
-                          {submittedTopic || progressData?.topic || '…'}
-                        </p>
-                      </div>
-
-                      {/* Stop button (hide during review) */}
-                      {phase !== 'done' && phase !== 'reviewing' && (
-                        <Button
-                          variant="danger"
-                          onClick={handleStop}
-                          className="flex-shrink-0"
-                        >
-                          ⛔ Dừng lại
-                        </Button>
-                      )}
-                    </div>
-
-                    {/* ⭐ Config area (collapsed but visible) */}
-                    <div>
-                      <button
-                        onClick={() => setConfigExpanded(!configExpanded)}
-                        className="flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900"
-                      >
-                        <svg 
-                          className={`w-4 h-4 transition-transform ${configExpanded ? 'rotate-90' : ''}`}
-                          fill="none" 
-                          stroke="currentColor" 
-                          viewBox="0 0 24 24"
-                        >
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                        </svg>
-                        <span className="font-medium">⚙️ Cấu hình</span>
-                        <span className="text-xs text-gray-500">(đang chạy với cấu hình này)</span>
-                      </button>
-
-                      {configExpanded && (
-                        <div className="mt-3 p-4 bg-gray-50 rounded-lg border border-gray-200 space-y-3 opacity-60">
-                          <div className="grid grid-cols-2 gap-4 text-sm">
-                            <div>
-                              <span className="text-gray-600">Số chương:</span>
-                              <span className="ml-2 font-medium">{progressData?.total_chapters || '—'}</span>
-                            </div>
-                            <div>
-                              <span className="text-gray-600">Mức độ:</span>
-                              <span className="ml-2 font-medium">{progressData?.content_level || '—'}</span>
-                            </div>
-                          </div>
-                          <p className="text-xs text-gray-500 italic">
-                            Cấu hình này không thể thay đổi khi đang chạy
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
               </div>
 
-              {/* ⭐ PROGRESS SECTION - BELOW FORM */}
+              {/* Form Box */}
+              <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
+                {!isIdle && (
+                  <div className="flex items-center justify-between gap-4 mb-4">
+                    <div className="flex-1" />
+                    {phase !== 'done' && phase !== 'reviewing' && (
+                      <Button
+                        variant="danger"
+                        onClick={handleStopClick}
+                      >
+                        ⛔ Dừng lại
+                      </Button>
+                    )}
+                  </div>
+                )}
+
+                <ConfigForm
+                  onSubmit={handleSubmit}
+                  loading={false}
+                  error={error}
+                  user={user}
+                  configExpanded={configExpanded}
+                  onToggleConfig={() => setConfigExpanded(!configExpanded)}
+                  isActive={isActive}
+                  currentTopic={displayTopic}
+                  submittedConfig={submittedConfig}
+                />
+              </div>
+
+              {/* Progress Section */}
               {isActive && progressData && (
                 <div className="space-y-4">
-
                   <ProgressBar
                     value={progressData.progress_value || 0}
                     statusText={progressData.status_text || ''}
@@ -324,7 +314,6 @@ export function CreateTextbookPage() {
                     />
                   )}
 
-                  {/* Ingestion shown only after curriculum confirmation */}
                   {phase === 'generating' && progressData.ingestion_status && (
                     <WorkflowCard
                       stage="ingestion"
@@ -339,7 +328,7 @@ export function CreateTextbookPage() {
                       chapter={progressData.current_chapter}
                       subsection={progressData.current_subsection}
                       totalChapters={progressData.total_chapters}
-                      subsectionsInChapter={progressData.subsections_in_chapter}
+                      curriculumData={enhancedProgressData?.curriculum_data}
                     />
                   )}
 
@@ -353,7 +342,7 @@ export function CreateTextbookPage() {
                 </div>
               )}
 
-              {/* ── CURRICULUM EDITOR ── */}
+              {/* Curriculum Editor */}
               {phase === 'reviewing' && progressData?.curriculum_data && (
                 <div className="mt-4">
                   <CurriculumEditor
@@ -364,7 +353,7 @@ export function CreateTextbookPage() {
                 </div>
               )}
 
-              {/* ── ERROR ── */}
+              {/* Error */}
               {progressData?.error_message && (
                 <div className="bg-red-50 border border-red-200 rounded-lg p-4 mt-4">
                   <p className="text-red-600 font-medium">❌ Lỗi</p>
@@ -372,15 +361,7 @@ export function CreateTextbookPage() {
                 </div>
               )}
 
-              {/* ── SUCCESS ── */}
-              {phase === 'done' && (
-                <div className="bg-green-50 border border-green-200 rounded-lg p-4 mt-4">
-                  <p className="text-green-800 font-semibold">🎉 Tạo giáo trình thành công!</p>
-                  <p className="text-green-700 text-sm mt-1">Đang chuyển về dashboard...</p>
-                </div>
-              )}
-
-              {/* ── TIPS (idle only) ── */}
+              {/* Tips (idle only) */}
               {isIdle && (
                 <div className="mt-4 bg-blue-50 border border-blue-200 rounded-lg p-4">
                   <h3 className="text-sm font-semibold text-gray-900 mb-2">
@@ -394,9 +375,39 @@ export function CreateTextbookPage() {
                 </div>
               )}
             </div>
-          </div>
-        </div>
+          }
+
+          rightSidebar={
+            <ContentPreview 
+              content={previewContent}
+              currentChapter={progressData?.current_chapter}
+              currentSubsection={progressData?.current_subsection}
+              totalChapters={progressData?.total_chapters}
+              totalSubsections={progressData?.total_subsections}
+            />
+          }
+
+          leftCollapsed={!sidebarExpanded}
+          rightCollapsed={!rightSidebarExpanded}
+          onToggleLeft={() => setSidebarExpanded(!sidebarExpanded)}
+          onToggleRight={() => setRightSidebarExpanded(!rightSidebarExpanded)}
+        />
       </div>
+
+      {/* Modals */}
+      <StopWarningModal
+        isOpen={showStopModal}
+        onClose={() => setShowStopModal(false)}
+        onConfirm={handleStopConfirm}
+        currentProgress={progressData?.status_text}
+      />
+
+      <CompletionModal
+        isOpen={showCompletionModal}
+        onClose={() => setShowCompletionModal(false)}
+        textbookData={completedTextbookData}
+        onViewDashboard={handleViewDashboard}
+      />
     </div>
   )
 }
