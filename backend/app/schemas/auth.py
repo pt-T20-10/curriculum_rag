@@ -23,7 +23,9 @@ class UserResponse(BaseModel):
     is_verified: bool
     credits: int
     auth_provider: str
-    
+    role: str = "user"
+    is_locked: bool = False
+
     class Config:
         from_attributes = True
 
@@ -36,6 +38,8 @@ class UserData(BaseModel):
     credits: int
     is_active: bool
     is_verified: bool
+    role: str = "user"
+    is_locked: bool = False
 
 # ⭐ ADD THIS - Login/Register response
 class LoginResponse(BaseModel):

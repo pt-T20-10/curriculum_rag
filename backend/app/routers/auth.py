@@ -60,6 +60,8 @@ async def register(
             "credits": new_user.credits,
             "is_active": new_user.is_active,
             "is_verified": new_user.is_verified,
+            "role": new_user.role,
+            "is_locked": new_user.is_locked,
         }
     }
 
@@ -93,6 +95,10 @@ async def login(credentials: UserLogin, db: AsyncSession = Depends(get_async_db)
             "email": user.email,
             "full_name": user.full_name,
             "credits": user.credits,
+            "is_active": user.is_active,
+            "is_verified": user.is_verified,
+            "role": user.role,
+            "is_locked": user.is_locked,
         }
     }
 

@@ -12,6 +12,11 @@ class AuthProvider(str, Enum):
     GOOGLE = "google"
 
 
+class UserRole(str, Enum):
+    USER = "user"
+    ADMIN = "admin"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -25,6 +30,10 @@ class User(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     is_verified = Column(Boolean, default=False, nullable=False)
     credits = Column(Integer, default=0, nullable=False)
+    role = Column(String(20), default=UserRole.USER.value, nullable=False, index=True)
+    is_locked = Column(Boolean, default=False, nullable=False)
+    locked_at = Column(DateTime, nullable=True)
+    locked_by = Column(Integer, nullable=True)  # admin user_id who locked this account
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 

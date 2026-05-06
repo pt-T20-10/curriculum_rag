@@ -1,11 +1,15 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider } from './context/AuthContext'
 import { ProtectedRoute } from './components/ProtectedRoute'
+import { AdminRoute } from './components/AdminRoute'
 import { TextbookDetailPage } from './pages/TextbookDetailPage'
 import { LoginPage } from './pages/LoginPage'
 import { RegisterPage } from './pages/RegisterPage'
 import { DashboardPage } from './pages/DashboardPage'
 import { CreateTextbookPage } from './pages/CreateTextbookPage'
+import { AdminDashboardPage } from './pages/admin/AdminDashboardPage'
+import { AdminUsersPage } from './pages/admin/AdminUsersPage'
+import { AdminTextbooksPage } from './pages/admin/AdminTextbooksPage'
 
 function App() {
   return (
@@ -54,6 +58,32 @@ function App() {
             }
           />
             
+          {/* Admin routes */}
+          <Route
+            path="/admin"
+            element={
+              <AdminRoute>
+                <AdminDashboardPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/admin/users"
+            element={
+              <AdminRoute>
+                <AdminUsersPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/admin/textbooks"
+            element={
+              <AdminRoute>
+                <AdminTextbooksPage />
+              </AdminRoute>
+            }
+          />
+
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
         </Routes>
       </BrowserRouter>

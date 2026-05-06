@@ -18,6 +18,16 @@ export function Navbar() {
 
           {/* Right side */}
           <div className="flex items-center gap-4">
+            {/* Admin link */}
+            {user?.role === 'admin' && (
+              <Link
+                to="/admin"
+                className="hidden sm:block text-sm font-medium text-blue-600 hover:text-blue-800 transition-colors"
+              >
+                Admin
+              </Link>
+            )}
+
             {/* User info - clickable → dashboard */}
             <Link to="/dashboard" className="hidden sm:block text-sm text-gray-600 hover:text-primary transition-colors">
               {user?.email}

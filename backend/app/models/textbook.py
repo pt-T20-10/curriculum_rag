@@ -39,10 +39,7 @@ class Textbook(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     completed_at = Column(DateTime, nullable=True)
     progress_data = Column(JSON, nullable=True, default=None)
-    curriculum_json = Column(JSON, nullable=True)
-    total_chapters = Column(Integer, default=0)
-    total_subsections = Column(Integer, default=0)
     current_chapter = Column(Integer, default=0)
     current_subsection = Column(Integer, default=0)
+
     owner = relationship("User", back_populates="textbooks")
-  

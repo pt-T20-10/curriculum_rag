@@ -112,14 +112,14 @@ def get_current_user_id(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
 ) -> int:
     """Extract user ID from JWT token."""
-    
+
     if not credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
     try:
         # Decode JWT
         payload = jwt.decode(
@@ -128,17 +128,45 @@ def get_current_user_id(
             algorithms=[settings.ALGORITHM]
         )
         user_id: int = payload.get("sub") #type: ignore
-        
+
         if user_id is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid token"
             )
-        
+
         return user_id
-        
+
     except JWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token"
         )
+
+
+async def require_admin(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+):
+    """
+    Dependency that extracts user_id from JWT and returns it.
+    Full admin check (role + is_locked) is done in the router using the DB session.
+    Returns user_id — routers must call _check_admin(db, user_id) after.
+    """
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        payload = jwt.decode(
+            credentials.credentials,
+            settings.SECRET_KEY,
+            algorithms=[settings.ALGORITHM],
+        )
+        user_id = payload.get("sub")
+        if user_id is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+        return int(user_id)
+    except JWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
