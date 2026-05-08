@@ -1,15 +1,16 @@
 import apiClient from './axios'
 
 export const authAPI = {
-  // Login
   login: (email, password, remember_me = false) =>
     apiClient.post('/auth/login', { email, password, remember_me }),
-  
-  // Register
-  register: (email, password, full_name) => 
+
+  register: (email, password, full_name) =>
     apiClient.post('/auth/register', { email, password, full_name }),
-  
-  // Get current user
-  me: () => 
+
+  me: () =>
     apiClient.get('/auth/me'),
+
+  // Returns { auth_url, state } — caller stores state and redirects to auth_url
+  getGoogleLoginUrl: () =>
+    apiClient.get('/auth/google/login'),
 }

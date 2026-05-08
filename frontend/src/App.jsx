@@ -10,6 +10,7 @@ import { CreateTextbookPage } from './pages/CreateTextbookPage'
 import { AdminDashboardPage } from './pages/admin/AdminDashboardPage'
 import { AdminUsersPage } from './pages/admin/AdminUsersPage'
 import { AdminTextbooksPage } from './pages/admin/AdminTextbooksPage'
+import { GoogleCallbackPage } from './pages/GoogleCallbackPage'
 
 function App() {
   return (
@@ -83,6 +84,9 @@ function App() {
               </AdminRoute>
             }
           />
+
+          {/* Google OAuth callback — no auth guard, handles its own token flow */}
+          <Route path="/auth/callback" element={<GoogleCallbackPage />} />
 
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
         </Routes>

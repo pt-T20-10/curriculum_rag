@@ -92,13 +92,20 @@ const register = async (email, password, fullName) => {
   return userResponse.data
 }
 
+  const loginWithToken = async (token) => {
+    localStorage.setItem('token', token)
+    const userResponse = await authAPI.me()
+    setUser(userResponse.data)
+    return userResponse.data
+  }
+
   const logout = () => {
     localStorage.removeItem('token')
     setUser(null)
   }
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, register, loginWithToken, logout }}>
       {children}
     </AuthContext.Provider>
   )

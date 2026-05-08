@@ -3,6 +3,7 @@ import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { Input } from '../components/common/Input'
 import { Button } from '../components/common/Button'
+import { GoogleLoginButton } from '../components/common/GoogleLoginButton'
 
 export function RegisterPage() {
   const navigate = useNavigate()
@@ -143,7 +144,16 @@ export function RegisterPage() {
           </Button>
         </form>
 
-        <p className="mt-6 text-center text-sm text-gray-600">
+        <div className="mt-6">
+          <div className="relative flex items-center gap-3 mb-4">
+            <div className="flex-1 border-t border-gray-200" />
+            <span className="text-xs text-gray-400">hoặc đăng ký nhanh</span>
+            <div className="flex-1 border-t border-gray-200" />
+          </div>
+          <GoogleLoginButton label="Đăng ký với Google" />
+        </div>
+
+        <p className="mt-4 text-center text-sm text-gray-600">
           Đã có tài khoản?{' '}
           <Link to="/login" className="text-primary hover:underline font-medium">
             Đăng nhập tại đây
