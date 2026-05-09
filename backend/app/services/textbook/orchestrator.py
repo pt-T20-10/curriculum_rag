@@ -148,10 +148,6 @@ def append_and_update_chapter(state: AgentState) -> dict:
         "messages": [f"✓ Completed: Chapter {current_chapter + 1}"],
     }
 
-    if current_chapter == 0:
-        result["chapter1_content"] = content_update["final_content"]
-        logger.info("Chapter 1 content snapshot saved for preview gate")
-
     return result
 
 

@@ -378,12 +378,13 @@ export function CreateTextbookPage() {
           }
 
           rightSidebar={
-            <ContentPreview 
+            <ContentPreview
               content={previewContent}
               currentChapter={progressData?.current_chapter}
               currentSubsection={progressData?.current_subsection}
               totalChapters={progressData?.total_chapters}
               totalSubsections={progressData?.total_subsections}
+              isGenerating={phase === 'generating'}
             />
           }
 

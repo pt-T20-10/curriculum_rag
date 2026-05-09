@@ -278,7 +278,6 @@ async def continue_after_curriculum_confirmation(
                 current_chapter = cumulative_state.get("current_chapter_index", 0)
                 current_subsection = cumulative_state.get("current_subsection_index", 0)
                 final_content = cumulative_state.get("final_content", "")
-                content_preview = final_content[-500:] if len(final_content) > 500 else final_content
 
                 if node_name == "ingestion" and db:
                     await update_progress(db, textbook_id, {
@@ -308,7 +307,7 @@ async def continue_after_curriculum_confirmation(
                         "ingestion_status": "completed",
                         "current_chapter": current_chapter,
                         "current_subsection": current_subsection,
-                        "current_content_preview": content_preview,
+                        "current_content_preview": final_content,
                         "topic": topic,
                         "sub_stages": {
                             "researcher": "done" if node_name != "researcher" else "active",

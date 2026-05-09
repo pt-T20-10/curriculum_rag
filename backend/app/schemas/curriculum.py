@@ -157,20 +157,39 @@ class AgentState(TypedDict):
 
     Field groups:
         Input           — user request string
+        Identity        — core topic and requirements extracted by Validator
         Configuration   — user-controlled generation parameters
         Planning        — curriculum outline + generated title/preface
+        HitL Gate       — curriculum confirmation flag for Human-in-the-Loop
         Progress        — chapter/subsection index trackers
         Content         — per-subsection buffer + accumulated document
         Quality control — revision counter, feedback string, header flag
         RAG             — retrieved context for current subsection
+        CRAG Pipeline   — query formulation, retrieval scoring, web supplement
+        Dynamic Routing — rejection type classification for True Dynamic Routing
         Observability   — append-only message log (reducer: operator.add)
         Output          — path to the final generated file
         Validation      — topic validation results
-        Preview         — chapter 1 content snapshot for preview gate
+       
     """
 
     # ---- Input ----
     request: str
+
+    # ---- Identity (extracted by Validator; consumed by Ingester + Researcher) ----
+    core_topic: str
+    """
+    Core subject distilled from the raw user request by the Validator node.
+    Example: request='Machine Learning với ví dụ code' → core_topic='Machine Learning'
+    Drives ingestion query expansion and researcher query enhancement.
+    """
+    user_requirements: str
+    """
+    Optional user requirements extracted from the raw request by the Validator.
+    Example: 'với ví dụ code và ứng dụng thực tế'
+    Injected into Researcher queries and Writer prompts to fulfil user expectations.
+    Empty string when no additional requirements were specified.
+    """
 
     # ---- User Configuration ----
     num_chapters: int
@@ -180,6 +199,16 @@ class AgentState(TypedDict):
 
     # ---- Planning ----
     curriculum: Any
+
+    # ---- Human-in-the-Loop Gate (Target 3) ----
+    curriculum_confirmed: bool
+    """
+    Set to True by the HitL gate node once the user explicitly approves
+    the generated curriculum. Remains False during planning-only workflows.
+    Guards the conditional edge that separates planning from content generation:
+        False → wait / END (planning workflow)
+        True  → proceed to ingestion + content loop
+    """
 
     # ---- Progress Tracking ----
     current_chapter_index: int
@@ -200,6 +229,28 @@ class AgentState(TypedDict):
 
     # ---- RAG ----
     rag_context: str
+
+    # ---- CRAG Pipeline (Target 1) ----
+    retrieval_query: str
+    """
+    The fully-formed ChromaDB search query produced by QueryFormulator.
+    Passed to RetrieverNode as its sole input, then logged for audit.
+    Reset to '' at the start of each subsection by the checkpoint nodes.
+    """
+    context_quality: str
+    """
+    Evaluation result written by ContextEvaluator after scoring retrieved chunks.
+    Valid values:
+        'sufficient'   — RAG context is rich enough; proceed to ContentWriter
+        'insufficient' — context too sparse; trigger web_supplement fetch before writing
+    Default: 'sufficient' (skip supplemental fetch when CRAG nodes are inactive).
+    """
+    web_supplement_context: str
+    """
+    Additional context fetched from live web sources by ContextEvaluator when
+    context_quality == 'insufficient'. Appended to rag_context before ContentWriter runs.
+    Empty string in the common case where RAG context is sufficient.
+    """
 
     # ---- Observability ----
     messages: Annotated[List[str], operator.add]
@@ -222,15 +273,23 @@ class AgentState(TypedDict):
 
     content_type: str  # "scholarly" | "technical" | "practical" | "lifestyle"
 
+    # ---- True Dynamic Routing (Target 2) ----
+    rejection_type: Optional[str]
+    """
+    Rejection classification produced by the Reviewer quality gate.
+    Used by route_after_review() to select the correct remediation path:
+        'missing_context' — RAG context was insufficient; re-route to QueryFormulator
+                            (triggers a fresh retrieval cycle, not just a rewrite)
+        'formatting_error'— Content has correct information but poor structure/format;
+                            re-route directly to ContentWriter with targeted instructions
+        None              — Content approved; proceed to Illustrator
+    Reset to None at each subsection checkpoint.
+    """
+
 
     used_rag_queries: List[str]   # accumulate across revision attempts
     # ---- Preview (Phase 5) ----
-    chapter1_content: str
-    """
-    Accumulated markdown content of Chapter 1 captured at the first
-    update_chapter checkpoint. Surfaced to the UI for the preview gate.
-    Empty string before Chapter 1 completes.
-    """
+  
     section_summaries: List[str]
     """
     Ordered list of one-line summaries for each completed subsection.
@@ -298,9 +357,10 @@ def build_initial_state(
     max_subsections_per_chapter: int = 5,
     content_level: str = "Trung Bình",
     content_type: str = "technical",
+    core_topic: str = "",
+    user_requirements: str = "",
     section_summaries: list = None, #type: ignore
     export_formats: list | None = None,
-    
 ) -> dict:
     """
     Factory function for constructing the initial AgentState dict.
@@ -309,53 +369,70 @@ def build_initial_state(
     Ensures every required field is present with a validated default.
 
     Args:
-        request:                     User's textbook topic (required).
+        request:                     User's raw textbook topic string (required).
         num_chapters:                Number of chapters to generate.
         enable_images:               Whether to insert images.
         min_chars_per_section:       Global char floor across all section types.
         max_subsections_per_chapter: Upper bound on subsections per chapter.
         content_level:               One of 'Ngắn', 'Trung Bình', 'Dài', 'Rất Dài'.
+        content_type:                One of 'scholarly'|'technical'|'practical'|'lifestyle'.
+        core_topic:                  Core subject extracted by Validator (defaults to request).
+        user_requirements:           Optional requirements extracted by Validator.
+        section_summaries:           Pre-populated summaries list (for resume flows).
         export_formats:              List of export formats ('PDF', 'Word').
 
     Returns:
         Dict conforming to the AgentState TypedDict schema.
     """
     return {
-        # Input
+        # ---- Input ----
         "request": request,
-        # Configuration
+        # ---- Identity ----
+        "core_topic":         core_topic or request,  # fall back to raw request if not extracted
+        "user_requirements":  user_requirements,
+        # ---- Configuration ----
         "num_chapters":                num_chapters,
         "enable_images":               enable_images,
         "min_chars_per_section":       min_chars_per_section,
         "max_subsections_per_chapter": max_subsections_per_chapter,
-        "content_type": content_type,
-        # Planning
-        "curriculum":     None,
-        "textbook_title": "",
+        "content_type":                content_type,
+        # ---- Planning ----
+        "curriculum":      None,
+        "textbook_title":  "",
         "preface_content": "",
-        # Progress
+        # ---- HitL Gate ----
+        "curriculum_confirmed": False,
+        # ---- Progress ----
         "current_chapter_index":    0,
         "current_subsection_index": 0,
-        # Content
+        # ---- Content ----
         "current_content": "",
         "final_content":   "",
-        # Quality control
-        "revision_number":       0,
-        "review_feedback":       "",
+        # ---- Quality Control ----
+        "revision_number":        0,
+        "review_feedback":        "",
         "chapter_header_written": False,
-        "content_level": content_level,
-        # RAG
+        "content_level":          content_level,
+        # ---- RAG ----
         "rag_context": "",
-        # Observability
+        # ---- CRAG Pipeline ----
+        "retrieval_query":        "",
+        "context_quality":        "sufficient",  # optimistic default; evaluator overwrites
+        "web_supplement_context": "",
+        # ---- Dynamic Routing ----
+        "rejection_type": None,
+        # ---- Observability ----
         "messages": [],
-        # Output
+        # ---- Output ----
         "final_filepath":      None,
         "export_formats":      export_formats or ["Word"],
         "final_docx_filepath": None,
-        # Validation
+        # ---- Validation ----
         "validation_failed":     False,
         "validation_reason":     "",
         "validation_suggestion": "",
-        # Preview
-        "chapter1_content": "",
+        # ---- Progress Accumulators (fixed: were missing from previous version) ----
+        "used_rag_queries":  [],
+        "section_summaries": section_summaries or [],
+        
     }
