@@ -13,4 +13,10 @@ export const authAPI = {
   // Returns { auth_url, state } — caller stores state and redirects to auth_url
   getGoogleLoginUrl: () =>
     apiClient.get('/auth/google/login'),
+
+  forgotPassword: (email) =>
+    apiClient.post('/auth/forgot-password', { email }),
+
+  resetPassword: (email, code, new_password) =>
+    apiClient.post('/auth/reset-password', { email, code, new_password }),
 }

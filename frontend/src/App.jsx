@@ -11,6 +11,8 @@ import { AdminDashboardPage } from './pages/admin/AdminDashboardPage'
 import { AdminUsersPage } from './pages/admin/AdminUsersPage'
 import { AdminTextbooksPage } from './pages/admin/AdminTextbooksPage'
 import { GoogleCallbackPage } from './pages/GoogleCallbackPage'
+import { ForgotPasswordPage } from './pages/ForgotPasswordPage'
+import { ResetPasswordPage } from './pages/ResetPasswordPage'
 
 function App() {
   return (
@@ -19,6 +21,8 @@ function App() {
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+          <Route path="/reset-password" element={<ResetPasswordPage />} />
           
           <Route
             path="/dashboard"

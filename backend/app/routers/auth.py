@@ -1,5 +1,7 @@
+import hashlib
+import random
 import secrets
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -10,10 +12,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database import get_async_db
 from app.models.user import AuthProvider, User, UserRole
-from app.schemas.auth import LoginResponse, Token, UserCreate, UserLogin, UserResponse
+from app.schemas.auth import (
+    ForgotPasswordRequest,
+    LoginResponse,
+    ResetPasswordRequest,
+    Token,
+    UserCreate,
+    UserLogin,
+    UserResponse,
+)
 from app.security.jwt import create_access_token, get_current_user_id
 from app.security.oauth import exchange_google_code, get_google_auth_url
 from app.security.password import pwd_context, verify_password
+from app.services.email_service import send_password_reset_email
 
 router = APIRouter()
 
@@ -40,10 +51,10 @@ async def _get_or_create_google_user(db: AsyncSession, google_info: dict) -> Use
     result = await db.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
     if user:
-        if user.google_id and user.google_id != google_id:
+        if user.google_id and user.google_id != google_id: #type: ignore
             raise ValueError("Email is already linked to a different Google account")
         user.google_id = google_id  # type: ignore[assignment]
-        if not user.avatar_url and google_info.get("picture"):
+        if not user.avatar_url and google_info.get("picture"): #type: ignore
             user.avatar_url = google_info["picture"]  # type: ignore[assignment]
         await db.commit()
         return user
@@ -218,3 +229,73 @@ async def google_callback(
     return RedirectResponse(
         f"{frontend_cb}?token={access_token}&state={state}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Password reset endpoints
+# ---------------------------------------------------------------------------
+
+_RESET_EXPIRY_MINUTES = 15
+_GENERIC_RESPONSE = {"message": "Nếu email tồn tại, mã xác nhận đã được gửi."}
+
+
+@router.post("/forgot-password")
+async def forgot_password(
+    body: ForgotPasswordRequest,
+    db: AsyncSession = Depends(get_async_db),
+):
+    """
+    Generate and email a 6-digit OTP for password reset.
+    Always returns the same response to prevent email enumeration.
+    """
+    result = await db.execute(select(User).where(User.email == body.email))
+    user = result.scalar_one_or_none()
+
+    if user and user.auth_provider == AuthProvider.LOCAL.value: #type: ignore
+        otp = f"{random.randint(0, 999999):06d}"
+        code_hash = hashlib.sha256(otp.encode()).hexdigest()
+        expires = datetime.utcnow() + timedelta(minutes=_RESET_EXPIRY_MINUTES)
+
+        user.password_reset_code = code_hash      # type: ignore[assignment]
+        user.password_reset_expires = expires     # type: ignore[assignment]
+        await db.commit()
+
+        try:
+            await send_password_reset_email(body.email, otp)
+        except Exception:
+            # Log already done inside email_service; don't leak error to client
+            pass
+
+    return _GENERIC_RESPONSE
+
+
+@router.post("/reset-password")
+async def reset_password(
+    body: ResetPasswordRequest,
+    db: AsyncSession = Depends(get_async_db),
+):
+    """Verify OTP and set new password."""
+    invalid_exc = HTTPException(
+        status_code=400,
+        detail="Mã xác nhận không hợp lệ hoặc đã hết hạn.",
+    )
+
+    result = await db.execute(select(User).where(User.email == body.email))
+    user = result.scalar_one_or_none()
+
+    if not user or not user.password_reset_code or not user.password_reset_expires: #type: ignore
+        raise invalid_exc
+
+    if datetime.utcnow() > user.password_reset_expires:  # type: ignore[operator]
+        raise invalid_exc
+
+    submitted_hash = hashlib.sha256(body.code.encode()).hexdigest()
+    if submitted_hash != user.password_reset_code:
+        raise invalid_exc
+
+    user.hashed_password = pwd_context.hash(body.new_password)  # type: ignore[assignment]
+    user.password_reset_code = None       # type: ignore[assignment]
+    user.password_reset_expires = None    # type: ignore[assignment]
+    await db.commit()
+
+    return {"message": "Mật khẩu đã được đặt lại thành công."}

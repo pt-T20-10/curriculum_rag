@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { Input } from '../components/common/Input'
 import { Button } from '../components/common/Button'
@@ -7,7 +7,9 @@ import { GoogleLoginButton } from '../components/common/GoogleLoginButton'
 
 export function LoginPage() {
   const navigate = useNavigate()
+  const location = useLocation()
   const { login } = useAuth()
+  const successMessage = location.state?.successMessage || ''
 
   const [formData, setFormData] = useState({
     email: '',
@@ -99,23 +101,34 @@ export function LoginPage() {
             placeholder="Nhập mật khẩu của bạn"
           />
 
-          {/* Remember Me checkbox */}
-          <div className="flex items-center gap-2 mb-4">
-            <input
-              id="rememberMe"
-              type="checkbox"
-              checked={rememberMe}
-              onChange={(e) => setRememberMe(e.target.checked)}
-              className="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary cursor-pointer"
-            />
-            <label
-              htmlFor="rememberMe"
-              className="text-sm text-gray-700 cursor-pointer select-none"
-            >
-              Ghi nhớ đăng nhập
-              <span className="text-xs text-gray-400 ml-1">(30 ngày)</span>
-            </label>
+          {/* Remember Me + Forgot password row */}
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <input
+                id="rememberMe"
+                type="checkbox"
+                checked={rememberMe}
+                onChange={(e) => setRememberMe(e.target.checked)}
+                className="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary cursor-pointer"
+              />
+              <label
+                htmlFor="rememberMe"
+                className="text-sm text-gray-700 cursor-pointer select-none"
+              >
+                Ghi nhớ đăng nhập
+                <span className="text-xs text-gray-400 ml-1">(30 ngày)</span>
+              </label>
+            </div>
+            <Link to="/forgot-password" className="text-sm text-primary hover:underline">
+              Quên mật khẩu?
+            </Link>
           </div>
+
+          {successMessage && (
+            <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg">
+              <p className="text-sm text-green-700">{successMessage}</p>
+            </div>
+          )}
 
           {apiError && (
             <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">

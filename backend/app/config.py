@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     MYSQL_PASSWORD: str = "textbook_password_change_me"
     MYSQL_DATABASE: str = "ai_textbook_db"
     
+    SMTP_HOST: str = "smtp.gmail.com"
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    EMAIL_FROM: str = ""
+    
     # Redis
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
@@ -72,7 +78,7 @@ class Settings(BaseSettings):
     
     # ==================== LLM Models ====================
     EMBEDDING_MODEL_NAME: str = "BAAI/bge-m3"
-    OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"  # ✅ FIX: Add type annotation
+    OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small" 
     
     LLM_MODEL_CHEAP: str = "gpt-4o-mini"
     LLM_MODEL_PREMIUM: str = "gpt-4o"
@@ -83,8 +89,7 @@ class Settings(BaseSettings):
     # Options:
     #   - "openai": Fast API-based, supports multilingual (VI + EN)
     #   - "local":  bge-m3 local model, slower but free, 1024 dims
-    EMBEDDING_PROVIDER: str = "openai"  # ✅ FIX: Add type annotation
-    
+    EMBEDDING_PROVIDER: str = "openai" 
     # ==================== Chunking ====================
     CHUNK_SIZE: int = 2000
     CHUNK_OVERLAP: int = 400
@@ -216,7 +221,7 @@ def get_embedding_model():
         
         from langchain_openai import OpenAIEmbeddings
         
-        # ✅ FIX: Don't pass api_key parameter
+       
         # OpenAIEmbeddings automatically reads from OPENAI_API_KEY env var
         # which Pydantic Settings already set
         return OpenAIEmbeddings(
