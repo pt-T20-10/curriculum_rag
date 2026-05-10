@@ -13,10 +13,13 @@ Quality strategy:
 import concurrent.futures
 from typing import List, Dict
 
+from app.config import settings
 from ddgs import DDGS
 
 from app.utils.log_config import setup_logger
 from app.utils import stop_signal
+
+MIN_SNIPPET_SCORE: float = settings.MIN_SNIPPET_SCORE
 
 logger = setup_logger(name="SearchEngine", logfile="logs/search_engine.log")
 
@@ -219,7 +222,8 @@ def search_web(
 
     # Stage 2: Snippet quality score
     # Extract topic from query — use query itself as topic signal
-    MIN_SNIPPET_SCORE = 0.3
+   
+    
     scored = [
         (r, score_search_result(r, query))
         for r in hard_filtered

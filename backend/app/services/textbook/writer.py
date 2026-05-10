@@ -1,17 +1,11 @@
 """
 Writer Agent for AI Textbook Generator.
 
-Refactored into three single-responsibility components following
-the separation of concerns principle:
-
-    ContextRetrievalAgent   — Enriches RAG context using gpt-4o-mini with tools.
-                              Assesses initial context sufficiency and fetches
-                              additional chunks when needed. Aware of prior
-                              section summaries to avoid redundant retrieval.
+Components in this module:
 
     ContentWriter           — Generates academic Vietnamese prose using the
-                              premium model (gpt-5.4-mini / gpt-4o). Receives
-                              pre-enriched context — no tool calls during writing.
+                              premium model (gpt-4o). Receives pre-enriched
+                              context — no tool calls during writing.
                               Uses section summaries for continuity enforcement.
 
     ImageDescriptionGenerator — Post-processes written content by replacing
@@ -19,31 +13,26 @@ the separation of concerns principle:
                                 formatted [IMAGE: Title | Description] tags
                                 using gpt-4o-mini in a single batch call.
 
-    WriterAgent             — Orchestrator: sequences the three components and
-                              exposes the write_section() public API consumed
-                              by the LangGraph workflow node.
+    WriterAgent             — Orchestrator: sequences ContentWriter and
+                              ImageDescriptionGenerator, then applies
+                              deterministic post-processing.
 
-Workflow node:
-    write_section(state) — LangGraph node function at module level.
+    write_section_crag()    — LangGraph node for the CRAG pipeline. Merges
+                              web_supplement_context and delegates to WriterAgent.
+
+Context enrichment (EvaluatorAgent) lives in evaluator.py.
 """
 
-from pyexpat import model
 import re
-from typing import Optional
-from unittest import result
 
-from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
+from langchain_core.messages import SystemMessage, HumanMessage
 
-from app.services.textbook.researcher import _get_researcher, retrieve_context_tool
 from app.config import settings
 
 OPENAI_API_KEY = settings.OPENAI_API_KEY
 LLM_MODEL_PREMIUM = settings.LLM_MODEL_PREMIUM
 LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
-RAG_TOOL_MAX_ROUNDS = settings.RAG_TOOL_MAX_ROUNDS
-from app.utils import stop_signal
 from app.utils.log_config import setup_logger, setup_prompt_logger
 from app.schemas.curriculum import (
     AgentState,
@@ -61,15 +50,8 @@ logger = setup_logger(name="WriterAgent", logfile="logs/agents.log")
 # CONSTANTS
 # ============================================================================
 
-# Maximum tool call rounds for context retrieval (gpt-4o-mini)
-_RETRIEVAL_MAX_ROUNDS: int = 2
-
-# Maximum chars per section summary stored in state
-_SUMMARY_PREVIEW_CHARS: int = 200
-
-# Maximum prior summaries to inject (avoid token bloat on long textbooks)
-_MAX_PRIOR_SUMMARIES: int = 6
-
+_SUMMARY_PREVIEW_CHARS: int = settings.WRITER_SUMMARY_PREVIEW_CHARS
+_MAX_PRIOR_SUMMARIES:   int = settings.WRITER_MAX_PRIOR_SUMMARIES
 
 # ============================================================================
 # LENGTH CALIBRATION
@@ -181,142 +163,7 @@ def _build_prior_summary_block(
 
 
 # ============================================================================
-# COMPONENT 1 — Context Retrieval Agent
-# ============================================================================
-
-class ContextRetrievalAgent:
-    """
-    Lightweight retrieval component using gpt-4o-mini with tool access.
-
-    Responsibilities:
-    - Assess whether initial RAG context is sufficient for the section.
-    - Call retrieve_context_tool (max _RETRIEVAL_MAX_ROUNDS times) when needed.
-    - Inject prior section summaries to avoid fetching redundant context.
-    - Return a single enriched context string for ContentWriter.
-
-    Uses gpt-4o-mini deliberately — this is an assessment/retrieval task,
-    not a generation task, and does not require premium model quality.
-    Returns:
-        (enriched_context_string, list_of_queries_used)
-    """
-
-    def __init__(self) -> None:
-        self._llm = ChatOpenAI(
-            model=LLM_MODEL_CHEAP,
-            api_key=OPENAI_API_KEY, #type: ignore
-            temperature=0,
-        )
-        self._llm_with_tools = self._llm.bind_tools([retrieve_context_tool])
-
-    def enrich_context(
-        self,
-        section_description: str,
-        section_type: str,
-        initial_context: str,
-        section_summaries: list[str],
-        revision_feedback: str = "",
-        used_queries: list[str] = [],
-    ) -> tuple[str, list[str]]:
-        prior_block = _build_prior_summary_block(section_summaries)
-        _queries_this_call: list[str] = []
-
-        # Accumulate all raw chunks fetched via tool calls.
-        # We collect ToolMessage content directly instead of relying on the LLM
-        # to return verbatim text — LLMs tend to synthesize even when instructed not to.
-        _fetched_chunks: list[str] = []
-
-        def _build_system(extra_used: list[str]) -> str:
-            """Rebuild system prompt with updated list of already-used queries."""
-            all_used = used_queries + extra_used
-            used_block = ""
-            if all_used:
-                used_block = (
-                    "ALREADY FETCHED — do NOT use these exact queries again:\n"
-                    + "\n".join(f"- {q}" for q in all_used)
-                    + "\n"
-                )
-
-            revision_block = ""
-            if revision_feedback:
-                revision_block = (
-                    "\n[REVISION MODE]\n"
-                    f"The previous draft was rejected with this feedback:\n{revision_feedback}\n\n"
-                    f"{used_block}"
-                    "You MUST fetch queries targeting DIFFERENT angles from those already used.\n"
-                    "Focus on the SPECIFIC GAPS in the feedback above.\n"
-                    "[/REVISION MODE]\n"
-                )
-            elif used_block:
-                revision_block = f"\n{used_block}"
-
-            return (
-                f"You are a research assistant deciding whether to fetch additional context.\n"
-                f"Task: assess whether the provided context is sufficient to write "
-                f"a {section_type} section about: {section_description}\n\n"
-                f"{prior_block}\n"
-                f"{revision_block}\n"
-                f"If context is thin OR in revision mode, call retrieve_context_tool "
-                f"with specific queries targeting missing content. Max {_RETRIEVAL_MAX_ROUNDS} calls.\n"
-                f"If context is already sufficient, do NOT call any tool — just reply 'OK'.\n\n"
-                # Removed the instruction to return verbatim chunks — we collect them ourselves.
-                f"Your only job is to decide WHAT to fetch, not to summarize or rewrite anything."
-            )
-
-        messages: list = [
-            SystemMessage(content=_build_system([])),
-            HumanMessage(content=f"Initial context:\n{initial_context}"),
-        ]
-
-        for _ in range(_RETRIEVAL_MAX_ROUNDS):
-            if stop_signal.is_stopped():
-                break
-
-            response = self._llm_with_tools.invoke(messages)
-            tool_calls = getattr(response, "tool_calls", [])
-
-            if not tool_calls:
-                # LLM decided no additional fetch needed — stop here.
-                break
-
-            messages.append(response)
-
-            for tc in tool_calls:
-                query = tc["args"].get("query", "")
-                logger.info(f"[Retrieval] Tool call: '{query[:60]}'")
-                _queries_this_call.append(query)
-
-                result = retrieve_context_tool.invoke(tc["args"])
-                result_str = str(result)
-
-                # Store raw chunk text directly — bypass LLM synthesis entirely.
-                if result_str.strip():
-                    _fetched_chunks.append(result_str)
-
-                messages.append(ToolMessage(
-                    content=result_str,
-                    tool_call_id=tc["id"],
-                ))
-
-            # Update system message with queries used so far to prevent repeats.
-            messages[0] = SystemMessage(content=_build_system(_queries_this_call))
-
-        # Build final context: initial context + all raw fetched chunks concatenated.
-        # This guarantees the Writer receives source material, not LLM commentary.
-        all_context_parts = [initial_context] + _fetched_chunks
-        enriched = "\n\n---\n\n".join(p for p in all_context_parts if p.strip())
-
-        if not enriched.strip():
-            logger.warning("enrich_context: no context available after retrieval attempts")
-
-        logger.info(
-            f"Context enriched: {len(_fetched_chunks)} additional chunk(s) fetched, "
-            f"{len(enriched)} total chars"
-        )
-
-        return enriched, _queries_this_call
-
-# ============================================================================
-# COMPONENT 2 — Content Writer
+# COMPONENT 1 — Content Writer
 # ============================================================================
 
 class ContentWriter:
@@ -715,10 +562,8 @@ class WriterAgent:
     """
 
     def __init__(self) -> None:
-        self._retriever   = ContextRetrievalAgent()
         self._writer      = ContentWriter()
         self._illustrator = ImageDescriptionGenerator()
-        self._last_used_queries: list[str] = []
 
     def write_section(
         self,
@@ -769,18 +614,9 @@ class WriterAgent:
             logger.info(f"Revision mode — feedback: {review_feedback[:80]}")
 
         # ------------------------------------------------------------------
-        # Step 1: Enrich context (cheap model + tools)
+        # Step 1: Context already enriched by ContextEvaluator upstream (CRAG)
         # ------------------------------------------------------------------
-
-        enriched_context, new_queries = self._retriever.enrich_context(
-            section_description=section_description,
-            section_type=section_type,
-            initial_context=context,
-            section_summaries=list(section_summaries),
-            revision_feedback=review_feedback or "",
-            used_queries=used_queries,
-        )
-        self._last_used_queries = new_queries
+        enriched_context = context
 
         # ------------------------------------------------------------------
         # Step 2: Generate content (premium model, no tools)
@@ -920,37 +756,31 @@ def extract_section_summary(
 
 
 # ============================================================================
-# LANGGRAPH NODE
+# CRAG Node — write_section_crag
 # ============================================================================
 
-def write_section(state: AgentState) -> dict:
+def write_section_crag(state: AgentState) -> dict:
     """
-    LangGraph node: generate or revise content for the current subsection.
+    ContentWriter CRAG node: generate section content using pre-enriched context.
 
-    Reads curriculum position from state indexes, constructs WriterAgent
-    inputs, invokes write_section(), then applies chapter header compliance
-    enforcement as a deterministic safety layer.
+    Context has already been retrieved and enriched by the upstream CRAG nodes
+    (RetrieverNode + ContextEvaluator). This node's sole responsibility is to
+    call WriterAgent with the final merged context and handle CRAG-specific
+    state fields (web_supplement_context, rejection_type).
 
-    Layer 1 — Prompt instruction:
-        First subsection of each chapter emits # CHƯƠNG heading.
-        All others receive an explicit prohibition.
-
-    Layer 2 — Post-processing strip/enforce:
-        Strips spurious level-1 headings from non-opening sections.
-        Prepends missing # CHƯƠNG heading for opening sections.
-
-    Layer 3 — State flag:
-        Sets chapter_header_written=True only on actual emit.
+    CRAG-specific additions vs the legacy write_section() node:
+        1. Merges state["web_supplement_context"] into rag_context before writing.
+        2. Injects [FORMATTING FIX REQUIRED] prefix when rejection_type == 'formatting_error'
+           so WriterAgent focuses on structure, not on fetching new content.
 
     Args:
         state: Current LangGraph workflow state.
 
     Returns:
-        Partial state update with 'current_content' and optionally
-        'chapter_header_written'.
+        Partial state update dict.
     """
     logger.info("=" * 60)
-    logger.info("NODE: Writer - Drafting content")
+    logger.info("NODE: ContentWriter (CRAG) - Drafting content")
     logger.info("=" * 60)
 
     curriculum        = state["curriculum"]
@@ -959,7 +789,17 @@ def write_section(state: AgentState) -> dict:
     review_feedback   = state.get("review_feedback", "")
     section_summaries = state.get("section_summaries", [])
 
-    if review_feedback:
+    # ------------------------------------------------------------------
+    # CRAG addition: inject formatting-fix prefix on formatting_error
+    # ------------------------------------------------------------------
+    rejection_type = state.get("rejection_type", None)
+    if rejection_type == "formatting_error" and review_feedback:
+        review_feedback = (
+            "[FORMATTING FIX REQUIRED — content knowledge is correct, "
+            "fix structure/format only]\n" + review_feedback
+        )
+        logger.info("Revision requested (formatting fix): injecting prefix")
+    elif review_feedback:
         logger.info(f"Revision requested: '{review_feedback[:80]}...'")
 
     try:
@@ -988,8 +828,8 @@ def write_section(state: AgentState) -> dict:
         effective_min   = max(base_min, min_chars_floor)
         effective_max   = max(base_max, effective_min + 500)
         char_target     = (effective_min, effective_max)
-        used_queries = state.get("used_rag_queries", [])
-        
+        used_queries    = state.get("used_rag_queries", [])
+
         sec_title    = clean_section_title(sec_title)
         display_chap = str(chap_idx + 1)
         display_sec  = f"{display_chap}.{sub_idx + 1}"
@@ -1019,11 +859,15 @@ def write_section(state: AgentState) -> dict:
             f"(sub_idx={sub_idx}, header_written={header_already_written})"
         )
 
-        context       = state.get("rag_context", "") or "No specific context available."
-        enable_images = state.get("enable_images", True)
+        # ------------------------------------------------------------------
+        # CRAG addition: merge web supplement context
+        # ------------------------------------------------------------------
+        context    = state.get("rag_context", "") or "No specific context available."
+        supplement = state.get("web_supplement_context", "")
+        if supplement:
+            context = context + "\n\n---\n\n" + supplement
 
-        if not review_feedback:
-            _get_researcher().reset_retrieved_ids()
+        enable_images = state.get("enable_images", True)
 
         agent   = WriterAgent()
         content = agent.write_section(
@@ -1041,9 +885,8 @@ def write_section(state: AgentState) -> dict:
             enable_images=enable_images,
             review_feedback=review_feedback,
             section_summaries=section_summaries,
-            used_queries=used_queries, 
+            used_queries=used_queries,
         )
-        
 
         # Layer 2 — Suppress spurious level-1 headings
         if not emit_header:
@@ -1062,7 +905,6 @@ def write_section(state: AgentState) -> dict:
             logger.warning(f"⚠️  Prepended missing # CHƯƠNG: '{expected}'")
 
         # Layer 2c — Normalize chapter title text to uppercase
-        # Fires when LLM outputs "# CHƯƠNG 1: Tiêu đề" instead of "# CHƯƠNG 1: TIÊU ĐỀ"
         if emit_header:
             content = re.sub(
                 r'^(# CHƯƠNG [^:]+: )(.+)$',
@@ -1076,10 +918,6 @@ def write_section(state: AgentState) -> dict:
         if emit_header:
             result["chapter_header_written"] = True
 
-
-        prior_used = list(state.get("used_rag_queries", []))
-        result["used_rag_queries"] = prior_used + agent._last_used_queries
-        
         return result
 
     except IndexError as e:
@@ -1089,5 +927,5 @@ def write_section(state: AgentState) -> dict:
         logger.error(f"Missing required field in curriculum: {e}")
         return {"current_content": "(Error: Malformed curriculum structure)"}
     except Exception as e:
-        logger.error(f"Unexpected error in Writer: {e}", exc_info=True)
+        logger.error(f"Unexpected error in ContentWriter: {e}", exc_info=True)
         return {"current_content": "(Error: Content generation failed)"}

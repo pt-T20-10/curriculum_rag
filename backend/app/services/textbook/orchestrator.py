@@ -15,11 +15,13 @@ from app.schemas.curriculum import (
     get_chapter_and_subsection,
     clean_section_title,
 )
-from app.services.textbook.writer import extract_section_summary
+# CRAG pipeline nodes (Target 1)
+from app.services.textbook.query_formulator import formulate_query
+from app.services.textbook.retriever        import retriever_node
+from app.services.textbook.evaluator        import evaluate_context
+from app.services.textbook.writer           import write_section_crag, extract_section_summary
 from app.services.textbook.ingester import perform_ingestion
-from app.services.textbook.planner import plan_curriculum
-from app.services.textbook.researcher import perform_research
-from app.services.textbook.writer import write_section
+from app.services.textbook.planner import plan_curriculum, generate_metadata_node    
 from app.services.textbook.reviewer import review_section
 from app.services.textbook.illustrator import illustrate_section
 from app.services.textbook.publisher import publish_curriculum
@@ -47,15 +49,119 @@ class WorkflowDecision(str, Enum):
     FINISHED            = "finished"
     REVISE              = "revise"
     APPROVE             = "approve"
+    RETRY_RETRIEVAL     = "retry_retrieval"
+    """
+    Route back to QueryFormulator for a fresh retrieval attempt.
+    Triggered by:
+      - ContextEvaluator: context_quality == 'insufficient' (first attempt only)
+      - Reviewer:         rejection_type == 'missing_context'
+    """
 
 
 def route_after_review(state: AgentState) -> str:
-    feedback = state.get("review_feedback", "")
-    if feedback:
-        logger.info(f"Review decision: REVISE — feedback: {feedback[:80]}")
-        return WorkflowDecision.REVISE
-    logger.info("Review decision: APPROVE — proceeding to illustrator")
-    return WorkflowDecision.APPROVE
+    """
+    True Dynamic Routing gate (Target 2): classify rejection and route accordingly.
+
+    Routing table:
+        No feedback       → APPROVE  (to illustrator)
+        missing_context   → RETRY_RETRIEVAL (back to QueryFormulator for re-fetch)
+        formatting_error  → REVISE   (back to ContentWriter — same context, fix format)
+        None / fallback   → REVISE   (safe default)
+    """
+    feedback       = state.get("review_feedback", "")
+    rejection_type = state.get("rejection_type")
+
+    if not feedback:
+        logger.info("Review decision: APPROVE — proceeding to illustrator")
+        return WorkflowDecision.APPROVE
+
+    if rejection_type == "missing_context":
+        logger.info(
+            f"Review decision: RETRY_RETRIEVAL "
+            f"(missing_context) — feedback: {feedback[:80]}"
+        )
+        return WorkflowDecision.RETRY_RETRIEVAL
+
+    # formatting_error OR None — content knowledge is correct, fix structure only
+    logger.info(
+        f"Review decision: REVISE "
+        f"(rejection_type='{rejection_type}') — feedback: {feedback[:80]}"
+    )
+    return WorkflowDecision.REVISE
+
+
+def route_after_ingestion(state: AgentState) -> str:
+    """
+    Guard gate: verify ingestion succeeded before starting the CRAG loop.
+
+    Reads the last ingestion status message to determine if ChromaDB was
+    populated. If ingestion failed (no URLs found, all filtered, crawl error),
+    routes to END rather than allowing the CRAG loop to run against an
+    empty database and hallucinate content.
+
+    Returns:
+        CONTINUE_SUBSECTION — ingestion succeeded, proceed to query_formulator
+        FINISHED            — ingestion failed, terminate workflow gracefully
+    """
+    messages = state.get("messages", [])
+
+    for msg in reversed(messages[-5:]):
+        if isinstance(msg, str):
+            if msg.startswith("✓ Ingestion complete"):
+                logger.info("Ingestion gate: PASSED — proceeding to CRAG loop")
+                return WorkflowDecision.CONTINUE_SUBSECTION
+            if msg.startswith("✗ Ingestion failed") or msg.startswith("⛔"):
+                logger.error(
+                    f"Ingestion gate: FAILED — aborting workflow. Reason: {msg}"
+                )
+                return WorkflowDecision.FINISHED
+
+    logger.warning(
+        "Ingestion gate: no clear success/failure signal in messages — "
+        "proceeding to CRAG loop (fail open)"
+    )
+    return WorkflowDecision.CONTINUE_SUBSECTION
+
+
+def route_after_context_evaluation(state: AgentState) -> str:
+    """
+    CRAG routing gate: decide whether retrieved context is sufficient to write.
+
+    Retry logic (max 1 retry per subsection, no new state field needed):
+        used_rag_queries == [] means ContextEvaluator made no supplemental
+        tool calls — the initial ChromaDB context was all there was.
+        One retry is allowed in this case (QueryFormulator shifts query angle).
+
+        used_rag_queries != [] means supplemental fetches were already attempted.
+        Proceed to ContentWriter regardless — fail open.
+
+    Args:
+        state: Current LangGraph workflow state.
+
+    Returns:
+        RETRY_RETRIEVAL     — route back to QueryFormulator for re-fetch
+        CONTINUE_SUBSECTION — route forward to ContentWriter
+    """
+    context_quality = state.get("context_quality", "sufficient")
+    used_queries    = state.get("used_rag_queries", [])
+
+    if context_quality == "insufficient" and len(used_queries) == 0:
+        logger.info(
+            "Context quality: INSUFFICIENT (no supplemental fetches attempted) "
+            "— retrying via QueryFormulator"
+        )
+        return WorkflowDecision.RETRY_RETRIEVAL
+
+    if context_quality == "insufficient":
+        logger.warning(
+            "Context quality: still INSUFFICIENT after supplemental fetch "
+            "— proceeding to ContentWriter (fail open)"
+        )
+    else:
+        logger.info("Context quality: SUFFICIENT — proceeding to ContentWriter")
+
+    return WorkflowDecision.CONTINUE_SUBSECTION
+
 
 
 def _accumulate_content(state: AgentState) -> dict:
@@ -101,7 +207,13 @@ def append_and_update_subsection(state: AgentState) -> dict:
         "revision_number":          0,
         "chapter_header_written":   False,
         "section_summaries":        updated_summaries,
-        "used_rag_queries":   [],
+        # Reset per-subsection accumulators
+        "used_rag_queries":         [],
+        # Reset CRAG pipeline fields for next subsection
+        "retrieval_query":          "",
+        "context_quality":          "sufficient",
+        "web_supplement_context":   "",
+        "rejection_type":           None,
         "messages": [
             f"✓ Completed: Chapter {current_chapter + 1}, "
             f"Subsection {current_subsection + 1}"
@@ -109,7 +221,7 @@ def append_and_update_subsection(state: AgentState) -> dict:
     }
 
 
-# Cập nhật append_and_update_chapter() — thêm cùng logic
+
 def append_and_update_chapter(state: AgentState) -> dict:
     current_chapter = state["current_chapter_index"]
     new_chapter     = current_chapter + 1
@@ -144,7 +256,13 @@ def append_and_update_chapter(state: AgentState) -> dict:
         "revision_number":          0,
         "chapter_header_written":   False,
         "section_summaries":        updated_summaries,
-        "used_rag_queries":   [],
+        # Reset per-subsection accumulators
+        "used_rag_queries":         [],
+        # Reset CRAG pipeline fields for next chapter's first subsection
+        "retrieval_query":          "",
+        "context_quality":          "sufficient",
+        "web_supplement_context":   "",
+        "rejection_type":           None,
         "messages": [f"✓ Completed: Chapter {current_chapter + 1}"],
     }
 
@@ -230,10 +348,15 @@ def check_next_step_ch1(state: AgentState) -> str:
 # Shared node registration helpers
 # ---------------------------------------------------------------------------
 
+
 def _register_content_nodes(builder: StateGraph) -> None:
-    """Register researcher → publisher nodes + checkpoint utilities."""
-    builder.add_node("researcher",        _with_stop_check(perform_research))
-    builder.add_node("writer",            _with_stop_check(write_section))
+    """Register CRAG pipeline nodes + quality/output pipeline + checkpoint utilities."""
+    # CRAG pipeline (Target 1)
+    builder.add_node("query_formulator",  _with_stop_check(formulate_query))
+    builder.add_node("retriever_node",    _with_stop_check(retriever_node))
+    builder.add_node("context_evaluator", _with_stop_check(evaluate_context))
+    builder.add_node("content_writer",    _with_stop_check(write_section_crag))
+    # Quality + output pipeline (unchanged)
     builder.add_node("reviewer",          _with_stop_check(review_section))
     builder.add_node("illustrator",       _with_stop_check(illustrate_section))
     builder.add_node("publisher",         _with_stop_check(publish_curriculum))
@@ -241,14 +364,54 @@ def _register_content_nodes(builder: StateGraph) -> None:
     builder.add_node("update_chapter",    _with_stop_check(append_and_update_chapter))
 
 
+
 def _define_content_edges(builder: StateGraph) -> None:
-    """Define all edges for the full researcher-to-publisher loop."""
-    builder.add_edge("researcher", "writer")
-    builder.add_edge("writer",     "reviewer")
+    """
+    Define CRAG pipeline edges for the full content generation loop.
+
+    Topology:
+        query_formulator → retriever_node → context_evaluator
+            → [route_after_context_evaluation]
+                insufficient (first attempt) → query_formulator   (re-fetch)
+                sufficient / retried         → content_writer
+
+        content_writer → reviewer
+            → [route_after_review — True Dynamic Routing]
+                approve          → illustrator
+                formatting_error → content_writer   (rewrite, same context)
+                missing_context  → query_formulator  (full re-retrieval cycle)
+
+        illustrator → [check_next_step]
+            → update_subsection → query_formulator
+            → update_chapter    → query_formulator
+            → publisher         → END
+    """
+    # CRAG linear chain
+    builder.add_edge("query_formulator", "retriever_node")
+    builder.add_edge("retriever_node",   "context_evaluator")
+
+    # Context quality gate
+    builder.add_conditional_edges(
+        "context_evaluator", route_after_context_evaluation,
+        {
+            WorkflowDecision.RETRY_RETRIEVAL:     "query_formulator",
+            WorkflowDecision.CONTINUE_SUBSECTION: "content_writer",
+        },
+    )
+
+    builder.add_edge("content_writer", "reviewer")
+
+    # True Dynamic Routing after review
     builder.add_conditional_edges(
         "reviewer", route_after_review,
-        {WorkflowDecision.REVISE: "writer", WorkflowDecision.APPROVE: "illustrator"},
+        {
+            WorkflowDecision.APPROVE:         "illustrator",
+            WorkflowDecision.REVISE:          "content_writer",
+            WorkflowDecision.RETRY_RETRIEVAL: "query_formulator",
+        },
     )
+
+    # Progress checkpoint routing (unchanged logic, updated target node)
     builder.add_conditional_edges(
         "illustrator", check_next_step,
         {
@@ -257,8 +420,8 @@ def _define_content_edges(builder: StateGraph) -> None:
             WorkflowDecision.FINISHED:            "publisher",
         },
     )
-    builder.add_edge("update_subsection", "researcher")
-    builder.add_edge("update_chapter",    "researcher")
+    builder.add_edge("update_subsection", "query_formulator")
+    builder.add_edge("update_chapter",    "query_formulator")
     builder.add_edge("publisher",         END)
 
 
@@ -295,14 +458,22 @@ def create_content_after_confirm_workflow() -> CompiledStateGraph:
 
     Used after user confirms curriculum. Curriculum already in state.
     """
-    logger.info("Building post-confirmation workflow (ingestion → content → publish)...")
+    logger.info("Building post-confirmation workflow (preface → ingestion → content → publish)...")
     builder = StateGraph(AgentState)
 
-    builder.add_node("ingestion", _with_stop_check(perform_ingestion))
+    builder.add_node("generate_preface", _with_stop_check(generate_metadata_node))
+    builder.add_node("ingestion",        _with_stop_check(perform_ingestion))
     _register_content_nodes(builder)
 
-    builder.set_entry_point("ingestion")
-    builder.add_edge("ingestion", "researcher")
+    builder.set_entry_point("generate_preface")
+    builder.add_edge("generate_preface", "ingestion")
+    builder.add_conditional_edges(
+        "ingestion", route_after_ingestion,
+        {
+            WorkflowDecision.CONTINUE_SUBSECTION: "query_formulator",
+            WorkflowDecision.FINISHED:            END,
+        },
+    )
     _define_content_edges(builder)
 
     graph = builder.compile()
@@ -321,13 +492,21 @@ def create_workflow() -> CompiledStateGraph:
     logger.info("Building full workflow (planner → ingestion → content)...")
     builder = StateGraph(AgentState)
 
-    builder.add_node("planner",   _with_stop_check(plan_curriculum))
-    builder.add_node("ingestion", _with_stop_check(perform_ingestion))
+    builder.add_node("planner",          _with_stop_check(plan_curriculum))
+    builder.add_node("generate_preface", _with_stop_check(generate_metadata_node))
+    builder.add_node("ingestion",        _with_stop_check(perform_ingestion))
     _register_content_nodes(builder)
 
     builder.set_entry_point("planner")
-    builder.add_edge("planner",   "ingestion")
-    builder.add_edge("ingestion", "researcher")
+    builder.add_edge("planner",          "generate_preface")
+    builder.add_edge("generate_preface", "ingestion")
+    builder.add_conditional_edges(
+        "ingestion", route_after_ingestion,
+        {
+            WorkflowDecision.CONTINUE_SUBSECTION: "query_formulator",
+            WorkflowDecision.FINISHED:            END,
+        },
+    )
     _define_content_edges(builder)
 
     graph = builder.compile()
@@ -360,52 +539,6 @@ def create_planning_workflow() -> CompiledStateGraph:
     return graph
 
 
-def create_chapter1_workflow() -> CompiledStateGraph:
-    """
-    Phase-B1 workflow: generate Chapter 1 only, then stop for preview.
-
-    Uses check_next_step_ch1() which routes NEXT_CHAPTER to update_chapter → END
-    instead of continuing, so the graph terminates after the first chapter
-    checkpoint and returns control to the UI preview gate.
-
-    For single-chapter textbooks, routes FINISHED → publisher as normal.
-
-    Entry point: researcher (curriculum already in state from Phase A)
-    """
-    logger.info("Building Chapter 1 workflow (researcher → ch1 loop → END)...")
-    builder = StateGraph(AgentState)
-
-    builder.add_node("researcher",        _with_stop_check(perform_research))
-    builder.add_node("writer",            _with_stop_check(write_section))
-    builder.add_node("reviewer",          _with_stop_check(review_section))
-    builder.add_node("illustrator",       _with_stop_check(illustrate_section))
-    builder.add_node("publisher",         _with_stop_check(publish_curriculum))
-    builder.add_node("update_subsection", _with_stop_check(append_and_update_subsection))
-    builder.add_node("update_chapter",    _with_stop_check(append_and_update_chapter))
-
-    builder.add_edge("researcher", "writer")
-    builder.add_edge("writer",     "reviewer")
-    builder.add_conditional_edges(
-        "reviewer", route_after_review,
-        {WorkflowDecision.REVISE: "writer", WorkflowDecision.APPROVE: "illustrator"},
-    )
-    builder.add_conditional_edges(
-        "illustrator", check_next_step_ch1,
-        {
-            WorkflowDecision.CONTINUE_SUBSECTION: "update_subsection",
-            WorkflowDecision.NEXT_CHAPTER:        "update_chapter",   # → END after ch1
-            WorkflowDecision.FINISHED:            "publisher",        # single-chapter
-        },
-    )
-    builder.add_edge("update_subsection", "researcher")
-    builder.add_edge("update_chapter",    END)   # stop after ch1 checkpoint
-    builder.add_edge("publisher",         END)
-
-    builder.set_entry_point("researcher")
-    graph = builder.compile()
-    logger.info("✓ Chapter 1 workflow compiled")
-    return graph
-
 
 def create_remaining_workflow() -> CompiledStateGraph:
     """
@@ -429,8 +562,6 @@ def create_remaining_workflow() -> CompiledStateGraph:
 def create_content_workflow() -> CompiledStateGraph:
     """
     Legacy Phase-B workflow: full content loop (all chapters) → publisher.
-    Kept for backward compatibility. Prefer create_chapter1_workflow() +
-    create_remaining_workflow() for Phase 5 preview gate support.
     """
     logger.info("Building content workflow (researcher → … → publisher → END)...")
     builder = StateGraph(AgentState)

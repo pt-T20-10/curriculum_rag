@@ -403,7 +403,7 @@ class IllustratorAgent:
             return ""
 
         try:
-            from src.config import IMAGE_MODEL_DEFAULT, IMAGE_MODEL_PREMIUM
+            
 
             client = OpenAI(api_key=OPENAI_API_KEY)
 

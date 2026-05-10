@@ -26,6 +26,7 @@ import os
 import concurrent.futures
 from pathlib import Path
 
+from typing import Any
 from app.schemas.curriculum import AgentState
 from app.config import settings
 
@@ -36,11 +37,14 @@ from app.ingestion.crawler import ingest_dynamic_data
 from app.utils import stop_signal
 from app.utils.log_config import setup_logger
 
+TARGETED_CRAWL_QUERIES_PER_CHAPTER = settings.TARGETED_CRAWL_QUERIES_PER_CHAPTER
+TARGETED_CRAWL_MAX_QUERIES         = settings.TARGETED_CRAWL_MAX_QUERIES
+
 CHROMA_DB_DIR: Path = settings.CHROMA_DB_DIR
 SEARCH_RESULTS_PER_QUERY = settings.SEARCH_RESULTS_PER_QUERY
 SEARCH_MAX_WORKERS = settings.SEARCH_MAX_WORKERS
 
-logger = setup_logger(name="IngestionNode", logfile="backend/logs/agents.log")
+logger = setup_logger(name="IngestionNode", logfile="logs/agents.log")
 
 _progress_callback = None
 
@@ -91,7 +95,11 @@ def perform_ingestion(state: AgentState) -> dict:
     """
     
     callback     = _get_ingestion_callback()
-    topic        = state["request"]
+     # Use core_topic (extracted by Validator) for focused query expansion.
+    # Falls back to raw request when core_topic is absent or empty.
+    # Example: request="Python có bài tập" → core_topic="Python" gives
+    # cleaner bilingual queries without requirement noise polluting the searches.
+    topic        = state.get("core_topic", "") or state["request"]
     content_type = state.get("content_type", "technical")
 
     print(f"[DEBUG INGESTER] perform_ingestion START — topic='{topic}' callback={'set' if callback else 'NONE'}", flush=True)
@@ -120,33 +128,57 @@ def perform_ingestion(state: AgentState) -> dict:
     print(f"[DEBUG INGESTER] Step 2: expanding query bilingually", flush=True)
     query_expansion_agent = QueryExpansionAgent()
     expanded = query_expansion_agent.expand_query_bilingual(topic, content_type=content_type)
-    
-    vi_queries = expanded["vi"]  # 6 Vietnamese queries (textbook, tutorial, wiki, docs, examples, forum)
-    en_queries = expanded["en"]  # 6 English queries (textbook, tutorial, wiki, docs, examples, forum)
-    
-    print(f"[DEBUG INGESTER] Step 2 done: {len(vi_queries)} VI + {len(en_queries)} EN queries", flush=True)
+
+    vi_queries = expanded["vi"]
+    en_queries = expanded["en"]
+
     logger.info(f"Query expansion with content_type: '{content_type}'")
     logger.info(f"VI queries: {vi_queries}")
     logger.info(f"EN queries: {en_queries}")
     if callback:
-        print(f"[DEBUG INGESTER] callback→ query expansion done", flush=True)
         callback(
             f"Đã tạo {len(vi_queries) + len(en_queries)} câu truy vấn "
             f"— đang tìm kiếm web..."
         )
 
     # ------------------------------------------------------------------
-    # Step 3 — Parallel web search across all query-region pairs
+    # Step 2b — Curriculum-targeted queries (Targeted Crawling, Shift 3)
     #
-    # CHANGE: collect full result dicts (title + href + body) instead of
-    # URLs only. Body snippets are required by filter_and_classify_urls()
-    # for snippet pre-filtering — without them, Signal 2 (topic keyword
-    # matching) in score_search_result() always receives an empty string.
+    # After the user confirms the curriculum, state["curriculum"] contains
+    # the confirmed CurriculumOutline. Extracting subsection search_query
+    # fields as additional search seeds ensures ChromaDB receives content
+    # that directly maps to what the Writer will later query for each section.
+    # These targeted queries run in the us-en region (English technical queries).
     # ------------------------------------------------------------------
-    print(f"[DEBUG INGESTER] Step 3: parallel web search ({len(vi_queries)+len(en_queries)} queries)", flush=True)
+    curriculum       = state.get("curriculum")
+    targeted_queries: list[str] = []
+    if curriculum:
+        targeted_queries = _extract_curriculum_queries(curriculum)
+        if targeted_queries:
+            logger.info(
+                f"Targeted crawling: {len(targeted_queries)} curriculum-derived queries "
+                f"(cap={TARGETED_CRAWL_MAX_QUERIES}, per_chapter={TARGETED_CRAWL_QUERIES_PER_CHAPTER})"
+            )
+            if callback:
+                callback(
+                    f"Đã thêm {len(targeted_queries)} truy vấn từ giáo trình "
+                    f"— đang tìm kiếm tổng hợp..."
+                )
+
+    # ------------------------------------------------------------------
+    # Step 3 — Parallel web search across all query-region pairs
+    # ------------------------------------------------------------------
+    print(
+        f"[DEBUG INGESTER] Step 3: parallel web search "
+        f"({len(vi_queries)} VI + {len(en_queries)} EN "
+        f"+ {len(targeted_queries)} targeted = "
+        f"{len(vi_queries)+len(en_queries)+len(targeted_queries)} total queries)",
+        flush=True,
+    )
     region_query_pairs: list[tuple[str, str]] = (
-        [(q, "vn-vn") for q in vi_queries] +
-        [(q, "us-en") for q in en_queries]
+        [(q, "vn-vn") for q in vi_queries]      +
+        [(q, "us-en") for q in en_queries]       +
+        [(q, "us-en") for q in targeted_queries]   # curriculum-specific seeds
     )
 
     seen_urls:             set[str]  = set()
@@ -180,6 +212,10 @@ def perform_ingestion(state: AgentState) -> dict:
 
     print(f"[DEBUG INGESTER] Step 3 done: {len(all_raw_urls)} unique URLs collected", flush=True)
     logger.info(f"Total unique URLs before filtering: {len(all_raw_urls)}")
+    logger.info(
+        f"[Ingestion] Step 3 complete: {len(all_raw_urls)} unique URLs from "
+        f"{len(region_query_pairs)} queries"
+    )
 
     if stop_signal.is_stopped():
         print(f"[DEBUG INGESTER] STOPPED after Step 3", flush=True)
@@ -211,6 +247,12 @@ def perform_ingestion(state: AgentState) -> dict:
     )
     print(f"[DEBUG INGESTER] Step 4 done: {len(clean_links)} clean links after filtering", flush=True)
     logger.info(f"Found {len(clean_links)} valid links to crawl")
+    pdf_n  = sum(1 for u in clean_links if u["type"] == "pdf")
+    html_n = sum(1 for u in clean_links if u["type"] == "html")
+    logger.info(
+        f"[Ingestion] Step 4 complete: {len(clean_links)} valid links "
+        f"(PDF={pdf_n}, HTML={html_n})"
+    )
 
     if stop_signal.is_stopped():
         print(f"[DEBUG INGESTER] STOPPED after Step 4", flush=True)
@@ -238,6 +280,10 @@ def perform_ingestion(state: AgentState) -> dict:
         progress_callback=_get_ingestion_callback(),
     )
     print(f"[DEBUG INGESTER] Step 5 done: success={success}", flush=True)
+    logger.info(
+        f"[Ingestion] Step 5 complete: crawl success={success}, "
+        f"{len(clean_links)} sources attempted"
+    )
 
     if not success:
         logger.error("Crawling failed or no content found")
@@ -250,3 +296,62 @@ def perform_ingestion(state: AgentState) -> dict:
             f"✓ Ingestion complete: Database ready with {len(clean_links)} sources"
         ]
     }
+    
+    
+def _extract_curriculum_queries(
+    curriculum: Any,
+    max_per_chapter: int = TARGETED_CRAWL_QUERIES_PER_CHAPTER,
+    total_cap: int       = TARGETED_CRAWL_MAX_QUERIES,
+) -> list[str]:
+    """
+    Extract targeted search queries from a confirmed CurriculumOutline.
+
+    Reads the search_query field of each subsection — these are already
+    optimised English queries written by the Planner for RAG retrieval.
+    Using them as ingestion seeds ensures ChromaDB receives content that
+    directly matches what the Writer will later query.
+
+    Deduplication is handled by the caller via the seen_urls set in
+    perform_ingestion() — no extra dedup needed here.
+
+    Args:
+        curriculum:      CurriculumOutline (Pydantic) or equivalent dict.
+        max_per_chapter: Max subsection queries extracted per chapter.
+        total_cap:       Hard cap on total queries returned.
+
+    Returns:
+        List of unique search_query strings, capped at total_cap.
+    """
+    queries: list[str] = []
+    seen:    set[str]  = set()
+
+    chapters = (
+        curriculum.chapters
+        if hasattr(curriculum, "chapters")
+        else curriculum.get("chapters", [])
+    )
+
+    for chapter in chapters:
+        subsections = (
+            chapter.subsections
+            if hasattr(chapter, "subsections")
+            else chapter.get("subsections", [])
+        )
+        count = 0
+        for sub in subsections:
+            if count >= max_per_chapter:
+                break
+            q = (
+                sub.search_query
+                if hasattr(sub, "search_query")
+                else sub.get("search_query", "")
+            )
+            if q and q not in seen:
+                seen.add(q)
+                queries.append(q)
+                count += 1
+
+        if len(queries) >= total_cap:
+            break
+
+    return queries[:total_cap]

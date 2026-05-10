@@ -11,6 +11,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import model_validator
 
 
 load_dotenv()
@@ -143,6 +144,78 @@ class Settings(BaseSettings):
         "springer.com",
     )
     
+    
+    # ==================== CRAG Pipeline ====================
+    CRAG_CONTEXT_QUALITY_MIN_CHARS: int = 800
+    """
+    Minimum total chars of enriched RAG context for ContextEvaluator to mark
+    context_quality='sufficient'. Below this → 'insufficient' → retry or fail-open.
+    CAUTION: Lowering this causes ContentWriter to write with sparse context.
+    """
+    CRAG_MAX_CONTEXT_RETRIES: int = 2
+    """
+    Maximum times QueryFormulator retries before ContentWriter proceeds regardless.
+    CAUTION: Raising this increases per-subsection latency by ~3-5s per retry.
+    """
+
+    # ==================== Content Generation ====================
+    WRITER_RETRIEVAL_MAX_ROUNDS: int = 2
+    """Max tool-call rounds ContextRetrievalAgent may use to supplement context."""
+    WRITER_SUMMARY_PREVIEW_CHARS: int = 200
+    """Chars truncated per section summary entry stored in section_summaries."""
+    WRITER_MAX_PRIOR_SUMMARIES: int = 6
+    """Max prior section summaries injected into Writer prompt (token budget guard)."""
+
+    # ==================== Quality Control ====================
+    REVIEWER_MAX_REVISIONS: int = 2
+    """
+    Max reviewer→writer revision cycles per subsection before forcing approval.
+    CAUTION: Setting to 0 disables the quality gate entirely.
+    Setting above 3 significantly increases generation time.
+    """
+
+    # ==================== RAG Chunk Quality ====================
+    RAG_MIN_SUBSTANTIVE_SENTENCES: int = 2
+    """Minimum sentence count for a chunk to pass the heuristic quality filter."""
+    RAG_MIN_AVG_SENTENCE_LEN: int = 30
+    """Minimum average sentence length (chars) for heuristic quality filter."""
+    RAG_TRUSTED_DOMAIN_QUOTA: int = 3
+    """Max chunks from a single trusted edu domain (wikipedia, arxiv, etc.)."""
+    RAG_DEFAULT_DOMAIN_QUOTA: int = 1
+    """Max chunks from a single non-trusted domain (prevents single-source bias)."""
+    RAG_SEMANTIC_DEDUP_THRESHOLD: float = 0.85
+    """Cosine similarity ceiling for semantic deduplication (0.0–1.0).
+    CAUTION: Lowering removes more chunks; raising allows more near-duplicates."""
+    RAG_CHUNK_SWEET_SPOT_MIN: int = 300
+    """Chunk length floor for quality scoring sweet-spot bonus."""
+    RAG_CHUNK_SWEET_SPOT_MAX: int = 1500
+    """Chunk length ceiling for quality scoring sweet-spot bonus."""
+    RAG_CHUNK_SENT_LEN_MIN: int = 40
+    """Minimum average sentence length for structure quality bonus."""
+    RAG_CHUNK_SENT_LEN_MAX: int = 200
+    """Maximum average sentence length for structure quality bonus."""
+
+    # ==================== Snippet / Search Quality ====================
+    MIN_SNIPPET_SCORE: float = 0.3
+    """
+    Minimum score_search_result() score for a URL to pass snippet pre-filter.
+    Applied in both search_engine.py and url_filter.py.
+    CAUTION: Lowering this floods ingestion with low-relevance pages.
+    Raising this may cut valid sources from niche topics.
+    """
+
+    # ==================== Targeted Crawling (Shift 3) ====================
+    TARGETED_CRAWL_QUERIES_PER_CHAPTER: int = 2
+    """
+    Number of subsection search_query fields extracted per chapter for
+    curriculum-grounded ingestion. Keeps targeted queries focused per chapter.
+    """
+    TARGETED_CRAWL_MAX_QUERIES: int = 12
+    """
+    Hard cap on total curriculum-derived queries appended to the ingestion search.
+    Prevents over-querying on textbooks with many chapters/subsections.
+    """
+    
     # ==================== Phase 1 & 2: Embedding Optimization ====================
     
     # Embedding batch size (trade-off: larger = faster but more memory)
@@ -178,6 +251,49 @@ class Settings(BaseSettings):
         case_sensitive=True,
         extra="ignore"
     )
+    
+    # Settings that, when changed from default, should trigger a startup warning.
+    # Format: field_name → (default_value, reason)
+    _CRITICAL_DEFAULTS: dict = {
+        "REVIEWER_MAX_REVISIONS":        (2,    "Controls quality gate depth — 0 disables review entirely"),
+        "CRAG_CONTEXT_QUALITY_MIN_CHARS":(800,  "Too low = ContentWriter gets sparse context"),
+        "MIN_SNIPPET_SCORE":             (0.3,  "Too low floods ingestion; too high starves niche topics"),
+        "RAG_TOP_K":                     (8,    "Affects retrieval diversity — changes output quality"),
+        "CHUNK_SIZE":                    (2000, "Affects all downstream RAG quality"),
+        "MIN_RELEVANCE_SCORE":           (0.22, "Controls ChromaDB post-filter — affects context richness"),
+        "RAG_TRUSTED_DOMAIN_QUOTA":      (3,    "Controls single-source dominance in retrieved context"),
+        "WRITER_MAX_PRIOR_SUMMARIES":    (6,    "Affects token budget — raising may cause context overflow"),
+    }
+
+    @model_validator(mode="after")
+    def warn_critical_changes(self) -> "Settings":
+        """
+        Log startup warnings when critical settings deviate from recommended defaults.
+        Fires once at application startup — does not block execution.
+        """
+        import logging
+        _cfg_logger = logging.getLogger("ConfigValidator")
+
+        changed = []
+        for field, (default, reason) in self._CRITICAL_DEFAULTS.items():
+            current = getattr(self, field, None)
+            if current != default:
+                changed.append((field, default, current, reason))
+
+        if changed:
+            _cfg_logger.warning("=" * 60)
+            _cfg_logger.warning("⚠️  CONFIG: %d critical setting(s) differ from defaults:", len(changed))
+            for field, default, current, reason in changed:
+                _cfg_logger.warning(
+                    "  • %-38s %s → %s  [%s]",
+                    field, default, current, reason
+                )
+            _cfg_logger.warning("=" * 60)
+
+        return self
+    
+    
+    
 
 
 @lru_cache()
@@ -245,3 +361,4 @@ def get_embedding_model():
             f"Invalid EMBEDDING_PROVIDER: '{settings.EMBEDDING_PROVIDER}'. "
             f"Must be 'openai' or 'local'"
         )
+        

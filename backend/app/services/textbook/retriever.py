@@ -38,16 +38,19 @@ from app.config import settings, get_embedding_model
 LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
 OPENAI_API_KEY = settings.OPENAI_API_KEY
 CHROMA_DB_DIR = settings.CHROMA_DB_DIR
-RAG_TOP_K = settings.RAG_TOP_K
+RAG_TOP_K    = settings.RAG_TOP_K
 RAG_INITIAL_K = settings.RAG_INITIAL_K
-RAG_TOOL_K = settings.RAG_TOOL_K
-_MIN_SUBSTANTIVE_SENTENCES: int = 2
-_MIN_AVG_SENTENCE_LEN: int = 30
+RAG_TOOL_K   = settings.RAG_TOOL_K
+_MIN_SUBSTANTIVE_SENTENCES: int = settings.RAG_MIN_SUBSTANTIVE_SENTENCES
+_MIN_AVG_SENTENCE_LEN:      int = settings.RAG_MIN_AVG_SENTENCE_LEN
+_TRUSTED_DOMAIN_QUOTA:      int = settings.RAG_TRUSTED_DOMAIN_QUOTA
+_DEFAULT_DOMAIN_QUOTA:      int = settings.RAG_DEFAULT_DOMAIN_QUOTA
+_SEMANTIC_DEDUP_THRESHOLD: float = settings.RAG_SEMANTIC_DEDUP_THRESHOLD
 from langchain_chroma import Chroma
 from app.schemas.curriculum import AgentState, Chapter, SubSection, get_chapter_and_subsection
 from app.utils.log_config import setup_logger
 
-logger = setup_logger(name="ResearcherAgent", logfile="logs/agents.log")
+logger = setup_logger(name="Retriever", logfile="logs/agents.log")
 
 
 # ============================================================================
@@ -248,18 +251,27 @@ def _get_rag_logger() -> RAGContextLogger:
 # ResearcherAgent
 # ============================================================================
 
-class ResearcherAgent:
+class Retriever:
     """
-    Researcher Agent: semantic similarity search over the ingested ChromaDB corpus.
+    Retriever: semantic similarity search over the ingested ChromaDB corpus.
 
     Responsibilities:
         - Maintain a single ChromaDB client connection (shared via singleton)
-        - Perform top-k similarity search for a given subsection query
-        - Format retrieved chunks with source metadata for the Writer's RAG context
+        - Perform top-k similarity search with MMR for diversity
+        - Apply three-layer chunk quality filtering:
+            Layer 1: structural heuristics (no LLM)
+            Layer 2: LLM binary classifier (KEEP/DISCARD per chunk)
+            Layer 3: semantic deduplication + quality scoring
+        - Format retrieved chunks with source metadata for EvaluatorAgent
         - Write full retrieval records to logs/rag_context.log for audit
 
-    Instantiate via _get_researcher() rather than directly — this ensures the
+    Instantiate via _get_retriever() rather than directly — this ensures the
     ChromaDB connection is reused across all subsection calls in the workflow.
+
+    Note on LLM usage: _llm_classify_chunk() uses an LLM as a binary classifier,
+    not as a reasoner. It makes no decisions about retrieval flow — it only
+    judges individual chunks in isolation. This distinguishes Retriever from
+    EvaluatorAgent which uses LLM reasoning to decide whether to fetch more context.
     """
 
     def __init__(self) -> None:
@@ -354,7 +366,11 @@ class ResearcherAgent:
                     "iosrjournals",
                     "ijirt",
                 )
-                max_quota = 3 if any(d in source_url for d in _TRUSTED_EDU_DOMAINS) else 1
+                max_quota = (
+                    _TRUSTED_DOMAIN_QUOTA
+                    if any(d in source_url for d in _TRUSTED_EDU_DOMAINS)
+                    else _DEFAULT_DOMAIN_QUOTA
+                )
 
                 source_count = sum(
                     1 for cid in self._retrieved_ids
@@ -388,18 +404,12 @@ class ResearcherAgent:
                     logger.debug(f"Heuristic DISCARD: '{text[:60]}'")
                     continue
 
-                # Layer 2 — LLM classifier for chunks that passed heuristics
-                # Pass query and content_type for context-aware filtering
+                # Layer 2 — LLM binary classifier (Groq, fail-open on error)
                 if not _llm_classify_chunk(text, query=query, content_type=content_type):
-                    continue
-                substantive.append(doc)
-                
-                 # Layer 2 — LLM classifier for chunks that passed heuristics
-            # Pass query and content_type for context-aware filtering
-                if not _llm_classify_chunk(text, query=query, content_type=content_type):
+                    logger.debug(f"LLM DISCARD: '{text[:60]}'")
                     continue
 
-            substantive.append(doc)
+                substantive.append(doc)
 
             filtered_count = len(fresh_results) - len(substantive)
             if filtered_count:
@@ -540,7 +550,7 @@ class ResearcherAgent:
 # is opened once and reused for the entire workflow run.
 # ---------------------------------------------------------------------------
 
-_researcher_instance: Optional[ResearcherAgent] = None
+_retriever_instance: Optional[Retriever] = None
 
 
 
@@ -702,7 +712,7 @@ def _get_chunk_classifier() -> ChatOpenAI:
 
 def _deduplicate_chunks_semantic(
     chunks: list[dict],
-    similarity_threshold: float = 0.85,
+    similarity_threshold: float = _SEMANTIC_DEDUP_THRESHOLD,
     embedding_model = None
 ) -> list[dict]:
     """
@@ -730,7 +740,7 @@ def _deduplicate_chunks_semantic(
         return chunks
     
     if embedding_model is None:
-        from src.config import get_embedding_model
+        from config import get_embedding_model
         embedding_model = get_embedding_model()
     
     from sklearn.metrics.pairwise import cosine_similarity
@@ -773,6 +783,10 @@ def _deduplicate_chunks_semantic(
     
     return deduplicated
 
+_CHUNK_SWEET_SPOT_MIN: int   = settings.RAG_CHUNK_SWEET_SPOT_MIN
+_CHUNK_SWEET_SPOT_MAX: int   = settings.RAG_CHUNK_SWEET_SPOT_MAX
+_CHUNK_SENT_LEN_MIN:   int   = settings.RAG_CHUNK_SENT_LEN_MIN
+_CHUNK_SENT_LEN_MAX:   int   = settings.RAG_CHUNK_SENT_LEN_MAX
 
 def _score_chunk_quality(chunk_text: str, source_url: str) -> float:
     """
@@ -817,7 +831,7 @@ def _score_chunk_quality(chunk_text: str, source_url: str) -> float:
     sentences = [s.strip() for s in re.split(r'[.!?]', chunk_text) if len(s.strip()) > 15]
     if len(sentences) >= 3:
         avg_sent_len = sum(len(s) for s in sentences) / len(sentences)
-        if 40 <= avg_sent_len <= 200:  # Good sentence length range
+        if _CHUNK_SENT_LEN_MIN <= avg_sent_len <= _CHUNK_SENT_LEN_MAX:  # Good sentence length range
             score += 0.15
         else:
             score -= 0.05
@@ -835,9 +849,9 @@ def _score_chunk_quality(chunk_text: str, source_url: str) -> float:
     
     # Factor 4: Length appropriateness (+/- 0.1)
     length = len(chunk_text)
-    if 300 <= length <= 1500:  # Sweet spot for chunks
+    if _CHUNK_SWEET_SPOT_MIN <= length <= _CHUNK_SWEET_SPOT_MAX:  # Sweet spot for chunks
         score += 0.1
-    elif length < 150 or length > 2500:
+    elif length < (_CHUNK_SWEET_SPOT_MIN // 2) or length > (_CHUNK_SWEET_SPOT_MAX * 1.67):
         score -= 0.1
     
     # Clamp to [0.0, 1.0]
@@ -943,22 +957,18 @@ Reply with ONLY one word: KEEP or DISCARD"""
         return True
 
 
-def _get_researcher() -> ResearcherAgent:
+def _get_retriever() -> Retriever:
     """
-    Return the module-level ResearcherAgent singleton.
+    Return the module-level Retriever singleton.
 
     Instantiates on first call; returns the cached instance on subsequent
-    calls. Thread-safety is not guaranteed — this is safe for the single-
-    threaded LangGraph workflow but should not be used from multiple threads
-    without a lock.
-
-    Returns:
-        The shared ResearcherAgent instance.
+    calls. Thread-safety is not guaranteed — safe for single-threaded
+    LangGraph workflow only.
     """
-    global _researcher_instance
-    if _researcher_instance is None:
-        _researcher_instance = ResearcherAgent()
-    return _researcher_instance
+    global _retriever_instance
+    if _retriever_instance is None:
+        _retriever_instance = Retriever()
+    return _retriever_instance
 @tool
 def retrieve_context_tool(query: str, content_type: str = "technical") -> str:
     """
@@ -975,141 +985,85 @@ def retrieve_context_tool(query: str, content_type: str = "technical") -> str:
         Formatted string of retrieved chunks with source metadata.
     """
     logger.info(f"[TOOL CALL] retrieve_context_tool: '{query[:60]}' (type={content_type})")
-    return _get_researcher().retrieve_context(
+    return _get_retriever().retrieve_context(
         query=query,
         k=RAG_TOOL_K,
         context_label="[TOOL CALL]",
         content_type=content_type,
     )
-    
-    
-def perform_research(state: AgentState) -> dict:
+
+
+def retriever_node(state: AgentState) -> dict:
     """
-    Researcher node: retrieve RAG context for the current subsection.
+    RetrieverNode: execute ChromaDB similarity search using the pre-formed
+    retrieval_query from the QueryFormulator node.
 
-    Reads curriculum position from state indexes, extracts the subsection's
-    search_query, and performs a similarity search against ChromaDB.
-    Expands queries based on user_requirements to find requirement-specific content.
+    This is the second node in the CRAG pipeline:
+        QueryFormulator → [RetrieverNode] → ContextEvaluator → ContentWriter
 
-    Workflow integration:
-        Input:  state["curriculum"], state["current_chapter_index"],
-                state["current_subsection_index"], state["user_requirements"]
-        Output (success):
-                state["rag_context"]  — formatted chunk string for Writer
-                state["messages"]     — milestone log entry
-        Output (no results):
-                state["messages"]     — warning; rag_context NOT written,
-                                        Writer falls back to internal knowledge
-        Output (error):
-                state["messages"]     — error description
+    Unlike the legacy perform_research() which builds its own query, this node
+    receives a fully-formed query via state["retrieval_query"] and executes
+    retrieval only — no query construction logic.
+
+    State reads:
+        retrieval_query — formed by QueryFormulator
+        current_chapter_index, current_subsection_index — for log labels
+        content_type — controls LLM chunk filtering strictness
+
+    State writes:
+        rag_context — formatted chunk string for ContextEvaluator
+        messages    — milestone log entry
 
     Args:
-        state: Current LangGraph workflow state (AgentState TypedDict).
+        state: Current LangGraph workflow state.
 
     Returns:
         Partial state update dict.
     """
     logger.info("=" * 60)
-    logger.info("NODE: Researcher - Retrieving context")
+    logger.info("NODE: RetrieverNode - Executing ChromaDB retrieval")
     logger.info("=" * 60)
 
-    curriculum = state["curriculum"]
-    chap_idx   = state["current_chapter_index"]
-    sub_idx    = state["current_subsection_index"]
-    user_requirements = state.get("user_requirements", "")
+    query        = state.get("retrieval_query", "")
+    chap_idx     = state["current_chapter_index"]
+    sub_idx      = state["current_subsection_index"]
+    content_type = state.get("content_type", "technical")
+
+    if not query:
+        logger.warning("retrieval_query is empty — RetrieverNode skipped")
+        return {"messages": ["⚠️ RetrieverNode: empty retrieval_query — skipped"]}
+
+    context_label = f"[CRAG] Chapter {chap_idx + 1}.{sub_idx + 1}"
 
     try:
-        # Unified accessor — handles both Pydantic CurriculumOutline and dict
-        chapter, subsection = get_chapter_and_subsection(curriculum, chap_idx, sub_idx)
-
-        chap_title = (
-            chapter.title if isinstance(chapter, Chapter)
-            else chapter.get("title", "Unknown")
-        )
-        sec_title = (
-            subsection.title if isinstance(subsection, SubSection)
-            else subsection.get("title", "Unknown")
-        )
-        base_query = (
-            subsection.search_query if isinstance(subsection, SubSection)
-            else subsection.get("search_query", f"{chap_title} - {sec_title}")
-        )
-
-        logger.info(f"Target: Chapter {chap_idx + 1}.{sub_idx + 1} - {sec_title}")
-        logger.info(f"Base query: {base_query}")
-
-        
-        enhanced_query = base_query
-        if user_requirements:
-            logger.info(f"User requirements: {user_requirements}")
-            
-            req_lower = user_requirements.lower()
-            query_extensions = []
-            
-            # Parse specific requirement types
-            if "bài tập" in user_requirements or "exercise" in req_lower:
-                query_extensions.extend(["exercises", "practice problems", "worked examples"])
-                logger.info("  → Adding exercise-focused keywords")
-            
-            if "ví dụ" in user_requirements or "example" in req_lower or "code" in req_lower:
-                query_extensions.extend(["code examples", "sample code", "implementation examples"])
-                logger.info("  → Adding example-focused keywords")
-            
-            if "ứng dụng" in user_requirements or "thực tế" in user_requirements or "real" in req_lower or "application" in req_lower:
-                query_extensions.extend(["real world applications", "use cases", "practical examples"])
-                logger.info("  → Adding application-focused keywords")
-            
-            if "project" in req_lower or "dự án" in user_requirements:
-                query_extensions.extend(["project examples", "hands-on project"])
-                logger.info("  → Adding project-focused keywords")
-            
-            # Build enhanced query
-            if query_extensions:
-                enhanced_query = f"{base_query} {' '.join(query_extensions[:3])}"
-                logger.info(f"Enhanced query: {enhanced_query}")
-
-        # Human-readable label written into the RAG log entry header
-        context_label = f"Chapter {chap_idx + 1}.{sub_idx + 1} {sec_title}"
-
-        # Extract content_type from curriculum if available
-        curr_content_type = "technical"  # default
-        try:
-            if hasattr(curriculum, 'content_type'):
-                curr_content_type = curriculum.content_type
-            elif isinstance(curriculum, dict) and 'content_type' in curriculum:
-                curr_content_type = curriculum['content_type']
-        except:
-            pass
-
-        context = _get_researcher().retrieve_context(
-            query         = enhanced_query,  # ⭐ Use enhanced query
+        context = _get_retriever().retrieve_context(
+            query         = query,
             k             = RAG_INITIAL_K,
-            context_label = f"[INITIAL] {context_label}",
-            content_type  = curr_content_type,
+            context_label = context_label,
+            content_type  = content_type,
         )
+
+        prior_used = list(state.get("used_rag_queries", []))
 
         if not context:
-            logger.warning("No context retrieved — Writer will use general knowledge")
             return {
-                "messages": ["No specific context found. Using general knowledge."]
+                "rag_context":      "",
+                "used_rag_queries": prior_used + [query],  # mark as attempted → blocks retry loop
+                "messages": ["⚠️ RetrieverNode: no chunks found for query"],
             }
 
         return {
-            "rag_context": context,
+            "rag_context":      context,
+            "used_rag_queries": prior_used + [query],  # track all attempted retrieval queries
             "messages": [
-                f"✓ Retrieved context for: '{sec_title}' "
-                f"(enhanced query: '{enhanced_query[:50]}...') — see logs/rag_context.log"
+                f"✓ RetrieverNode: retrieved context for Chapter {chap_idx + 1}.{sub_idx + 1} "
+                f"(query: '{query[:50]}...') — see logs/rag_context.log"
             ],
         }
 
-    except IndexError as e:
-        logger.error(f"Invalid chapter/subsection index: {e}")
-        return {"messages": ["Error: Invalid curriculum index"]}
-
-    except (KeyError, AttributeError) as e:
-        logger.error(f"Missing required field in curriculum: {e}")
-        return {"messages": ["Error: Malformed curriculum structure"]}
-
     except Exception as e:
-        logger.error(f"Unexpected error in Researcher: {e}", exc_info=True)
-        return {"messages": ["Error retrieving context"]}
+        logger.error(f"RetrieverNode unexpected error: {e}", exc_info=True)
+        return {
+            "rag_context": "",
+            "messages": [f"Error in RetrieverNode: {e}"],
+        }

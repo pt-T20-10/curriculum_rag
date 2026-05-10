@@ -241,10 +241,10 @@ export function CreateTextbookPage() {
   }, [textbookTitle, progressData])
 
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col">
+    <div className="h-screen overflow-hidden bg-gray-50 flex flex-col">
       <Navbar />
 
-      <div className="flex-1">
+      <div className="flex-1 overflow-hidden min-h-0">
         <ThreeColumnLayout
           leftSidebar={
             showLeftSidebar ? (
@@ -370,7 +370,7 @@ export function CreateTextbookPage() {
                   <ul className="text-xs text-gray-600 space-y-1">
                     <li>• Hãy cụ thể với chủ đề (VD: "Python cho Data Science" thay vì "Lập trình")</li>
                     <li>• Nhiều chương hơn = nội dung toàn diện hơn</li>
-                    <li>• Quá trình tạo thường mất 2-5 phút tùy cấu hình</li>
+                    
                   </ul>
                 </div>
               )}

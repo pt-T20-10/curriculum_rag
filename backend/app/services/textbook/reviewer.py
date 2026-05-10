@@ -42,7 +42,7 @@ logger = setup_logger(name="ReviewerAgent", logfile="logs/agents.log")
 
 # Maximum number of revision cycles per subsection before forcing approval.
 # Also imported by graph.py for the graph-level defense-in-depth ceiling.
-MAX_REVISIONS = 2
+MAX_REVISIONS = settings.REVIEWER_MAX_REVISIONS
 
 
 class ReviewerAgent:
@@ -105,6 +105,17 @@ class ReviewerAgent:
             (needs_revision, feedback) tuple.
             Falls back to (False, "") on any error to avoid blocking the workflow.
         """
+    # Fast Python pre-check — if content is already long enough,
+    # skip the LLM call entirely. LLM character counting is unreliable
+    # (underestimates by 30-40%) and wastes an API call when content
+    # clearly meets the floor.
+        if len(content) >= char_min * 1.2:
+            # 20% headroom accounts for LLM undercounting tendency
+            logger.info(
+                f"Quality gate: APPROVE (pre-check) — "
+                f"{len(content)} chars ≥ {char_min * 1.2:.0f} (floor {char_min} × 1.2)"
+            )
+            return False, ""
         prompt = ChatPromptTemplate.from_messages([
             ("system", """
     [CONTEXT]
@@ -240,6 +251,308 @@ class ReviewerAgent:
 
         return result
 
+    def _format_pass(
+        self,
+        draft: str,
+        section_num: str,
+        section_title: str,
+        chapter_cmd: str,
+    ) -> str:
+        """
+        Pass A: Mechanical format fixes — LaTeX, headings, blank lines.
+
+        This pass is ONLY permitted to make substitution-level changes:
+          - Math delimiter replacements (\\[ → $$, \\( → $)
+          - Unicode subscript/superscript → math notation (H₂O → H$_2$O)
+          - Heading level corrections (#### → ###)
+          - Blank lines before/after headings
+          - Code block language identifiers
+
+        It is FORBIDDEN from rephrasing, summarizing, expanding, or reordering prose.
+        Every line that does not violate a format rule must be copied verbatim.
+
+        Temperature: 0.0 — deterministic substitution, zero creativity.
+
+        Args:
+            draft:         Raw content from the Writer node.
+            section_num:   Dot-notation section number (e.g. "1.1").
+            section_title: Section title (e.g. "Giới thiệu về Python").
+            chapter_cmd:   Chapter header directive (passed through from review_content).
+
+        Returns:
+            Format-fixed Markdown. Returns original draft unchanged on error.
+        """
+        format_system = """
+[CONTEXT]
+You are a format compliance engine, not an editor.
+Your output is the input with FORMAT VIOLATIONS fixed — nothing else.
+[/CONTEXT]
+
+[TASK]
+Apply ONLY the format rules below to the draft. Every line that violates no rule
+MUST be copied to the output verbatim — word-for-word, character-for-character.
+[/TASK]
+
+[CONSTRAINT]
+These are the ONLY permitted changes. Make no others.
+
+--- MATH FIXES ---
+
+Rule 1 — Block math delimiters: replace ALL non-standard forms with $$ $$:
+  \\[ F = ma \\]                           → $$ F = ma $$
+  \\begin{{equation}} F = ma \\end{{equation}} → $$ F = ma $$
+
+Rule 2 — Inline math delimiters: replace \\( \\) with $ $:
+  \\( x = 5 \\)  →  $x = 5$
+  No space after opening $ or before closing $.
+
+Rule 3 — Naked math: wrap standalone variables/subscripts in $:
+  a_max = 5  →  $a_{{max}} = 5$
+  Only fix CLEAR mathematical notation — do NOT wrap ordinary text in $.
+
+Rule 4 — Vietnamese inside math blocks: use \\text{{...}}:
+  $v_{{cuoi}}$  →  $v_{{\\text{{cuối}}}}$
+
+Rule 5 — Unicode subscripts/superscripts → math notation:
+  H₂O → H$_2$O  |  CO₂ → CO$_2$  |  Na⁺ → Na$^+$  |  Cl⁻ → Cl$^-$
+  subscript digits (₀₁₂₃₄₅₆₇₈₉) → $_n$
+  superscripts (⁺⁻⁰¹²³⁴⁵⁶⁷⁸⁹) → $^n$
+
+--- STRUCTURE FIXES ---
+
+Rule 6 — Chapter header: {chap_cmd}
+  DO NOT add, remove, or alter any # (level-1) heading under any circumstance.
+
+Rule 7 — Heading format:
+  Section header must be exactly: ## {section_num} {section_title}
+  Sub-sections must follow: ### {section_num}.N Title
+  Convert any #### (or deeper) heading to ###.
+  NEVER strip numeric prefixes from headings.
+  Fix: ## {section_num}: Title → ## {section_num} Title  (remove colon only)
+
+Rule 8 — Blank lines: every #, ##, ### heading MUST have a blank line immediately
+  BEFORE it AND immediately AFTER it.
+  Fix missing blank lines — do NOT add blank lines elsewhere.
+
+Rule 9 — Code blocks: must have a language identifier.
+  ``` →  ```python  (or ```bash, ```sql, ```json depending on content)
+
+--- ABSOLUTE PROHIBITION ---
+
+You MUST NOT:
+  - Rephrase, reword, or paraphrase any sentence or paragraph
+  - Summarize or shorten any content
+  - Add new explanatory text, analysis, or commentary
+  - Reorder paragraphs or sections
+  - Remove any content except exact duplicate lines
+
+If a line has no format violation → copy it CHARACTER FOR CHARACTER.
+[/CONSTRAINT]
+
+[FORMAT]
+Return raw Markdown only.
+No fences, no preamble, no explanation.
+[/FORMAT]
+"""
+
+        try:
+            try:
+                logged_system = format_system.format(
+                    section_num=section_num,
+                    section_title=section_title,
+                    chap_cmd=chapter_cmd,
+                )
+            except Exception:
+                logged_system = format_system
+
+            self.prompt_logger.log(
+                system_prompt=logged_system,
+                user_prompt=f"Apply format rules to draft (first 200 chars):\n{draft[:200]}...",
+                context_label=f"{section_num} {section_title} [FORMAT-PASS-A]",
+            )
+
+            llm_format = ChatOpenAI(
+                model=LLM_MODEL_CHEAP,
+                api_key=OPENAI_API_KEY,  # type: ignore[arg-type]
+                temperature=0.0,
+            )
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", format_system),
+                ("user", "Apply format rules to this draft:\n\n{draft}"),
+            ])
+            chain = prompt | llm_format
+            response = chain.invoke({
+                "section_num":   section_num,
+                "section_title": section_title,
+                "chap_cmd":      chapter_cmd,
+                "draft":         draft,
+            })
+            return str(response.content)
+
+        except Exception as e:
+            logger.warning(f"Pass A (_format_pass) error — returning original draft: {e}")
+            return draft
+
+    def _content_pass(
+        self,
+        draft: str,
+        course_topic: str,
+        chapter_num: str,
+        chapter_title: str,
+        section_num: str,
+        section_title: str,
+        section_description: str,
+    ) -> str:
+        """
+        Pass B: Content quality — academic tone, depth, and visuals.
+
+        Receives the format-clean output of _format_pass(). This pass focuses
+        exclusively on content quality. LaTeX and structural rules are intentionally
+        absent — Pass A already handled them, and their presence in this pass caused
+        the LLM to trim content to comply with format rules instead of expanding it.
+
+        Permitted changes:
+          - Remove conversational fillers (Chúng ta hãy..., etc.)
+          - Enforce academic Vietnamese tone
+          - Expand shallow ### blocks (fewer than 3 paragraphs) using domain knowledge
+          - Preserve and add > [IMAGE: ...] placeholders
+
+        CRITICAL: content LENGTH must not decrease. The pre-submit self-check
+        enforces this explicitly — the LLM must count characters before submitting.
+
+        Temperature: 0.2 — needs light creativity for expanding shallow subsections.
+
+        Args:
+            draft:               Format-clean output from _format_pass().
+            course_topic:        Main textbook topic.
+            chapter_num:         1-indexed chapter number as string.
+            chapter_title:       Current chapter title.
+            section_num:         Dot-notation section number.
+            section_title:       Current section title.
+            section_description: What this section covers (from curriculum).
+
+        Returns:
+            Content-polished Markdown. Returns draft unchanged on error.
+        """
+        content_system = """
+[CONTEXT]
+You are a neutral academic writing editor for an educational platform covering
+all learning domains — university academics, technical skills, practical crafts,
+and lifestyle topics. Adapt tone to the subject domain.
+Edit the draft below. Your sole output is the final polished Markdown —
+no preamble, no explanations, no meta-commentary.
+[/CONTEXT]
+
+[TASK]
+Apply content quality improvements to the draft for:
+
+<book_topic>{course_topic}</book_topic>
+<chapter num="{chapter_num}">{chapter_title}</chapter>
+<section num="{section_num}">{section_title}</section>
+<description>{section_description}</description>
+
+The draft has already been format-corrected (LaTeX, headings, blank lines).
+Do NOT modify any math notation or heading structure — those are already correct.
+Focus ONLY on the content quality improvements below.
+[/TASK]
+
+[CRITERION]
+--- TONE ---
+Remove conversational fillers. Examples to eliminate:
+  "Chúng ta hãy cùng xem...", "Trong phần này tôi sẽ...", "Bạn sẽ thấy rằng..."
+Keep: direct, formal Vietnamese academic prose.
+Adapt register to domain: precise for sciences/engineering, narrative for history/arts.
+Technical terms in English: keep as-is (DataFrame, API, CPU, LaTeX).
+
+--- DEPTH ---
+If any ### sub-section block contains fewer than 3 substantial paragraphs:
+  Option A: MERGE it with the adjacent ### block into one richer section.
+  Option B: EXPAND it to at least 3 paragraphs (4–5 sentences each) using
+            domain knowledge consistent with the section description.
+Prefer Option B when the block covers a distinct sub-topic worth preserving.
+
+Bold audit: remove excessive bold. Keep bold ONLY for the primary concept
+defined for the first time in the section. Remove bold from adjectives, general
+nouns, phrases over 4 words, and any term already in a heading.
+
+--- VISUALS ---
+PRESERVE all existing > [IMAGE: ...] tags — do NOT remove or modify them.
+ADD new image suggestions only where a visual genuinely aids comprehension:
+  medium/deep sections → up to 3 images; light sections → max 1; applied → max 2.
+  ADD: architecture diagrams, process flows, data structures, comparisons.
+  SKIP: pure definition paragraphs, abstract theory, transition paragraphs.
+Format: > [IMAGE: Short caption title | Detailed English description for image search]
+[/CRITERION]
+
+[FORMAT]
+MANDATORY CHARACTER COUNT CHECK — execute before submitting:
+
+Step 1: Mentally estimate the character count of the draft you received.
+Step 2: Write your edited content.
+Step 3: Estimate the character count of your output.
+
+If your output is less than 95% of the draft's character count:
+  → You have over-edited. Do NOT submit yet.
+  → Identify the shortest ### block in your output.
+  → Add 2–3 substantial paragraphs of domain-relevant analysis to that block.
+  → Re-estimate. Repeat until output ≥ draft length.
+
+This check is MANDATORY. Submitting shorter content than received is a failure.
+
+Output rules:
+  - Return ONLY the final polished Markdown
+  - NO conversational preamble or meta-commentary
+  - NO outer markdown fences wrapping the entire output
+[/FORMAT]
+"""
+
+        try:
+            try:
+                logged_system = content_system.format(
+                    course_topic=course_topic,
+                    chapter_num=chapter_num,
+                    chapter_title=chapter_title,
+                    section_num=section_num,
+                    section_title=section_title,
+                    section_description=section_description,
+                )
+            except Exception:
+                logged_system = content_system
+
+            self.prompt_logger.log(
+                system_prompt=logged_system,
+                user_prompt=f"Draft to improve (first 200 chars):\n{draft[:200]}...",
+                context_label=f"{section_num} {section_title} [CONTENT-PASS-B]",
+            )
+
+            llm_content = ChatOpenAI(
+                model=LLM_MODEL_CHEAP,
+                api_key=OPENAI_API_KEY,  # type: ignore[arg-type]
+                temperature=0.2,
+            )
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", content_system),
+                ("user", "Here is the draft to improve:\n\n{draft}"),
+            ])
+            chain = prompt | llm_content
+            response = chain.invoke({
+                "course_topic":        course_topic,
+                "chapter_num":         chapter_num,
+                "chapter_title":       chapter_title,
+                "section_num":         section_num,
+                "section_title":       section_title,
+                "section_description": section_description,
+                "draft":               draft,
+            })
+            return str(response.content)
+
+        except Exception as e:
+            logger.error(
+                f"Pass B (_content_pass) error — returning format-fixed draft: {e}",
+                exc_info=True,
+            )
+            return draft
+
     def review_content(
         self,
         course_topic: str,
@@ -254,16 +567,17 @@ class ReviewerAgent:
         """
         Full editorial pass: sanitize, refine tone, fix structure, audit visuals.
 
-        Runs four sequential editing phases via ISE-structured prompt:
-            [CONSTRAINT] Phase 1 — LaTeX sanitization (hard rules, runs first)
-            [CONSTRAINT] Phase 2 — Structure and header rules (hard compliance)
-            [CRITERION]  Phase 3 — Content quality and length (guided improvement)
-            [CRITERION]  Phase 4 — Visuals (additive, judgment allowed)
-            [CONSTRAINT] Phase 5 — Format audit (blank lines, bold, code blocks)
+        Two-pass pipeline:
+            Pass A — _format_pass(): mechanical substitutions only
+                     (LaTeX, headings, blank lines, code blocks).
+                     Temperature 0.0. Content is never shortened.
+            Pass B — _content_pass(): content quality only
+                     (tone, depth, visuals).
+                     Temperature 0.2. Explicit character count self-check.
 
-        ISE segment rationale:
-            Phases 1, 2, 5 → [CONSTRAINT]: binary compliance, zero flexibility.
-            Phases 3, 4    → [CRITERION]:  quality targets, judgment allowed.
+        Separation rationale: combining mechanical and editorial tasks in one
+        call caused the LLM to trade-off length against format compliance,
+        shrinking content by 40-50% per pass. Separation eliminates the conflict.
 
         Args:
             course_topic:        Main textbook topic (e.g. "Học máy").
@@ -275,7 +589,7 @@ class ReviewerAgent:
             draft_content:       Raw content from the Writer node.
             chapter_cmd:         Directive for chapter header handling.
                                 Empty string → Reviewer ignores # heading.
-                                "VERIFY ONLY..." → first subsection of a chapter.
+                                "PRESERVE: ..." → first subsection of a chapter.
 
         Returns:
             Polished Markdown string.
@@ -287,214 +601,113 @@ class ReviewerAgent:
             logger.warning("Draft too short/empty — skipping review")
             return draft_content
 
-        reviewer_template = """
-    [CONTEXT]
-    You are a neutral technical editor and LaTeX specialist for an educational
-    content platform covering all learning domains — university academics,
-    technical skills, practical crafts, and lifestyle topics.
-    Edit the draft below. Your sole output is the final polished Markdown —
-    no preamble, no explanations, no meta-commentary.
-    [/CONTEXT]
-
-    [TASK]
-    Editorial task for the following section:
-
-    <book_topic>{course_topic}</book_topic>
-    <chapter num="{chapter_num}">{chapter_title}</chapter>
-    <section num="{section_num}">{section_title}</section>
-    <description>{section_description}</description>
-
-    Draft to edit:
-    <draft>
-    {draft}
-    </draft>
-    [/TASK]
-
-    [CONSTRAINT]
-    Execute ALL rules in this segment before any other edits.
-    These are hard requirements — zero flexibility, binary compliance.
-
-    --- Phase 1: LATEX SANITIZATION (run first, in order) ---
-
-    Rule 1 — Block math delimiters: replace ALL non-standard forms with $$ $$:
-    ❌ \\[ F = ma \\]                           → ✅ $$ F = ma $$
-    ❌ \\begin{{equation}} F = ma \\end{{equation}} → ✅ $$ F = ma $$
-
-    Rule 2 — Inline math delimiters: replace ALL \\( \\) with $:
-    ❌ \\( x = 5 \\) → ✅ $x = 5$
-    NO space after opening $ or before closing $. $ x $ is WRONG — Pandoc ignores it.
-
-    Rule 3 — Naked math: wrap standalone variables, symbols, subscripts in $:
-    ❌ Ta có gia tốc a được tính bằng...  → ✅ Ta có gia tốc $a$ được tính bằng...
-    ❌ a_max = 5                          → ✅ $a_{{max}} = 5$
-
-    Rule 4 — Vietnamese text inside math: MUST use \\text{{...}}:
-    ❌ $$ v_{{cuoi}} = v_{{dau}} + at $$
-    ✅ $$ v_{{\\text{{cuối}}}} = v_{{\\text{{đầu}}}} + at $$
-
-    Rule 5 — Unicode subscripts/superscripts: convert ALL to math notation:
-    ❌ H₂O, CO₂, Na⁺, Cl⁻, 1s², H₂SO₄
-    ✅ H$_2$O, CO$_2$, Na$^+$, Cl$^-$, $1s^2$, H$_2$SO$_4$
-    subscript digits (₀–₉) → $_n$ | superscripts (⁺⁻⁰–⁹) → $^n$
-
-    --- Phase 2: STRUCTURE RULES ---
-
-    Rule 6 — Chapter header: DO NOT add, modify, OR REMOVE any # (level-1) heading.
-    The Writer node owns chapter headers exclusively.
-    Copy any existing # heading verbatim to your output — it is not yours to touch.
-    {chap_cmd}
-
-    Rule 7 — HEADING FORMAT (PRESERVE NUMBERS — non-negotiable):
-    Section header MUST be exactly: ## {section_num} {section_title}
-    Sub-section headers MUST follow: ### {section_num}.N Title (N = 1, 2, 3...)
-
-    HEADING LEVEL RULES — strictly enforced:
-    - # (1 hash)   → ONLY for chapter title (# CHƯƠNG ...). Governed by Rule 6.
-    - ## (2 hashes) → ONLY for section header (## {section_num} {section_title})
-    - ### (3 hashes) → ONLY for sub-sections (### {section_num}.N Title)
-    - #### and deeper → STRICTLY FORBIDDEN. Convert any #### to ### immediately.
-
-    PRESERVE numbering — NEVER strip the numeric prefix from any heading:
-    ✓ KEEP: ## {section_num} {section_title}
-    ✓ KEEP: ### {section_num}.1 Title  |  ### {section_num}.2 Title
-    ✗ WRONG: ## {section_title}              ← stripped section number
-    ✗ WRONG: ### Title                       ← stripped sub-section number
-    ✗ WRONG: #### Title                      ← forbidden level, must be ###
-
-    Fix malformed formats but keep the number:
-    ❌ ## {section_num}: Title  → ✅ ## {section_num} Title  (remove colon only)
-    ❌ #### {section_num}.1 Title → ✅ ### {section_num}.1 Title (fix level)
-    Do NOT use # (Header 1) unless it is the chapter title line.
-    --- Phase 5: FORMAT RULES ---
-
-    Rule 8 — Every heading (`#`, `##`, `###`) MUST have a blank line immediately
-    BEFORE and AFTER it.
-    ❌  ...end of paragraph.\n### 2.1.2 Title
-    ✅  ...end of paragraph.\n\n### 2.1.2 Title\n\nNext paragraph...
-
-    Rule 9 — Code blocks must have a language identifier: ```python, ```bash, ```sql.
-    [/CONSTRAINT]
-
-    [CRITERION]
-    Apply these quality standards with editorial judgment.
-
-    --- Phase 3: CONTENT QUALITY ---
-
-    Academic tone: eliminate conversational fillers.
-    Remove: "Chúng ta hãy cùng xem...", "Trong phần này tôi sẽ..."
-    Keep: direct, formal Vietnamese academic prose.
-
-    Technical terms: keep standard English terms as-is (DataFrame, CPU, API).
-    Use standard Vietnamese translations for general terms.
-
-    Length — PRESERVE AND PROTECT content length:
-    Count input draft characters before editing. Output MUST contain AT LEAST
-    as many characters as the input draft. If editorial changes reduce the count,
-    expand the shortest ### sub-section with additional explanation, examples,
-    or analysis to compensate. Removing content is only allowed when fixing
-    exact duplicate passages, offset by equivalent expansion elsewhere.
-
-    Sub-section depth: if any ### block contains fewer than 3 paragraphs:
-    MERGE it into the adjacent ### block, OR
-    EXPAND it to at least 3 paragraphs using domain knowledge.
-
-    Bold audit: REMOVE excessive bold. Keep bold ONLY for the first formal
-    definition of the section's primary technical term. Remove bold from:
-    adjectives, general nouns, phrases longer than 4 words, any term that
-    already appears in a Markdown header.
-
-    --- Phase 4: VISUALS ---
-
-    PRESERVE all existing > [IMAGE: ...] tags — do NOT remove them.
-
-    ADD new suggestions only where a visual would genuinely aid understanding
-    AND is still missing. Mirror the Writer's image policy:
-    - light sections (orientation, recap): max 1 image total, prefer 0.
-    - applied sections (exercises, tasks): max 2 images, diagrams only.
-    - medium / deep sections: up to 3 images, scaled to content complexity.
-        ADD when: architecture diagrams, flowcharts, process steps, data structures.
-        SKIP when: pure definition paragraphs or abstract concepts with no visual.
-
-    Format: > [IMAGE: Short caption title | Detailed English description]
-    [/CRITERION]
-
-    [FORMAT]
-    - Return ONLY the final polished Markdown
-    - NO conversational preamble ("Here is the revised version...", "I have fixed...")
-    - NO outer markdown fences wrapping the entire output
-    [/FORMAT]"""
-
-        user_template = "Here is the draft to review:\n\n{draft}"
-
-        # Log a preview of the formatted prompt (context truncated to avoid
-        # bloating the prompt log file with full draft content).
-        try:
-            draft_preview = (
-                draft_content[:500] + "...[truncated]"
-                if len(draft_content) > 500
-                else draft_content
-            )
-            formatted_reviewer = reviewer_template.format(
-                course_topic=course_topic,
-                chapter_num=chapter_num,
-                chapter_title=chapter_title,
-                section_num=section_num,
-                section_title=section_title,
-                section_description=section_description,
-                draft=draft_preview,
-                chap_cmd=chapter_cmd,
-            )
-        except Exception:
-            formatted_reviewer = reviewer_template
-
-        self.prompt_logger.log(
-            system_prompt=formatted_reviewer,
-            user_prompt=user_template.format(
-                draft=draft_content[:200] + "...[truncated]"
-            ),
-            context_label=f"{section_num} {section_title} [POLISH]",
+        # Strip control characters that break JSON serialization.
+        # Keep only printable chars + standard whitespace (\n \t \r).
+        # These accumulate after multiple Writer→Reviewer revision cycles
+        # and cause OpenAI API to return 400 invalid_request_error.
+        safe_draft = ''.join(
+            c for c in draft_content
+            if c >= ' ' or c in '\n\t\r'
         )
 
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", reviewer_template),
-            ("user", user_template),
-        ])
+        # --- Pass A: Mechanical format fixes ---
+        logger.info(f"  Pass A (format): {section_num} {section_title}")
+        format_fixed = self._format_pass(
+            draft=safe_draft,
+            section_num=section_num,
+            section_title=section_title,
+            chapter_cmd=chapter_cmd,
+        )
+        pass_a_len = len(format_fixed)
+        logger.info(f"  Pass A complete: {len(safe_draft)} → {pass_a_len} chars")
 
-        try:
-            # Strip control characters that break JSON serialization.
-            # Keep only printable chars + standard whitespace (\n \t \r).
-            # These accumulate after multiple Writer→Reviewer revision cycles
-            # and cause OpenAI API to return 400 invalid_request_error.
-            safe_draft = ''.join(
-                c for c in draft_content
-                if c >= ' ' or c in '\n\t\r'
+        # --- Pass B: Content quality ---
+        logger.info(f"  Pass B (content): {section_num} {section_title}")
+        polished = self._content_pass(
+            draft=format_fixed,
+            course_topic=course_topic,
+            chapter_num=chapter_num,
+            chapter_title=chapter_title,
+            section_num=section_num,
+            section_title=section_title,
+            section_description=section_description,
+        )
+        pass_b_len = len(polished)
+        logger.info(
+            f"  Pass B complete: {pass_a_len} → {pass_b_len} chars "
+            f"({'▼' if pass_b_len < pass_a_len else '▲'}"
+            f"{abs(pass_b_len - pass_a_len)} chars)"
+        )
+
+        # Apply deterministic heading level fix (existing logic — keep unchanged).
+        polished = self._fix_heading_levels(polished, section_num, section_title)
+
+        logger.info("✓ Review complete")
+        return polished
+
+    def classify_rejection_type(self, feedback: str) -> str:
+        """
+        Classify the rejection reason into a routing category.
+
+        Used by route_after_review() in orchestrator.py to select the correct
+        remediation path in the True Dynamic Routing implementation (Target 2).
+
+        Classification rules (keyword-based, no extra LLM call):
+            'missing_context'  — feedback mentions length failure, missing definitions,
+                                 superficial content, or lack of examples/depth.
+                                 These indicate the Writer lacked sufficient source material.
+            'formatting_error' — feedback mentions heading format, blank lines,
+                                 LaTeX delimiters, math notation, or tone issues.
+                                 These indicate structural/format problems, not content gaps.
+
+        Defaults to 'formatting_error' when signals are ambiguous — it is safer
+        to route to ContentWriter directly than to trigger a full re-retrieval cycle.
+
+        Args:
+            feedback: Rejection feedback string from should_revise().
+
+        Returns:
+            'missing_context' or 'formatting_error'
+        """
+        if not feedback:
+            return "formatting_error"
+
+        feedback_lower = feedback.lower()
+
+        # Signals indicating the Writer lacked sufficient source material
+        missing_context_signals = (
+        "thiếu ví dụ", "missing example",
+        "thiếu định nghĩa", "missing definition", "superficial",
+        "không đủ", "insufficient",
+        "thiếu nội dung",
+        "no examples", "lacks depth",
             )
 
-            chain = prompt | self.llm
-            response = chain.invoke({
-                "course_topic":        course_topic,
-                "chapter_num":         chapter_num,
-                "chapter_title":       chapter_title,
-                "section_num":         section_num,
-                "section_title":       section_title,
-                "section_description": section_description,
-                "draft":               safe_draft,
-                "chap_cmd":            chapter_cmd,
-            })
+        formatting_error_signals = (
+            # Structural/format issues (original)
+            "heading", "blank line", "dòng trống", "latex", "math",
+            "delimiter", "\\[", "\\(", "naked", "unicode",
+            "subscript", "superscript", "tone", "conversational",
+            "chương", "section header", "### ", "## ",
+            # Length/depth issues (moved from missing_context)
+            # Rationale: short content = writer needs to write MORE with existing context,
+            # not fetch new context. ContextEvaluator already gates for truly sparse context.
+            "quá ngắn", "too short",
+            "chars", "ký tự",
+            "paragraph",
+            "expand", "mở rộng", "thêm",
+            "superficial", "nông cạn", "thiếu chiều sâu",
+            )
 
-            polished = str(response.content)
-            # Apply deterministic heading level fix as safety layer.
-            # LLMs occasionally output #### instead of ### or strip numeric prefixes.
-            polished = self._fix_heading_levels(polished, section_num, section_title)
-            logger.info("✓ Review complete")
-            return polished  # type: ignore
-        
+        missing_score    = sum(1 for s in missing_context_signals   if s in feedback_lower)
+        formatting_score = sum(1 for s in formatting_error_signals  if s in feedback_lower)
 
-        except Exception as e:
-            logger.error(f"Error during review: {e}", exc_info=True)
-            # Return original draft to keep the workflow moving — the quality
-            # gate in should_revise() will catch remaining issues on next pass.
-            return draft_content
+        rejection = "missing_context" if missing_score > formatting_score else "formatting_error"
+        logger.info(
+            f"Rejection classified: '{rejection}' "
+            f"(missing_signals={missing_score}, format_signals={formatting_score})"
+        )
+        return rejection
 
 
 
@@ -585,15 +798,29 @@ def review_section(state: AgentState) -> dict:
         # sub_idx == 0 is used instead of display_sec_num.endswith(".1") to
         # avoid false matches on section numbers like "1.11" or "2.21".
         # ------------------------------------------------------------------
-        chap_cmd_text = ""
-        if sub_idx == 0 and state.get("chapter_header_written", False):
-            chap_cmd_text = (
-            f"PRESERVE: The draft begins with '# CHƯƠNG {display_chap_num}: ...'. "
-            f"This line MUST appear as the very first line of your output — "
-            f"copy it verbatim. Do NOT remove, modify, or rewrite it under any circumstance."
-        )
-
         draft = state.get("current_content", "")
+        correct_heading  = f"# CHƯƠNG {display_chap_num}: {chap_title.upper()}"
+        chap_cmd_text    = ""
+        draft_has_header = draft.lstrip().startswith("# CHƯƠNG")
+
+        if sub_idx == 0 and state.get("chapter_header_written", False):
+            if draft_has_header:
+                # First write: draft has header — instruct reviewer to preserve it verbatim.
+                chap_cmd_text = (
+                    f"PRESERVE: The draft begins with '{correct_heading}'. "
+                    f"This line MUST appear as the very first line of your output — "
+                    f"copy it verbatim. Do NOT remove, modify, or rewrite it under any circumstance."
+                )
+            else:
+                # Revision: draft has no chapter header (Writer does not re-emit it).
+                # Do NOT instruct reviewer to add or preserve any level-1 heading —
+                # the deterministic guard below will re-inject the correct heading.
+                chap_cmd_text = (
+                    "DO NOT add any # (level-1) heading. "
+                    "The draft does not contain a chapter header — do not add one."
+                )
+
+        
 
         # ------------------------------------------------------------------
         # Step 1 — Polish content.
@@ -623,14 +850,28 @@ def review_section(state: AgentState) -> dict:
         # and only when chapter_header_written=True (meaning Writer did emit it).
         # ------------------------------------------------------------------
         if sub_idx == 0 and state.get("chapter_header_written", False):
-            if not re.search(r'^# CHƯƠNG', polished, flags=re.MULTILINE):
-                expected_heading = (
-                    f"# CHƯƠNG {display_chap_num}: {chap_title.upper()}"
-                )
+            expected_heading = f"# CHƯƠNG {display_chap_num}: {chap_title.upper()}"
+            existing = re.search(r'^# CHƯƠNG.*$', polished, flags=re.MULTILINE)
+
+            if existing:
+                found_text = existing.group(0).strip()
+                if found_text != expected_heading:
+                    # Malformed heading found (e.g. '# CHƯƠNG 1: ...' with literal
+                    # ellipsis placeholder, or wrong casing). Replace deterministically.
+                    polished = (
+                        polished[:existing.start()]
+                        + expected_heading
+                        + polished[existing.end():]
+                    )
+                    logger.warning(
+                        f"⚠️  Malformed chapter heading replaced: "
+                        f"'{found_text}' → '{expected_heading}'"
+                    )
+            else:
+                # Heading entirely absent — inject at top.
                 polished = expected_heading + "\n\n" + polished.lstrip('\n')
                 logger.warning(
-                    f"⚠️  Reviewer stripped # CHƯƠNG heading — restored: "
-                    f"'{expected_heading}'"
+                    f"⚠️  Chapter heading absent — injected: '{expected_heading}'"
                 )
 
         # ------------------------------------------------------------------
@@ -651,12 +892,15 @@ def review_section(state: AgentState) -> dict:
                     f"Revision requested "
                     f"(attempt {revision_number + 1}/{MAX_REVISIONS}): {feedback[:80]}"
                 )
+                rejection = agent.classify_rejection_type(feedback)
                 return {
                     "current_content":  polished,
                     "review_feedback":  feedback,
                     "revision_number":  revision_number + 1,
+                    "rejection_type":   rejection,
                     "messages": [
-                        f"↺ Revision {revision_number + 1}/{MAX_REVISIONS}: {feedback[:80]}"
+                        f"↺ Revision {revision_number + 1}/{MAX_REVISIONS} "
+                        f"[{rejection}]: {feedback[:80]}"
                     ],
                 }
         else:
@@ -675,6 +919,7 @@ def review_section(state: AgentState) -> dict:
             "current_content":  polished,
             "review_feedback":  "",   # empty string → approved in route_after_review()
             "revision_number":  0,    # reset for next subsection
+            "rejection_type":   None, # reset on approval
             "messages": [
                 f"✓ Approved: {display_sec_num} {sec_title} "
                 f"(after {revision_number} revision(s))"

@@ -28,6 +28,8 @@ from app.utils.log_config import setup_logger
 
 logger = setup_logger(name="URLFilter", logfile="logs/url_filter.log")
 
+
+SNIPPET_SCORE_THRESHOLD: float = settings.MIN_SNIPPET_SCORE
 # ---------------------------------------------------------------------------
 # Static blocklists — checked without network calls
 # ---------------------------------------------------------------------------
@@ -199,7 +201,7 @@ HEADERS = {
 # Populated by search_engine.score_search_result() upstream.
 # Only applied when snippet metadata is available — falls back to
 # static-only validation when snippet is absent (e.g. direct URL input).
-SNIPPET_SCORE_THRESHOLD = 0.3
+
 
 
 def is_valid_url_static(url: str) -> bool:

@@ -183,23 +183,24 @@ def continue_textbook_generation_task(self, textbook_id: int, confirmed_curricul
                 # Import workflow runner
                 from app.services.textbook.workflow_runner import continue_after_curriculum_confirmation
                 
-                # Build initial state — include title so content workflow inherits it
-                initial_state = {
-                    "request": textbook.topic,
-                    "textbook_title": textbook.title or textbook.topic,  # preserve planner-set title
-                    "core_topic": textbook.core_topic or textbook.topic,
-                    "user_requirements": textbook.user_requirements or "",
-                    "num_chapters": textbook.num_chapters,
-                    "enable_images": textbook.enable_images,
-                    "content_level": textbook.content_level, #type: ignore
-                    "min_chars_per_section": 0,
-                    "max_subsections_per_chapter": textbook.max_subsections_per_chapter, #type: ignore
-                    "export_formats": ["PDF", "Word"],
-                    "content_type": textbook.content_type, #type: ignore
-                }
+                from app.schemas.curriculum import build_initial_state
+                initial_state = build_initial_state(
+                    request              = textbook.topic,         # type: ignore
+                    num_chapters         = textbook.num_chapters,  # type: ignore
+                    enable_images        = textbook.enable_images, # type: ignore
+                    content_level        = textbook.content_level, # type: ignore
+                    max_subsections_per_chapter = textbook.max_subsections_per_chapter, # type: ignore
+                    content_type         = textbook.content_type,  # type: ignore
+                    core_topic           = textbook.core_topic or textbook.topic,       # type: ignore
+                    user_requirements    = textbook.user_requirements or "",            # type: ignore
+                    export_formats       = ["PDF", "Word"],
+                )
+                # Preserve planner-generated title from Phase 1
+                initial_state["textbook_title"] = textbook.title or textbook.topic     # type: ignore
+                # Mark curriculum as confirmed — user explicitly approved via UI
+                initial_state["curriculum_confirmed"] = True
                 
-                # Run content generation
-                # ⭐ Initialize tracking
+             
                 await update_textbook_progress(
                     db, textbook_id,
                     current_chapter=0,

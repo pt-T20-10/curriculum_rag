@@ -604,24 +604,25 @@ def plan_curriculum(state: AgentState) -> dict:
     """
     Planner node: generate curriculum outline from topic only.
 
-    NOTE: This runs BEFORE ingestion in the new workflow.
-    Curriculum is created from LLM training knowledge, not crawled documents.
-    Content crawling happens AFTER user confirms the curriculum.
 
     Reads from state:
         request                      — user's topic string
         num_chapters                 — how many chapters to generate (default 3)
         max_subsections_per_chapter  — subsection upper bound per chapter (default 5)
 
-    Writes to state:
+     Writes to state:
         curriculum               — CurriculumOutline Pydantic object
         textbook_title           — formal Vietnamese academic title (≤ 12 words)
-        preface_content          — Lời nói đầu Markdown (4-6 paragraphs)
         current_chapter_index    = 0
         current_subsection_index = 0
         final_content            = ""
         revision_number          = 0
         messages                 — milestone log entries
+
+    Note:
+        preface_content is NOT generated here. It is produced by
+        generate_preface_node() which runs AFTER the user confirms
+        the curriculum (Human-in-the-Loop gate, Target 3).
     """
     logger.info("=" * 60)
     logger.info("NODE: Planner - Building curriculum outline")
@@ -651,16 +652,10 @@ def plan_curriculum(state: AgentState) -> dict:
 
     total_subsections = sum(len(ch.subsections) for ch in curriculum.chapters)
 
-    textbook_title  = (
-        planner._generate_textbook_title(core_topic, curriculum)
-        or f"Giáo trình {core_topic}"
-    )
-    preface_content = planner._generate_preface(core_topic, textbook_title, curriculum)
 
     return {
         "curriculum":               curriculum,
-        "textbook_title":           textbook_title,
-        "preface_content":          preface_content,
+        "textbook_title":           core_topic,
         "current_chapter_index":    0,
         "current_subsection_index": 0,
         "final_content":            "",
@@ -669,6 +664,56 @@ def plan_curriculum(state: AgentState) -> dict:
             f"✓ Curriculum created: {curriculum.topic}",
             f"  - {len(curriculum.chapters)} chapters planned",
             f"  - Total subsections: {total_subsections}",
-            f"  - Textbook title: {textbook_title}",
+            f"  - Textbook title: {core_topic}",
+        ],
+    }
+
+
+
+def generate_metadata_node(state: AgentState) -> dict:
+    """
+    Metadata generation node: produce textbook title + Lời nói đầu from
+    confirmed curriculum. Runs as the first node in the content-generation
+    workflow, immediately after the Human-in-the-Loop gate.
+
+    Generating both title and preface post-confirmation:
+        (a) Reduces planning phase latency by ~2 LLM calls.
+        (b) Ensures title and preface reflect the user-confirmed structure.
+        (c) Only the curriculum outline is shown at the review gate.
+
+    Reads:  core_topic, curriculum
+    Writes: textbook_title, preface_content
+    """
+    logger.info("=" * 60)
+    logger.info("NODE: GenerateMetadata - Building title + Lời nói đầu")
+    logger.info("=" * 60)
+
+    core_topic = state.get("core_topic", state["request"])
+    curriculum = state.get("curriculum")
+
+    if not curriculum:
+        logger.warning("generate_metadata_node: curriculum is None — skipping")
+        return {
+            "textbook_title":  f"Giáo trình {core_topic}",
+            "preface_content": "",
+            "messages": ["⚠️ Metadata skipped: curriculum not available"],
+        }
+
+    planner = HybridPlanner()
+
+    textbook_title = (
+        planner._generate_textbook_title(core_topic, curriculum)
+        or f"Giáo trình {core_topic}"
+    )
+    preface_content = planner._generate_preface(core_topic, textbook_title, curriculum)
+
+    logger.info(f"✓ Title: {textbook_title}")
+    logger.info(f"✓ Preface: {len(preface_content)} chars")
+    return {
+        "textbook_title":  textbook_title,
+        "preface_content": preface_content,
+        "messages": [
+            f"✓ Title generated: {textbook_title}",
+            f"✓ Preface generated ({len(preface_content)} chars)",
         ],
     }
