@@ -33,6 +33,15 @@ export function Navbar() {
               {user?.email}
             </Link>
 
+            {/* Profile / settings */}
+            <Link
+              to="/profile"
+              className="hidden sm:block text-sm font-medium text-gray-600 hover:text-primary transition-colors"
+              title="Cài đặt tài khoản"
+            >
+              Cài đặt
+            </Link>
+
             {/* Credits badge */}
             <div className="flex items-center gap-2 px-3 py-1.5 bg-primary/10 rounded-full">
               <svg 

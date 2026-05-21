@@ -33,6 +33,7 @@ logger = setup_logger(name="EvaluatorAgent", logfile="logs/agents.log")
 
 OPENAI_API_KEY = settings.OPENAI_API_KEY
 LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
+LLM_MODEL_PREMIUM = settings.LLM_MODEL_PREMIUM
 _RETRIEVAL_MAX_ROUNDS: int = settings.WRITER_RETRIEVAL_MAX_ROUNDS
 
 
@@ -58,7 +59,7 @@ class EvaluatorAgent:
 
     def __init__(self) -> None:
         self._llm = ChatOpenAI(
-            model=LLM_MODEL_CHEAP,
+            model=LLM_MODEL_PREMIUM, #type: ignore
             api_key=OPENAI_API_KEY, #type: ignore
             temperature=0,
         )

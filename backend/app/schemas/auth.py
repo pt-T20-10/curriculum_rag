@@ -63,3 +63,8 @@ class ResetPasswordRequest(BaseModel):
         if not v.isdigit():
             raise ValueError("Mã xác nhận phải gồm 6 chữ số")
         return v
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(..., min_length=8, max_length=72)

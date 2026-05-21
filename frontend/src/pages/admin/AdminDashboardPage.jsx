@@ -204,6 +204,9 @@ export function AdminDashboardPage() {
             <Link to="/admin/textbooks" className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm hover:bg-gray-50 transition-colors">
               Giáo trình
             </Link>
+            <Link to="/admin/landing" className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm hover:bg-gray-50 transition-colors">
+              Landing Page
+            </Link>
           </div>
         </div>
 

@@ -54,6 +54,59 @@ _SUMMARY_PREVIEW_CHARS: int = settings.WRITER_SUMMARY_PREVIEW_CHARS
 _MAX_PRIOR_SUMMARIES:   int = settings.WRITER_MAX_PRIOR_SUMMARIES
 
 # ============================================================================
+# HK PEDAGOGY HINTS — System Alignment (Task 0)
+# Source: Guiding Principles for Quality Textbooks, HKSAR EDB, June 2016.
+# Strategy: B+C — dynamic per-section_type hint (≤6 lines) injected at the
+# tail of [CRITERION]. Keeps token overhead minimal while targeting the
+# principles most relevant to each depth level.
+# ============================================================================
+
+def _get_hk_hint(section_type: str) -> str:
+    """
+    Return a concise HK pedagogy nudge tailored to the section's depth level.
+
+    Mapped principles (HK Guiding Principles, 2016):
+        light   → L/T-5 CONNECT + S/O-3 orientation opening
+        medium  → L/T-5 full CORE cycle + L-1 define-in-context
+        deep    → L/T-2 higher-order thinking (analysis/evaluation/synthesis)
+        applied → L/T-5 EXTEND + L/T-9 reflective closure
+
+    Args:
+        section_type: One of 'light' | 'medium' | 'deep' | 'applied'.
+
+    Returns:
+        A 2–6 line pedagogical hint string for prompt injection.
+    """
+    hints: dict[str, str] = {
+        "light": (
+            "Pedagogy (CONNECT + ORIENT): Open by activating prior knowledge "
+            "(analogy or back-reference). First paragraph = 2–3 sentence orientation "
+            "of what this section covers and why it matters here."
+        ),
+        "medium": (
+            "Pedagogy (CORE cycle): "
+            "CONNECT → open with prior-knowledge hook or analogy. "
+            "ORGANISE → build new concepts incrementally on established ones. "
+            "REFLECT → embed one reflective checkpoint (key takeaway or compare/contrast). "
+            "EXTEND → close by transferring knowledge to a real-world context. "
+            "Define every new term in context on first use — never in isolation."
+        ),
+        "deep": (
+            "Pedagogy (HIGHER-ORDER THINKING): Prohibit bare fact-listing. "
+            "ANALYSE trade-offs and component differences explicitly. "
+            "EVALUATE conditions under which the concept applies or fails. "
+            "SYNTHESISE how multiple ideas combine — explain WHY and HOW, not just WHAT."
+        ),
+        "applied": (
+            "Pedagogy (EXTEND + REFLECT): Each worked step must state its purpose "
+            "(why this step, not just what to do). "
+            "Close the section with a reflective synthesis paragraph — "
+            "what the learner can now do and how this skill connects forward."
+        ),
+    }
+    return hints.get(section_type, hints["medium"])
+
+# ============================================================================
 # LENGTH CALIBRATION
 # ============================================================================
 _LENGTH_CALIBRATION: dict[str, dict[str, tuple[str, str, str]]] = {
@@ -278,6 +331,7 @@ class ContentWriter:
         length_rule   = _build_length_rule(section_type, content_level, char_min, char_max)
         visual_rule   = self._get_visual_rule(section_type, enable_images)
         prior_block   = _build_prior_summary_block(section_summaries)
+        hk_hint       = _get_hk_hint(section_type)
 
         revision_block = ""
         if review_feedback:
@@ -291,9 +345,11 @@ class ContentWriter:
 
         system_prompt = f"""
 [CONTEXT]
-You are a neutral academic writing specialist producing content for an educational
-platform covering all learning domains. Adapt tone to subject domain.
-Output only the final Markdown content — no preamble, no explanations.
+You are a pedagogical architect producing learner-focused academic content.
+Apply the CORE model per section: Connect to prior knowledge → Organise new
+content incrementally → Reflect via a synthesis checkpoint → Extend to a
+real-world context. Prioritise analysis and evaluation over fact-listing.
+Adapt tone to the subject domain. Output only final Markdown — no preamble.
 [/CONTEXT]
 
 [TASK]
@@ -339,6 +395,8 @@ Content standards:
 - Bold (**term**) ONLY for the primary concept defined for the first time.
 - At least one concrete, domain-relevant example per section.
 - Code blocks must include language identifier: ```python, ```bash, etc.
+
+{hk_hint}
 [/CRITERION]
 
 [CONSTRAINT]
@@ -753,6 +811,8 @@ def extract_section_summary(
     ]
     preview = ' '.join(prose_lines)[:_SUMMARY_PREVIEW_CHARS]
     return f"Mục {section_num} '{section_title}': {preview}..."
+
+
 
 
 # ============================================================================

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { Input } from '../components/common/Input'
+import { PasswordInput } from '../components/common/PasswordInput'
 import { Button } from '../components/common/Button'
 import { GoogleLoginButton } from '../components/common/GoogleLoginButton'
 
@@ -109,9 +110,8 @@ export function RegisterPage() {
             placeholder="email@cuaban.com"
           />
 
-          <Input
+          <PasswordInput
             label="Mật khẩu"
-            type="password"
             name="password"
             value={formData.password}
             onChange={handleChange}
@@ -119,9 +119,8 @@ export function RegisterPage() {
             placeholder="Ít nhất 6 ký tự"
           />
 
-          <Input
+          <PasswordInput
             label="Xác nhận mật khẩu"
-            type="password"
             name="confirmPassword"
             value={formData.confirmPassword}
             onChange={handleChange}

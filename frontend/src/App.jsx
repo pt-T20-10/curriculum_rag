@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { AuthProvider } from './context/AuthContext'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { AdminRoute } from './components/AdminRoute'
@@ -10,9 +10,12 @@ import { CreateTextbookPage } from './pages/CreateTextbookPage'
 import { AdminDashboardPage } from './pages/admin/AdminDashboardPage'
 import { AdminUsersPage } from './pages/admin/AdminUsersPage'
 import { AdminTextbooksPage } from './pages/admin/AdminTextbooksPage'
+import { AdminLandingPage } from './pages/admin/AdminLandingPage'
 import { GoogleCallbackPage } from './pages/GoogleCallbackPage'
 import { ForgotPasswordPage } from './pages/ForgotPasswordPage'
 import { ResetPasswordPage } from './pages/ResetPasswordPage'
+import { LandingPage } from './pages/LandingPage'
+import { ProfilePage } from './pages/ProfilePage'
 
 function App() {
   return (
@@ -89,10 +92,29 @@ function App() {
             }
           />
 
+          <Route
+            path="/admin/landing"
+            element={
+              <AdminRoute>
+                <AdminLandingPage />
+              </AdminRoute>
+            }
+          />
+
+          <Route
+            path="/profile"
+            element={
+              <ProtectedRoute>
+                <ProfilePage />
+              </ProtectedRoute>
+            }
+          />
+
           {/* Google OAuth callback — no auth guard, handles its own token flow */}
           <Route path="/auth/callback" element={<GoogleCallbackPage />} />
 
-          <Route path="/" element={<Navigate to="/dashboard" replace />} />
+          {/* Public landing page — no auth guard */}
+          <Route path="/" element={<LandingPage />} />
         </Routes>
       </BrowserRouter>
     </AuthProvider>

@@ -72,17 +72,17 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     
     # ==================== RAG Settings ====================
-    RAG_TOP_K: int = 8
-    RAG_INITIAL_K: int = 3
-    RAG_TOOL_K: int = 3
-    RAG_TOOL_MAX_ROUNDS: int = 3
+    RAG_TOP_K: int = 5
+    RAG_INITIAL_K: int = 5 
+    RAG_TOOL_K: int = 5
+    RAG_TOOL_MAX_ROUNDS: int = 4
     
     # ==================== LLM Models ====================
     EMBEDDING_MODEL_NAME: str = "BAAI/bge-m3"
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small" 
     
     LLM_MODEL_CHEAP: str = "gpt-4o-mini"
-    LLM_MODEL_PREMIUM: str = "gpt-4o"
+    LLM_MODEL_PREMIUM: str = "gpt-4.1"
     IMAGE_MODEL_DEFAULT: str = "gpt-image-1-mini"
     IMAGE_MODEL_PREMIUM: str = "gpt-image-1.5"
     
@@ -92,8 +92,8 @@ class Settings(BaseSettings):
     #   - "local":  bge-m3 local model, slower but free, 1024 dims
     EMBEDDING_PROVIDER: str = "openai" 
     # ==================== Chunking ====================
-    CHUNK_SIZE: int = 2000
-    CHUNK_OVERLAP: int = 400
+    CHUNK_SIZE: int = 1500
+    CHUNK_OVERLAP: int = 300
     
     # ==================== Ingestion Speed Controls ====================
     SEARCH_RESULTS_PER_QUERY: int = 30
@@ -125,7 +125,7 @@ class Settings(BaseSettings):
     MAX_CHUNKS_PER_DOMAIN: int = 25  # ✅ FIX: Only define once
     
     # Vietnamese content is scarcer → allow more chunks per domain
-    VI_DOMAIN_CAP: int = 50
+    VI_DOMAIN_CAP: int = 80
     
     # English content is abundant → moderate restriction
     EN_DOMAIN_CAP: int = 35
@@ -142,11 +142,15 @@ class Settings(BaseSettings):
         "acm.org",
         "ieee.org",
         "springer.com",
+        "viblo.asia", 
+        "towardsdatascience.com/vi", 
+        "123dok.com",
+        "machinelearningmastery.com"
     )
     
     
     # ==================== CRAG Pipeline ====================
-    CRAG_CONTEXT_QUALITY_MIN_CHARS: int = 800
+    CRAG_CONTEXT_QUALITY_MIN_CHARS: int = 3000
     """
     Minimum total chars of enriched RAG context for ContextEvaluator to mark
     context_quality='sufficient'. Below this → 'insufficient' → retry or fail-open.
@@ -159,7 +163,7 @@ class Settings(BaseSettings):
     """
 
     # ==================== Content Generation ====================
-    WRITER_RETRIEVAL_MAX_ROUNDS: int = 2
+    WRITER_RETRIEVAL_MAX_ROUNDS: int = 3
     """Max tool-call rounds ContextRetrievalAgent may use to supplement context."""
     WRITER_SUMMARY_PREVIEW_CHARS: int = 200
     """Chars truncated per section summary entry stored in section_summaries."""
@@ -256,7 +260,7 @@ class Settings(BaseSettings):
     # Format: field_name → (default_value, reason)
     _CRITICAL_DEFAULTS: dict = {
         "REVIEWER_MAX_REVISIONS":        (2,    "Controls quality gate depth — 0 disables review entirely"),
-        "CRAG_CONTEXT_QUALITY_MIN_CHARS":(800,  "Too low = ContentWriter gets sparse context"),
+        "CRAG_CONTEXT_QUALITY_MIN_CHARS":(1200, "Too low = ContentWriter gets sparse context"),
         "MIN_SNIPPET_SCORE":             (0.3,  "Too low floods ingestion; too high starves niche topics"),
         "RAG_TOP_K":                     (8,    "Affects retrieval diversity — changes output quality"),
         "CHUNK_SIZE":                    (2000, "Affects all downstream RAG quality"),

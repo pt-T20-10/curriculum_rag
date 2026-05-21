@@ -19,4 +19,7 @@ export const authAPI = {
 
   resetPassword: (email, code, new_password) =>
     apiClient.post('/auth/reset-password', { email, code, new_password }),
+
+  changePassword: (current_password, new_password) =>
+    apiClient.patch('/auth/change-password', { current_password, new_password }),
 }

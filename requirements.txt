@@ -94,6 +94,7 @@ tqdm>=4.66.0
 requests>=2.31.0
 httpx[brotli,http2,socks]>=0.28.1
 fake-useragent>=1.4.0
+ddgs>=9.0.0
 
 # ==================== Document Processing ====================
 pymupdf>=1.23.0
@@ -122,6 +123,7 @@ tenacity>=8.5.0
 packaging>=24.0
 click>=8.1.0
 websockets>=14.0
+email-validator>=2.0.0
 
 # ==================== IMPORTANT NOTES ====================
 #

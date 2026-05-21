@@ -13,6 +13,7 @@ from app.config import settings
 from app.database import get_async_db
 from app.models.user import AuthProvider, User, UserRole
 from app.schemas.auth import (
+    ChangePasswordRequest,
     ForgotPasswordRequest,
     LoginResponse,
     ResetPasswordRequest,
@@ -299,3 +300,44 @@ async def reset_password(
     await db.commit()
 
     return {"message": "Mật khẩu đã được đặt lại thành công."}
+
+
+# ---------------------------------------------------------------------------
+# Change password (authenticated)
+# ---------------------------------------------------------------------------
+
+@router.patch("/change-password")
+async def change_password(
+    body: ChangePasswordRequest,
+    current_user_id: Optional[int] = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_async_db),
+):
+    """Change password for an authenticated local-auth user."""
+    if not current_user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    result = await db.execute(select(User).where(User.id == current_user_id))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if not user.hashed_password:  # type: ignore[truthy-bool]
+        raise HTTPException(
+            status_code=400,
+            detail="Tài khoản này không sử dụng mật khẩu. Vui lòng đăng nhập qua Google.",
+        )
+
+    if not verify_password(body.current_password, user.hashed_password):  # type: ignore[arg-type]
+        raise HTTPException(status_code=400, detail="Mật khẩu hiện tại không đúng")
+
+    if body.current_password == body.new_password:
+        raise HTTPException(
+            status_code=400,
+            detail="Mật khẩu mới phải khác mật khẩu hiện tại",
+        )
+
+    user.hashed_password = pwd_context.hash(body.new_password)  # type: ignore[assignment]
+    await db.commit()
+
+    return {"message": "Mật khẩu đã được cập nhật thành công."}
