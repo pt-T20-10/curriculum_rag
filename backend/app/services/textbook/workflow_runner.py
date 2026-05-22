@@ -12,6 +12,7 @@ from sqlalchemy import select
 from app.models.textbook import Textbook
 from app.schemas.curriculum import AgentState
 from app.utils.log_config import setup_logger
+from app.utils.stop_signal import WorkflowStoppedException
 
 logger = setup_logger(name="WorkflowRunner", logfile="logs/workflow_runner.log")
 
@@ -65,9 +66,9 @@ async def run_textbook_workflow(
         user_req_val = ""
     # Build initial state
     initial_state: AgentState = { #type: ignore
-        "request": topic,  
-        "core_topic": core_topic_val, 
-        "user_requirements": user_req_val, 
+        "request": topic,
+        "core_topic": core_topic_val,
+        "user_requirements": user_req_val,
         "num_chapters": num_chapters,
         "enable_images": enable_images,
         "content_level": content_level,
@@ -170,6 +171,10 @@ async def run_textbook_workflow(
                     }
 
         return {"success": False, "error": "Planning phase did not complete"}
+
+    except WorkflowStoppedException:
+        logger.info("[Workflow] Planning stopped by user request")
+        return {"success": False, "error": "stopped_by_user"}
 
     except Exception as e:
         logger.error(f"[Workflow] Error: {e}", exc_info=True)
@@ -335,18 +340,21 @@ async def continue_after_curriculum_confirmation(
 
                 elif node_name in _CRAG_NODES and db:
                     progress = 30.0 + (current_chapter / len(curriculum.chapters)) * 60.0
+                    # Convert 0-based indices to 1-based for frontend display
+                    display_chapter    = current_chapter + 1
+                    display_subsection = current_subsection + 1
 
                     await update_progress(db, textbook_id, {
                         "phase": "generating",
                         "progress_value": min(progress, 90.0),
                         "status_text": (
-                            f"Bước 3/3: Chương {current_chapter + 1}/"
-                            f"{len(curriculum.chapters)} - Mục {current_subsection + 1}"
+                            f"Bước 3/3: Chương {display_chapter}/"
+                            f"{len(curriculum.chapters)} - Mục {display_subsection}"
                         ),
                         "planner_status":   "completed",
                         "ingestion_status": "completed",
-                        "current_chapter":      current_chapter,
-                        "current_subsection":   current_subsection,
+                        "current_chapter":      display_chapter,
+                        "current_subsection":   display_subsection,
                         "current_content_preview": cumulative_state.get("final_content", ""),
                         "topic": topic,
                         "sub_stages": {
@@ -397,6 +405,11 @@ async def continue_after_curriculum_confirmation(
             "pdf_path": pdf_path,
             "docx_path": docx_path,
         }
+
+    except WorkflowStoppedException:
+        logger.info("[Workflow] Content generation stopped by user request")
+        # Stop endpoint already updated DB status to 'failed' — don't overwrite
+        return {"success": False, "error": "stopped_by_user"}
 
     except Exception as e:
         logger.error(f"[Workflow] Content generation error: {e}", exc_info=True)

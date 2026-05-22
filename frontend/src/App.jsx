@@ -11,6 +11,8 @@ import { AdminDashboardPage } from './pages/admin/AdminDashboardPage'
 import { AdminUsersPage } from './pages/admin/AdminUsersPage'
 import { AdminTextbooksPage } from './pages/admin/AdminTextbooksPage'
 import { AdminLandingPage } from './pages/admin/AdminLandingPage'
+import { AdminPlansPage } from './pages/admin/AdminPlansPage'
+import { AdminPaymentsPage } from './pages/admin/AdminPaymentsPage'
 import { GoogleCallbackPage } from './pages/GoogleCallbackPage'
 import { ForgotPasswordPage } from './pages/ForgotPasswordPage'
 import { ResetPasswordPage } from './pages/ResetPasswordPage'
@@ -97,6 +99,22 @@ function App() {
             element={
               <AdminRoute>
                 <AdminLandingPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/admin/plans"
+            element={
+              <AdminRoute>
+                <AdminPlansPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/admin/payments"
+            element={
+              <AdminRoute>
+                <AdminPaymentsPage />
               </AdminRoute>
             }
           />

@@ -42,6 +42,15 @@ export function Navbar() {
               Cài đặt
             </Link>
 
+            {/* Top-up link */}
+            <Link
+              to="/profile"
+              className="hidden sm:block text-sm font-medium text-primary hover:text-blue-500 transition-colors"
+              title="Nạp credits"
+            >
+              Nạp tiền
+            </Link>
+
             {/* Credits badge */}
             <div className="flex items-center gap-2 px-3 py-1.5 bg-primary/10 rounded-full">
               <svg 

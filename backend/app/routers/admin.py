@@ -3,7 +3,7 @@ Admin API — requires role='admin' and is_locked=False.
 """
 
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
@@ -11,8 +11,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_async_db
+from app.models.bank_config import BankConfig
+from app.models.credit_history import CreditHistory
 from app.models.payment import Payment, PaymentStatus
+from app.models.plan import Plan
 from app.models.textbook import Textbook, TextbookStatus
+from app.models.transaction import Transaction, TransactionStatus
 from app.models.user import User, UserRole
 from app.security.jwt import require_admin
 
@@ -441,3 +445,279 @@ async def list_textbooks(
     ]
 
     return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+# ---------------------------------------------------------------------------
+# Bank config
+# ---------------------------------------------------------------------------
+
+class BankConfigUpdate(BaseModel):
+    bank_name: str
+    bank_id: str
+    account_number: str
+    account_holder: str
+
+
+@router.get("/bank-config")
+async def admin_get_bank_config(
+    admin_id: int = Depends(require_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
+    await _get_admin_user(db, admin_id)
+    result = await db.execute(select(BankConfig).limit(1))
+    cfg = result.scalar_one_or_none()
+    if not cfg:
+        return {"bank_name": "Vietcombank", "bank_id": "vietcombank", "account_number": "9782832044", "account_holder": ""}
+    return {"bank_name": cfg.bank_name, "bank_id": cfg.bank_id, "account_number": cfg.account_number, "account_holder": cfg.account_holder}
+
+
+@router.put("/bank-config")
+async def admin_update_bank_config(
+    body: BankConfigUpdate,
+    admin_id: int = Depends(require_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
+    await _get_admin_user(db, admin_id)
+    result = await db.execute(select(BankConfig).limit(1))
+    cfg = result.scalar_one_or_none()
+    if not cfg:
+        cfg = BankConfig()
+        db.add(cfg)
+    cfg.bank_name = body.bank_name  # type: ignore
+    cfg.bank_id = body.bank_id  # type: ignore
+    cfg.account_number = body.account_number  # type: ignore
+    cfg.account_holder = body.account_holder  # type: ignore
+    await db.commit()
+    return {"message": "Bank config updated"}
+
+
+# ---------------------------------------------------------------------------
+# Plans management
+# ---------------------------------------------------------------------------
+
+class PlanCreate(BaseModel):
+    name: str
+    price_vnd: int
+    credits: int
+    features: Optional[str] = ""
+    is_recommended: bool = False
+    is_active: bool = True
+    sort_order: int = 0
+
+
+class PlanUpdate(BaseModel):
+    name: Optional[str] = None
+    price_vnd: Optional[int] = None
+    credits: Optional[int] = None
+    features: Optional[str] = None
+    is_recommended: Optional[bool] = None
+    is_active: Optional[bool] = None
+    sort_order: Optional[int] = None
+
+
+def _plan_dict(p: Plan) -> dict:
+    return {
+        "id": p.id,
+        "name": p.name,
+        "price_vnd": p.price_vnd,
+        "credits": p.credits,
+        "features": p.features or "",
+        "is_recommended": p.is_recommended,
+        "is_active": p.is_active,
+        "sort_order": p.sort_order,
+        "created_at": p.created_at.isoformat(),
+        "updated_at": p.updated_at.isoformat(),
+    }
+
+
+@router.get("/plans")
+async def admin_list_plans(
+    admin_id: int = Depends(require_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
+    await _get_admin_user(db, admin_id)
+    result = await db.execute(select(Plan).order_by(Plan.sort_order, Plan.id))
+    return [_plan_dict(p) for p in result.scalars().all()]
+
+
+@router.post("/plans", status_code=201)
+async def admin_create_plan(
+    body: PlanCreate,
+    admin_id: int = Depends(require_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
+    await _get_admin_user(db, admin_id)
+    plan = Plan(**body.model_dump())
+    db.add(plan)
+    await db.commit()
+    await db.refresh(plan)
+    return _plan_dict(plan)
+
+
+@router.put("/plans/{plan_id}")
+async def admin_update_plan(
+    plan_id: int,
+    body: PlanUpdate,
+    admin_id: int = Depends(require_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
+    await _get_admin_user(db, admin_id)
+    result = await db.execute(select(Plan).where(Plan.id == plan_id))
+    plan = result.scalar_one_or_none()
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    for field, value in body.model_dump(exclude_unset=True).items():
+        setattr(plan, field, value)
+    await db.commit()
+    await db.refresh(plan)
+    return _plan_dict(plan)
+
+
+@router.delete("/plans/{plan_id}", status_code=200)
+async def admin_delete_plan(
+    plan_id: int,
+    admin_id: int = Depends(require_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
+    await _get_admin_user(db, admin_id)
+    result = await db.execute(select(Plan).where(Plan.id == plan_id))
+    plan = result.scalar_one_or_none()
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    plan.is_active = False  # type: ignore
+    await db.commit()
+    return {"message": "Plan deactivated"}
+
+
+# ---------------------------------------------------------------------------
+# Transactions management (admin)
+# ---------------------------------------------------------------------------
+
+def _txn_dict(t: Transaction, user: Optional[User], plan: Optional[Plan]) -> dict:
+    return {
+        "id": t.id,
+        "user_id": t.user_id,
+        "user_email": user.email if user else None,
+        "user_name": user.full_name if user else None,
+        "plan_id": t.plan_id,
+        "plan_name": plan.name if plan else None,
+        "amount_vnd": t.amount_vnd,
+        "credits": t.credits,
+        "txn_id": t.txn_id,
+        "transfer_content": t.transfer_content,
+        "status": t.status,
+        "reject_reason": t.reject_reason,
+        "created_at": t.created_at.isoformat(),
+        "confirmed_at": t.confirmed_at.isoformat() if t.confirmed_at else None,
+        "confirmed_by": t.confirmed_by,
+    }
+
+
+@router.get("/transactions")
+async def admin_list_transactions(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    status_filter: Optional[str] = Query(None, alias="status"),
+    admin_id: int = Depends(require_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
+    await _get_admin_user(db, admin_id)
+
+    query = select(Transaction)
+    if status_filter:
+        query = query.where(Transaction.status == status_filter)
+
+    query = query.order_by(
+        (Transaction.status == TransactionStatus.PENDING).desc(),
+        Transaction.created_at.desc(),
+    )
+
+    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
+    query = query.offset((page - 1) * page_size).limit(page_size)
+    result = await db.execute(query)
+    txns = result.scalars().all()
+
+    user_ids = list({t.user_id for t in txns})
+    plan_ids = list({t.plan_id for t in txns})
+    user_map: dict[int, User] = {}
+    plan_map: dict[int, Plan] = {}
+    if user_ids:
+        ur = await db.execute(select(User).where(User.id.in_(user_ids)))
+        for u in ur.scalars().all():
+            user_map[u.id] = u  # type: ignore
+    if plan_ids:
+        pr = await db.execute(select(Plan).where(Plan.id.in_(plan_ids)))
+        for p in pr.scalars().all():
+            plan_map[p.id] = p  # type: ignore
+
+    items = [_txn_dict(t, user_map.get(t.user_id), plan_map.get(t.plan_id)) for t in txns]  # type: ignore
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+class RejectRequest(BaseModel):
+    reason: Optional[str] = None
+
+
+@router.post("/transactions/{txn_id}/confirm")
+async def admin_confirm_transaction(
+    txn_id: int,
+    admin_id: int = Depends(require_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
+    await _get_admin_user(db, admin_id)
+
+    result = await db.execute(select(Transaction).where(Transaction.id == txn_id))
+    txn = result.scalar_one_or_none()
+    if not txn:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    if txn.status != TransactionStatus.PENDING:  # type: ignore
+        raise HTTPException(status_code=400, detail=f"Transaction is already {txn.status}")
+
+    user_result = await db.execute(select(User).where(User.id == txn.user_id))
+    user = user_result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    try:
+        txn.status = TransactionStatus.CONFIRMED  # type: ignore
+        txn.confirmed_at = datetime.utcnow()  # type: ignore
+        txn.confirmed_by = admin_id  # type: ignore
+
+        user.credits = (user.credits or 0) + txn.credits  # type: ignore
+
+        history = CreditHistory(
+            user_id=user.id,
+            delta=txn.credits,
+            reason=f"Top-up via transaction #{txn.id}",
+            balance_after=user.credits,
+        )
+        db.add(history)
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to confirm transaction")
+
+    return {"message": "Transaction confirmed, credits added", "new_balance": user.credits}
+
+
+@router.post("/transactions/{txn_id}/reject")
+async def admin_reject_transaction(
+    txn_id: int,
+    body: RejectRequest = RejectRequest(),
+    admin_id: int = Depends(require_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
+    await _get_admin_user(db, admin_id)
+
+    result = await db.execute(select(Transaction).where(Transaction.id == txn_id))
+    txn = result.scalar_one_or_none()
+    if not txn:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    if txn.status != TransactionStatus.PENDING:  # type: ignore
+        raise HTTPException(status_code=400, detail=f"Transaction is already {txn.status}")
+
+    txn.status = TransactionStatus.REJECTED  # type: ignore
+    txn.reject_reason = body.reason  # type: ignore
+    await db.commit()
+
+    return {"message": "Transaction rejected"}

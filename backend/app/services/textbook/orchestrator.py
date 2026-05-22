@@ -27,19 +27,27 @@ from app.services.textbook.illustrator import illustrate_section
 from app.services.textbook.publisher import publish_curriculum
 from app.services.textbook.validator import validate_topic_node
 from app.utils import stop_signal
+from app.utils.stop_signal import WorkflowStoppedException  # noqa: F401 — re-exported
 
 logger = setup_logger(name="WorkflowBuilder", logfile="logs/workflow.log")
+
 
 def _with_stop_check(node_fn):
     """
     Wrap a LangGraph node function with a pre-execution stop signal check.
-    If stop is requested before the node runs, return empty dict immediately
-    instead of executing — skips the node without crashing the graph.
+
+    stop_signal.is_stopped() reads the Redis key for the textbook_id that
+    was bound to this worker thread via stop_signal.set_current() in the
+    Celery task before asyncio.run() was called.  No AgentState changes needed.
+
+    Raises WorkflowStoppedException instead of returning {} to avoid the
+    infinite-loop bug where routing functions see unchanged state and loop
+    until the LangGraph recursion limit is hit.
     """
     def wrapper(state: AgentState) -> dict:
         if stop_signal.is_stopped():
-            logger.info(f"Stop signal detected — skipping node '{node_fn.__name__}'")
-            return {}
+            logger.info(f"Stop signal — terminating workflow at '{node_fn.__name__}'")
+            raise WorkflowStoppedException(node_fn.__name__)
         return node_fn(state)
     wrapper.__name__ = node_fn.__name__
     return wrapper

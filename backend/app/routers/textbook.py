@@ -95,7 +95,11 @@ async def create_textbook(
 
     # ================ TRIGGER PLANNING TASK ================
     from app.tasks.textbook_tasks import generate_textbook_task
-    generate_textbook_task.delay(textbook.id)
+    from app.utils import task_registry
+    task_result = generate_textbook_task.delay(textbook.id)
+    task_registry.store(textbook.id, task_result.id)  # type: ignore
+    textbook.celery_task_id = task_result.id  # type: ignore
+    await db.commit()
 
     return textbook
 
@@ -210,8 +214,13 @@ async def get_textbook_progress(
 
 
     progress_data = dict(textbook.progress_data or {})  # type: ignore
-    
- 
+
+    # Always surface DB fields so frontend doesn't show "..." while Celery task starts
+    if textbook.topic:  # type: ignore
+        progress_data.setdefault("topic", textbook.topic)  # type: ignore
+    if textbook.core_topic:  # type: ignore
+        progress_data.setdefault("core_topic", textbook.core_topic)  # type: ignore
+
     if textbook.curriculum_json and not progress_data.get("curriculum_data"):  # type: ignore
         progress_data["curriculum_data"] = textbook.curriculum_json  # type: ignore
     
@@ -298,7 +307,11 @@ async def confirm_curriculum(
 
     # Trigger content generation task
     from app.tasks.textbook_tasks import continue_textbook_generation_task
-    continue_textbook_generation_task.delay(textbook_id, request.curriculum)
+    from app.utils import task_registry
+    task_result = continue_textbook_generation_task.delay(textbook_id, request.curriculum)
+    task_registry.store(textbook_id, task_result.id)
+    textbook.celery_task_id = task_result.id  # type: ignore
+    await db.commit()
 
     return {"message": "Content generation started", "textbook_id": textbook_id}
 
@@ -309,7 +322,7 @@ async def stop_generation(
     current_user_id: int = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_async_db),
 ):
-    """Stop textbook generation."""
+    """Stop textbook generation — signals the Celery task and revokes it."""
     result = await db.execute(
         select(Textbook).where(
             Textbook.id == textbook_id,
@@ -321,12 +334,25 @@ async def stop_generation(
     if not textbook:
         raise HTTPException(status_code=404, detail="Textbook not found")
 
+    # 1. Set Redis stop flag — worker checks this before each LangGraph node
+    from app.utils import stop_signal, task_registry
+    stop_signal.request_stop_for(textbook_id)
+
+    # 2. Revoke the Celery task — prefer DB-stored ID, fall back to registry
+    celery_task_id = str(textbook.celery_task_id) if textbook.celery_task_id else task_registry.get(textbook_id)  # type: ignore
+    if celery_task_id:
+        from app.celery_app import celery_app
+        celery_app.control.revoke(celery_task_id, terminate=True, signal="SIGKILL")
+        task_registry.delete(textbook_id)
+        textbook.celery_task_id = None  # type: ignore
+
+    # 3. Update DB status
     textbook.status = "failed"  # type: ignore
     textbook.error_message = "Generation stopped by user"  # type: ignore
     textbook.progress_data = {  # type: ignore
         "phase": "idle",
         "progress_value": 0.0,
-        "status_text": "Generation stopped",
+        "status_text": "Đã dừng theo yêu cầu",
     }
 
     await db.commit()

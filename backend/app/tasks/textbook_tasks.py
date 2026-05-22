@@ -39,6 +39,9 @@ async def update_textbook_progress(db, textbook_id: int, **kwargs):
 
 @celery_app.task(bind=True, name="generate_textbook")
 def generate_textbook_task(self, textbook_id: int):
+    from app.utils import stop_signal
+    stop_signal.clear_for(textbook_id)
+    stop_signal.set_current(textbook_id)  # bind to this worker thread
     """
     Generate textbook using AI workflow.
     
@@ -70,7 +73,12 @@ def generate_textbook_task(self, textbook_id: int):
             if not textbook:
                 logger.error(f"[TASK] Textbook {textbook_id} not found")
                 return {"status": "error", "message": "Textbook not found"}
-            
+
+            # Guard: if broker re-queued this task after SIGKILL, DB already says 'failed'
+            if textbook.status == TextbookStatus.FAILED.value:  # type: ignore
+                logger.info(f"[TASK] Textbook {textbook_id} already failed/stopped — aborting re-queue")
+                return {"status": "stopped"}
+
             try:
                 # Update status and set initial progress so frontend shows topic immediately
                 textbook.status = TextbookStatus.GENERATING.value #type: ignore
@@ -124,10 +132,13 @@ def generate_textbook_task(self, textbook_id: int):
                     }
                 else:
                     error_msg = result.get("error", "Unknown error")
+                    if error_msg == "stopped_by_user":
+                        logger.info(f"[TASK] Planning ended: stopped by user")
+                        return {"status": "stopped"}
                     textbook.status = TextbookStatus.FAILED.value #type: ignore
                     textbook.error_message = error_msg
                     await db.commit()
-                    
+
                     logger.error(f"[TASK] Planning failed: {error_msg}")
                     return {"status": "error", "error": error_msg}
                     
@@ -149,6 +160,9 @@ def generate_textbook_task(self, textbook_id: int):
     
 @celery_app.task(bind=True, name="continue_textbook_generation")
 def continue_textbook_generation_task(self, textbook_id: int, confirmed_curriculum: dict):
+    from app.utils import stop_signal
+    stop_signal.clear_for(textbook_id)
+    stop_signal.set_current(textbook_id)  # bind to this worker thread
     """
     Continue textbook generation after curriculum confirmation.
     
@@ -176,7 +190,12 @@ def continue_textbook_generation_task(self, textbook_id: int, confirmed_curricul
             if not textbook:
                 logger.error(f"[TASK] Textbook {textbook_id} not found")
                 return {"status": "error", "message": "Textbook not found"}
-            
+
+            # Guard: if broker re-queued this task after SIGKILL, DB already says 'failed'
+            if textbook.status == TextbookStatus.FAILED.value:  # type: ignore
+                logger.info(f"[TASK] Textbook {textbook_id} already failed/stopped — aborting re-queue")
+                return {"status": "stopped"}
+
             try:
                 logger.info(f"[TASK] Starting content generation for: {textbook.topic}")
                 
@@ -224,9 +243,9 @@ def continue_textbook_generation_task(self, textbook_id: int, confirmed_curricul
                     textbook.docx_path = result.get("docx_path") #type: ignore
                     textbook.completed_at = datetime.utcnow() #type: ignore
                     textbook.error_message = None #type: ignore
-                     
+
                     await db.commit()
-                    
+
                     logger.info(f"[TASK] ✓ Content generation complete")
                     return {
                         "status": "success",
@@ -235,10 +254,14 @@ def continue_textbook_generation_task(self, textbook_id: int, confirmed_curricul
                     }
                 else:
                     error_msg = result.get("error", "Unknown error")
+                    if error_msg == "stopped_by_user":
+                        # Stop endpoint already set status='failed' — don't overwrite
+                        logger.info(f"[TASK] Task ended: stopped by user")
+                        return {"status": "stopped"}
                     textbook.status = TextbookStatus.FAILED.value #type: ignore
                     textbook.error_message = error_msg
                     await db.commit()
-                    
+
                     logger.error(f"[TASK] Content generation failed: {error_msg}")
                     return {"status": "error", "error": error_msg}
                     

@@ -22,7 +22,11 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
     task_track_started=True,
-    task_time_limit=3600,  # 1 hour max per task
+    task_time_limit=3600,       # 1 hour max per task
+    result_expires=3600,        # auto-clean result keys after 1 h
+    task_acks_late=True,        # ack only after task completes — safe retry on worker crash
+    worker_prefetch_multiplier=1,   # one task per worker at a time — fair scheduling
+    worker_max_tasks_per_child=10,  # recycle worker process after 10 tasks — prevent memory leaks
 )
 
 # Auto-discover tasks

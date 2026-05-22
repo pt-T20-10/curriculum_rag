@@ -102,12 +102,6 @@ export function TextbookCard({ textbook }) {
         )}
       </div>
 
-      {/* Error message */}
-      {textbook.error_message && (
-        <div className="mt-3 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-600">
-          {textbook.error_message}
-        </div>
-      )}
     </div>
   )
 }

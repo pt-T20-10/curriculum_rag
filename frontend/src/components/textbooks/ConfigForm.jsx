@@ -36,17 +36,29 @@ export function ConfigForm({
   }
 
   if (isActive) {
+    // Show user's original query immediately; fall back to AI-generated title if query unavailable
+    const displayQuery = submittedConfig?.topic || currentTopic || ''
+    // Show AI title separately only if it's been generated and differs from the query
+    const aiTitle = currentTopic && displayQuery && currentTopic !== displayQuery ? currentTopic : null
+
     return (
       <div className="space-y-4">
-        <div className="flex items-center justify-between gap-4 pb-4 border-b border-gray-200">
-          <div className="min-w-0 flex-1">
-            <p className="text-xs text-gray-500 mb-1">Chủ đề</p>
-            <p className="font-semibold text-gray-900 truncate">
-              {currentTopic || '…'}
+        {/* Topic banner — always shows user's query immediately */}
+        <div className="p-4 bg-blue-50 border border-blue-100 rounded-lg">
+          <p className="text-xs font-semibold text-blue-500 uppercase tracking-wider mb-2">
+            📚 Đang tạo giáo trình
+          </p>
+          <p className="font-bold text-gray-900 text-base leading-relaxed">
+            {displayQuery || '…'}
+          </p>
+          {aiTitle && (
+            <p className="text-xs text-blue-600 mt-2">
+              ✨ Tiêu đề: <span className="font-medium">{aiTitle}</span>
             </p>
-          </div>
+          )}
         </div>
 
+        {/* Config toggle */}
         <button
           onClick={onToggleConfig}
           className="flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900 transition-colors"
@@ -60,32 +72,31 @@ export function ConfigForm({
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
           </svg>
           <span className="font-medium">⚙️ Cấu hình</span>
-          <span className="text-xs text-gray-500">(đang chạy với cấu hình này)</span>
+          <span className="text-xs text-gray-500">(không thể thay đổi khi đang chạy)</span>
         </button>
 
         {configExpanded && (
-          <div className="mt-3 p-4 bg-gray-50 rounded-lg border border-gray-200 space-y-3 opacity-60">
-            <div className="grid grid-cols-2 gap-4 text-sm">
-              <div>
-                <span className="text-gray-600">Số chương:</span>
-                <span className="ml-2 font-medium">{submittedConfig?.num_chapters || formData.num_chapters}</span>
+          <div className="p-4 bg-gray-50 rounded-lg border border-gray-200 space-y-3 opacity-70">
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <div className="flex flex-col gap-0.5">
+                <span className="text-xs text-gray-500">Số chương</span>
+                <span className="font-semibold text-gray-800">{submittedConfig?.num_chapters || formData.num_chapters}</span>
               </div>
-              <div>
-                <span className="text-gray-600">Mức độ:</span>
-                <span className="ml-2 font-medium">{submittedConfig?.content_level || formData.content_level}</span>
+              <div className="flex flex-col gap-0.5">
+                <span className="text-xs text-gray-500">Độ dài</span>
+                <span className="font-semibold text-gray-800">{submittedConfig?.content_level || formData.content_level}</span>
               </div>
-              <div>
-                <span className="text-gray-600">Mục/chương:</span>
-                <span className="ml-2 font-medium">{submittedConfig?.max_subsections_per_chapter || formData.max_subsections_per_chapter}</span>
+              <div className="flex flex-col gap-0.5">
+                <span className="text-xs text-gray-500">Mục/chương</span>
+                <span className="font-semibold text-gray-800">{submittedConfig?.max_subsections_per_chapter || formData.max_subsections_per_chapter}</span>
               </div>
-              <div>
-                <span className="text-gray-600">Hình ảnh:</span>
-                <span className="ml-2 font-medium">{(submittedConfig?.enable_images !== undefined ? submittedConfig.enable_images : formData.enable_images) ? 'Có' : 'Không'}</span>
+              <div className="flex flex-col gap-0.5">
+                <span className="text-xs text-gray-500">Hình ảnh</span>
+                <span className="font-semibold text-gray-800">
+                  {(submittedConfig?.enable_images !== undefined ? submittedConfig.enable_images : formData.enable_images) ? 'Có' : 'Không'}
+                </span>
               </div>
             </div>
-            <p className="text-xs text-gray-500 italic">
-              Cấu hình này không thể thay đổi khi đang chạy
-            </p>
           </div>
         )}
       </div>

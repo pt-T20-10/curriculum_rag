@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { loadConfig } from '../utils/landingConfig'
+import { plansAPI } from '../api/plans'
 
 // ---------------------------------------------------------------------------
 // IntersectionObserver hook — fires once when element enters viewport
@@ -510,6 +511,22 @@ export function LandingPage() {
     const onFocus = () => setConfig(loadConfig())
     window.addEventListener('focus', onFocus)
     return () => window.removeEventListener('focus', onFocus)
+  }, [])
+
+  // Fetch live plans from DB and replace the static plan list
+  useEffect(() => {
+    plansAPI.listActive().then(r => {
+      if (!r.data || r.data.length === 0) return
+      const apiPlans = r.data.map(p => ({
+        id: String(p.id),
+        name: p.name,
+        price: p.price_vnd.toLocaleString('vi-VN') + '₫',
+        features: p.features,
+        is_recommended: p.is_recommended,
+        cta_label: 'Mua ngay',
+      }))
+      setConfig(prev => ({ ...prev, plans: apiPlans }))
+    }).catch(() => {/* keep default config on error */})
   }, [])
 
   if (loading) {

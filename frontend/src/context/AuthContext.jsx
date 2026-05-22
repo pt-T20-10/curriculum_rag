@@ -105,7 +105,7 @@ const register = async (email, password, fullName) => {
   }
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, loginWithToken, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, register, loginWithToken, logout, loadUser }}>
       {children}
     </AuthContext.Provider>
   )
