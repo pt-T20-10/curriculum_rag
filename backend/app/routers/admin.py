@@ -2,7 +2,7 @@
 Admin API — requires role='admin' and is_locked=False.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -13,7 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_async_db
 from app.models.bank_config import BankConfig
 from app.models.credit_history import CreditHistory
-from app.models.payment import Payment, PaymentStatus
 from app.models.plan import Plan
 from app.models.textbook import Textbook, TextbookStatus
 from app.models.transaction import Transaction, TransactionStatus
@@ -37,6 +36,33 @@ async def _get_admin_user(db: AsyncSession, user_id: int) -> User:
     if user.is_locked: #type: ignore
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is locked")
     return user
+
+
+def _parse_date_range(
+    days: int,
+    date_from: Optional[str],
+    date_to: Optional[str],
+):
+    """Return (cutoff, end) — end is None means no upper bound."""
+    if date_from:
+        try:
+            cutoff = datetime.strptime(date_from, "%Y-%m-%d")
+        except ValueError:
+            cutoff = datetime.utcnow() - timedelta(days=days)
+    else:
+        cutoff = datetime.utcnow() - timedelta(days=days)
+
+    if date_to:
+        try:
+            end = datetime.strptime(date_to, "%Y-%m-%d").replace(
+                hour=23, minute=59, second=59
+            )
+        except ValueError:
+            end = None
+    else:
+        end = None
+
+    return cutoff, end
 
 
 # ---------------------------------------------------------------------------
@@ -136,35 +162,36 @@ async def get_stats_overview(
         )
     ).scalar_one()
 
+    # Revenue from confirmed transactions
     total_revenue = (
         await db.execute(
-            select(func.coalesce(func.sum(Payment.amount), 0)).where(
-                Payment.status == PaymentStatus.COMPLETED.value
+            select(func.coalesce(func.sum(Transaction.amount_vnd), 0)).where(
+                Transaction.status == TransactionStatus.CONFIRMED
             )
         )
     ).scalar_one()
 
     revenue_this_month = (
         await db.execute(
-            select(func.coalesce(func.sum(Payment.amount), 0)).where(
-                Payment.status == PaymentStatus.COMPLETED.value,
-                Payment.completed_at >= month_start,
+            select(func.coalesce(func.sum(Transaction.amount_vnd), 0)).where(
+                Transaction.status == TransactionStatus.CONFIRMED,
+                Transaction.confirmed_at >= month_start,
             )
         )
     ).scalar_one()
 
     total_credits_sold = (
         await db.execute(
-            select(func.coalesce(func.sum(Payment.credits), 0)).where(
-                Payment.status == PaymentStatus.COMPLETED.value
+            select(func.coalesce(func.sum(Transaction.credits), 0)).where(
+                Transaction.status == TransactionStatus.CONFIRMED
             )
         )
     ).scalar_one()
 
     pending_payments = (
         await db.execute(
-            select(func.count(Payment.id)).where(
-                Payment.status == PaymentStatus.PENDING.value
+            select(func.count(Transaction.id)).where(
+                Transaction.status == TransactionStatus.PENDING
             )
         )
     ).scalar_one()
@@ -185,74 +212,164 @@ async def get_stats_overview(
 
 @router.get("/stats/generation-trends")
 async def get_generation_trends(
-    days: int = Query(30, ge=1, le=90),
+    days: int = Query(30, ge=1, le=365),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
     admin_id: int = Depends(require_admin),
     db: AsyncSession = Depends(get_async_db),
 ):
-    """Returns daily textbook creation counts for the last N days."""
+    """Returns daily textbook creation counts for the given period."""
     await _get_admin_user(db, admin_id)
+    cutoff, end = _parse_date_range(days, date_from, date_to)
 
-    from datetime import timedelta
-    cutoff = datetime.utcnow() - timedelta(days=days)
-
-    result = await db.execute(
+    query = (
         select(
             func.date(Textbook.created_at).label("date"),
             func.count(Textbook.id).label("count"),
         )
         .where(Textbook.created_at >= cutoff)
-        .group_by(func.date(Textbook.created_at))
-        .order_by(func.date(Textbook.created_at))
     )
-    rows = result.all()
+    if end:
+        query = query.where(Textbook.created_at <= end)
+    query = query.group_by(func.date(Textbook.created_at)).order_by(
+        func.date(Textbook.created_at)
+    )
+
+    rows = (await db.execute(query)).all()
     return [{"date": str(r.date), "count": r.count} for r in rows]
 
 
-@router.get("/stats/top-topics")
-async def get_top_topics(
+@router.get("/stats/top-content-types")
+async def get_top_content_types(
     limit: int = Query(5, ge=1, le=20),
     admin_id: int = Depends(require_admin),
     db: AsyncSession = Depends(get_async_db),
 ):
+    """Top content types by textbook count."""
     await _get_admin_user(db, admin_id)
 
     result = await db.execute(
-        select(Textbook.topic, func.count(Textbook.id).label("count"))
-        .group_by(Textbook.topic)
+        select(Textbook.content_type, func.count(Textbook.id).label("count"))
+        .group_by(Textbook.content_type)
         .order_by(func.count(Textbook.id).desc())
         .limit(limit)
     )
     rows = result.all()
-    return [{"topic": r.topic, "count": r.count} for r in rows]
+    return [{"content_type": r.content_type or "unknown", "count": r.count} for r in rows]
 
 
 @router.get("/stats/payment-trends")
 async def get_payment_trends(
-    days: int = Query(30, ge=1, le=90),
+    days: int = Query(30, ge=1, le=365),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
     admin_id: int = Depends(require_admin),
     db: AsyncSession = Depends(get_async_db),
 ):
-    """Returns daily completed payment revenue for the last N days."""
+    """Returns daily confirmed transaction revenue for the given period."""
     await _get_admin_user(db, admin_id)
+    cutoff, end = _parse_date_range(days, date_from, date_to)
 
-    from datetime import timedelta
-    cutoff = datetime.utcnow() - timedelta(days=days)
+    query = (
+        select(
+            func.date(Transaction.confirmed_at).label("date"),
+            func.coalesce(func.sum(Transaction.amount_vnd), 0).label("revenue"),
+            func.count(Transaction.id).label("count"),
+        )
+        .where(
+            Transaction.status == TransactionStatus.CONFIRMED,
+            Transaction.confirmed_at >= cutoff,
+        )
+    )
+    if end:
+        query = query.where(Transaction.confirmed_at <= end)
+    query = query.group_by(func.date(Transaction.confirmed_at)).order_by(
+        func.date(Transaction.confirmed_at)
+    )
+
+    rows = (await db.execute(query)).all()
+    return [{"date": str(r.date), "revenue": float(r.revenue), "count": r.count} for r in rows]
+
+
+@router.get("/stats/top-users-topup")
+async def get_top_users_topup(
+    limit: int = Query(5, ge=1, le=20),
+    admin_id: int = Depends(require_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
+    """Top users by total confirmed top-up amount."""
+    await _get_admin_user(db, admin_id)
 
     result = await db.execute(
         select(
-            func.date(Payment.completed_at).label("date"),
-            func.coalesce(func.sum(Payment.amount), 0).label("revenue"),
-            func.count(Payment.id).label("count"),
+            Transaction.user_id,
+            func.sum(Transaction.amount_vnd).label("total_amount"),
+            func.sum(Transaction.credits).label("total_credits"),
+            func.count(Transaction.id).label("txn_count"),
         )
-        .where(
-            Payment.status == PaymentStatus.COMPLETED.value,
-            Payment.completed_at >= cutoff,
-        )
-        .group_by(func.date(Payment.completed_at))
-        .order_by(func.date(Payment.completed_at))
+        .where(Transaction.status == TransactionStatus.CONFIRMED)
+        .group_by(Transaction.user_id)
+        .order_by(func.sum(Transaction.amount_vnd).desc())
+        .limit(limit)
     )
     rows = result.all()
-    return [{"date": str(r.date), "revenue": float(r.revenue), "count": r.count} for r in rows]
+
+    user_ids = [r.user_id for r in rows]
+    user_map: dict[int, User] = {}
+    if user_ids:
+        ur = await db.execute(select(User).where(User.id.in_(user_ids)))
+        for u in ur.scalars().all():
+            user_map[u.id] = u  # type: ignore
+
+    return [
+        {
+            "user_id": r.user_id,
+            "user_email": user_map[r.user_id].email if r.user_id in user_map else None,
+            "user_name": user_map[r.user_id].full_name if r.user_id in user_map else None,
+            "total_amount": int(r.total_amount or 0),
+            "total_credits": int(r.total_credits or 0),
+            "txn_count": r.txn_count,
+        }
+        for r in rows
+    ]
+
+
+@router.get("/stats/top-users-textbooks")
+async def get_top_users_textbooks(
+    limit: int = Query(5, ge=1, le=20),
+    admin_id: int = Depends(require_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
+    """Top users by textbook creation count."""
+    await _get_admin_user(db, admin_id)
+
+    result = await db.execute(
+        select(
+            Textbook.user_id,
+            func.count(Textbook.id).label("textbook_count"),
+        )
+        .group_by(Textbook.user_id)
+        .order_by(func.count(Textbook.id).desc())
+        .limit(limit)
+    )
+    rows = result.all()
+
+    user_ids = [r.user_id for r in rows]
+    user_map: dict[int, User] = {}
+    if user_ids:
+        ur = await db.execute(select(User).where(User.id.in_(user_ids)))
+        for u in ur.scalars().all():
+            user_map[u.id] = u  # type: ignore
+
+    return [
+        {
+            "user_id": r.user_id,
+            "user_email": user_map[r.user_id].email if r.user_id in user_map else None,
+            "user_name": user_map[r.user_id].full_name if r.user_id in user_map else None,
+            "textbook_count": r.textbook_count,
+        }
+        for r in rows
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +405,6 @@ async def list_users(
     result = await db.execute(query)
     users = result.scalars().all()
 
-    # Fetch textbook counts in one query
     user_ids = [u.id for u in users]
     counts: dict[int, int] = {}
     if user_ids:
@@ -399,6 +515,8 @@ async def list_textbooks(
     page_size: int = Query(20, ge=1, le=100),
     search: Optional[str] = Query(None),
     status_filter: Optional[str] = Query(None, alias="status"),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
     admin_id: int = Depends(require_admin),
     db: AsyncSession = Depends(get_async_db),
 ):
@@ -412,6 +530,21 @@ async def list_textbooks(
         )
     if status_filter:
         query = query.where(Textbook.status == status_filter)
+    if date_from:
+        try:
+            query = query.where(
+                Textbook.created_at >= datetime.strptime(date_from, "%Y-%m-%d")
+            )
+        except ValueError:
+            pass
+    if date_to:
+        try:
+            end = datetime.strptime(date_to, "%Y-%m-%d").replace(
+                hour=23, minute=59, second=59
+            )
+            query = query.where(Textbook.created_at <= end)
+        except ValueError:
+            pass
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
 
@@ -419,7 +552,6 @@ async def list_textbooks(
     result = await db.execute(query)
     textbooks = result.scalars().all()
 
-    # Fetch owners
     owner_ids = list({t.user_id for t in textbooks})
     owner_map: dict[int, User] = {}
     if owner_ids:
@@ -432,13 +564,14 @@ async def list_textbooks(
             "id": t.id,
             "title": t.title,
             "topic": t.topic,
+            "content_type": t.content_type,
             "status": t.status,
             "num_chapters": t.num_chapters,
             "content_level": t.content_level,
             "credits_used": t.credits_used,
             "created_at": t.created_at.isoformat(),
             "completed_at": t.completed_at.isoformat() if t.completed_at else None, #type: ignore
-            "owner_email": owner_map[t.user_id].email if t.user_id in owner_map  else None, #type: ignore
+            "owner_email": owner_map[t.user_id].email if t.user_id in owner_map else None, #type: ignore
             "owner_name": owner_map[t.user_id].full_name if t.user_id in owner_map else None, #type: ignore
         }
         for t in textbooks

@@ -31,12 +31,22 @@ const STATUS_LABEL = {
   pending: 'Chờ',
 }
 
+const CONTENT_TYPE_LABEL = {
+  technical: 'Kỹ thuật',
+  academic: 'Học thuật',
+  general: 'Tổng hợp',
+  professional: 'Chuyên nghiệp',
+  simplified: 'Đơn giản hóa',
+}
+
 export function AdminTextbooksPage() {
   const [textbooks, setTextbooks] = useState([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
@@ -49,6 +59,8 @@ export function AdminTextbooksPage() {
       const params = { page, page_size: PAGE_SIZE }
       if (search) params.search = search
       if (statusFilter) params.status = statusFilter
+      if (dateFrom) params.date_from = dateFrom
+      if (dateTo) params.date_to = dateTo
       const res = await adminAPI.listTextbooks(params)
       setTextbooks(res.data.items)
       setTotal(res.data.total)
@@ -57,7 +69,7 @@ export function AdminTextbooksPage() {
     } finally {
       setLoading(false)
     }
-  }, [page, search, statusFilter])
+  }, [page, search, statusFilter, dateFrom, dateTo])
 
   useEffect(() => { load() }, [load])
 
@@ -67,6 +79,15 @@ export function AdminTextbooksPage() {
     load()
   }
 
+  const handleClearFilters = () => {
+    setSearch('')
+    setStatusFilter('')
+    setDateFrom('')
+    setDateTo('')
+    setPage(1)
+  }
+
+  const hasActiveFilters = search || statusFilter || dateFrom || dateTo
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
   return (
@@ -81,31 +102,69 @@ export function AdminTextbooksPage() {
         </div>
 
         {/* Filters */}
-        <form onSubmit={handleSearch} className="flex flex-wrap gap-3 mb-6">
-          <input
-            type="text"
-            placeholder="Tìm tiêu đề hoặc chủ đề..."
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            className="border border-gray-300 rounded-lg px-3 py-2 text-sm w-72 focus:outline-none focus:ring-2 focus:ring-primary/40"
-          />
-          <select
-            value={statusFilter}
-            onChange={e => { setStatusFilter(e.target.value); setPage(1) }}
-            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
-          >
-            <option value="">Tất cả trạng thái</option>
-            <option value="completed">Hoàn thành</option>
-            <option value="generating">Đang tạo</option>
-            <option value="pending">Chờ</option>
-            <option value="failed">Thất bại</option>
-          </select>
-          <button
-            type="submit"
-            className="px-4 py-2 bg-primary text-white rounded-lg text-sm hover:bg-primary/90"
-          >
-            Tìm kiếm
-          </button>
+        <form onSubmit={handleSearch} className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 mb-6">
+          <div className="flex flex-wrap gap-3 items-end">
+            <div className="flex-1 min-w-[200px]">
+              <label className="block text-xs text-gray-500 mb-1">Tìm kiếm</label>
+              <input
+                type="text"
+                placeholder="Tiêu đề hoặc chủ đề..."
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Trạng thái</label>
+              <select
+                value={statusFilter}
+                onChange={e => { setStatusFilter(e.target.value); setPage(1) }}
+                className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+              >
+                <option value="">Tất cả</option>
+                <option value="completed">Hoàn thành</option>
+                <option value="generating">Đang tạo</option>
+                <option value="pending">Chờ</option>
+                <option value="failed">Thất bại</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Từ ngày</label>
+              <input
+                type="date"
+                value={dateFrom}
+                onChange={e => { setDateFrom(e.target.value); setPage(1) }}
+                className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Đến ngày</label>
+              <input
+                type="date"
+                value={dateTo}
+                min={dateFrom || undefined}
+                onChange={e => { setDateTo(e.target.value); setPage(1) }}
+                className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+              />
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="submit"
+                className="px-4 py-2 bg-primary text-white rounded-lg text-sm hover:bg-primary/90"
+              >
+                Tìm kiếm
+              </button>
+              {hasActiveFilters && (
+                <button
+                  type="button"
+                  onClick={handleClearFilters}
+                  className="px-3 py-2 border border-gray-300 text-gray-600 rounded-lg text-sm hover:bg-gray-50"
+                >
+                  Xóa bộ lọc
+                </button>
+              )}
+            </div>
+          </div>
         </form>
 
         {error && (
@@ -120,6 +179,7 @@ export function AdminTextbooksPage() {
               <tr>
                 <th className="text-left px-4 py-3 text-gray-600 font-medium">Tiêu đề</th>
                 <th className="text-left px-4 py-3 text-gray-600 font-medium">Chủ đề</th>
+                <th className="text-left px-4 py-3 text-gray-600 font-medium">Loại nội dung</th>
                 <th className="text-left px-4 py-3 text-gray-600 font-medium">Người tạo</th>
                 <th className="text-left px-4 py-3 text-gray-600 font-medium">Trạng thái</th>
                 <th className="text-left px-4 py-3 text-gray-600 font-medium">Cấu hình</th>
@@ -130,13 +190,13 @@ export function AdminTextbooksPage() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={7} className="text-center py-12">
+                  <td colSpan={8} className="text-center py-12">
                     <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto" />
                   </td>
                 </tr>
               ) : textbooks.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="text-center py-12 text-gray-400">
+                  <td colSpan={8} className="text-center py-12 text-gray-400">
                     Không có giáo trình
                   </td>
                 </tr>
@@ -144,12 +204,17 @@ export function AdminTextbooksPage() {
                 textbooks.map(t => (
                   <tr key={t.id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
                     <td className="px-4 py-3">
-                      <div className="font-medium text-gray-800 max-w-[200px] truncate" title={t.title}>
+                      <div className="font-medium text-gray-800 max-w-[180px] truncate" title={t.title}>
                         {t.title}
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-gray-600 max-w-[160px] truncate" title={t.topic}>
+                    <td className="px-4 py-3 text-gray-600 max-w-[140px] truncate" title={t.topic}>
                       {t.topic}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded text-xs font-medium">
+                        {CONTENT_TYPE_LABEL[t.content_type] || t.content_type || '—'}
+                      </span>
                     </td>
                     <td className="px-4 py-3">
                       <div className="text-gray-800">{t.owner_name || '—'}</div>

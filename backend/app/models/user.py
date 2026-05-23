@@ -40,4 +40,3 @@ class User(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     textbooks = relationship("Textbook", back_populates="owner")
-    payments = relationship("Payment", back_populates="user")

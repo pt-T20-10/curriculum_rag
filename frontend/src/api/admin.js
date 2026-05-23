@@ -3,9 +3,11 @@ import axios from './axios'
 export const adminAPI = {
   // Stats
   getOverview: () => axios.get('/admin/stats/overview'),
-  getGenerationTrends: (days = 30) => axios.get('/admin/stats/generation-trends', { params: { days } }),
-  getTopTopics: (limit = 5) => axios.get('/admin/stats/top-topics', { params: { limit } }),
-  getPaymentTrends: (days = 30) => axios.get('/admin/stats/payment-trends', { params: { days } }),
+  getGenerationTrends: (params) => axios.get('/admin/stats/generation-trends', { params }),
+  getTopContentTypes: (limit = 5) => axios.get('/admin/stats/top-content-types', { params: { limit } }),
+  getPaymentTrends: (params) => axios.get('/admin/stats/payment-trends', { params }),
+  getTopUsersTopup: (limit = 5) => axios.get('/admin/stats/top-users-topup', { params: { limit } }),
+  getTopUsersTextbooks: (limit = 5) => axios.get('/admin/stats/top-users-textbooks', { params: { limit } }),
 
   // Users
   listUsers: (params) => axios.get('/admin/users', { params }),

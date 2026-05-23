@@ -20,7 +20,7 @@ function StatCard({ label, value, sub, color = 'text-gray-900', icon }) {
 }
 
 // ---------------------------------------------------------------------------
-// SVG bar chart — works for any numeric series
+// SVG bar chart
 // ---------------------------------------------------------------------------
 function BarChart({ data, xKey, yKey, color = '#3b82f6', height = 180, formatY = v => v, formatX = v => v }) {
   if (!data || data.length === 0) {
@@ -33,64 +33,42 @@ function BarChart({ data, xKey, yKey, color = '#3b82f6', height = 180, formatY =
 
   const W = 560
   const H = height
-  const padL = 40
-  const padR = 12
-  const padT = 24
-  const padB = 36
+  const padL = 40, padR = 12, padT = 24, padB = 36
   const chartW = W - padL - padR
   const chartH = H - padT - padB
-
   const maxVal = Math.max(...data.map(d => d[yKey]), 1)
   const barW = Math.max(4, (chartW / data.length) - 3)
   const gap = (chartW / data.length) - barW
-
-  // Y-axis ticks (4 lines)
   const ticks = [0, 0.25, 0.5, 0.75, 1].map(f => ({
     y: padT + chartH - f * chartH,
     label: formatY(Math.round(f * maxVal)),
   }))
-
-  // Show at most ~6 x-labels evenly spaced
   const xLabelEvery = Math.ceil(data.length / 6)
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height }}>
-      {/* Grid lines */}
       {ticks.map((t, i) => (
         <g key={i}>
           <line x1={padL} x2={W - padR} y1={t.y} y2={t.y} stroke="#f0f0f0" strokeWidth="1" />
-          <text x={padL - 4} y={t.y + 4} textAnchor="end" fontSize="10" fill="#9ca3af">
-            {t.label}
-          </text>
+          <text x={padL - 4} y={t.y + 4} textAnchor="end" fontSize="10" fill="#9ca3af">{t.label}</text>
         </g>
       ))}
-
-      {/* Bars */}
       {data.map((d, i) => {
         const barH = Math.max(2, (d[yKey] / maxVal) * chartH)
         const x = padL + i * (barW + gap) + gap / 2
         const y = padT + chartH - barH
-
         return (
           <g key={i}>
             <rect x={x} y={y} width={barW} height={barH} fill={color} rx="2" opacity="0.85">
               <title>{`${d[xKey]}: ${formatY(d[yKey])}`}</title>
             </rect>
-            {/* Value label on top (only if bar is tall enough) */}
             {barH > 18 && (
               <text x={x + barW / 2} y={y - 4} textAnchor="middle" fontSize="9" fill={color} fontWeight="600">
                 {formatY(d[yKey])}
               </text>
             )}
-            {/* X label */}
             {i % xLabelEvery === 0 && (
-              <text
-                x={x + barW / 2}
-                y={padT + chartH + 14}
-                textAnchor="middle"
-                fontSize="9"
-                fill="#9ca3af"
-              >
+              <text x={x + barW / 2} y={padT + chartH + 14} textAnchor="middle" fontSize="9" fill="#9ca3af">
                 {formatX(d[xKey])}
               </text>
             )}
@@ -102,59 +80,131 @@ function BarChart({ data, xKey, yKey, color = '#3b82f6', height = 180, formatY =
 }
 
 // ---------------------------------------------------------------------------
-// Period selector
+// Horizontal rank list — top users / top content types
 // ---------------------------------------------------------------------------
-function PeriodSelector({ value, onChange }) {
-  const options = [
-    { label: '7 ngày', value: 7 },
-    { label: '30 ngày', value: 30 },
-    { label: '90 ngày', value: 90 },
-  ]
+function HorizontalRankList({ items, labelKey, valueKey, valueLabel, barColor = 'bg-primary', formatValue = v => v }) {
+  if (!items || items.length === 0) {
+    return <p className="text-sm text-gray-400 text-center py-6">Không có dữ liệu</p>
+  }
+  const maxVal = Math.max(...items.map(r => r[valueKey]), 1)
   return (
-    <div className="flex rounded-lg border border-gray-200 overflow-hidden text-sm">
-      {options.map(o => (
-        <button
-          key={o.value}
-          onClick={() => onChange(o.value)}
-          className={`px-3 py-1.5 transition-colors ${
-            value === o.value
-              ? 'bg-primary text-white font-medium'
-              : 'bg-white text-gray-600 hover:bg-gray-50'
-          }`}
-        >
-          {o.label}
-        </button>
+    <div className="space-y-3">
+      {items.map((item, i) => (
+        <div key={i} className="flex items-center gap-3">
+          <span className="text-xs font-bold text-gray-400 w-4">{i + 1}</span>
+          <div className="flex-1">
+            <div className="flex justify-between text-sm mb-1">
+              <span className="text-gray-700 truncate max-w-[160px]" title={item[labelKey]}>
+                {item[labelKey] || '—'}
+              </span>
+              <span className="text-gray-500 ml-3 flex-shrink-0">
+                {formatValue(item[valueKey])} {valueLabel}
+              </span>
+            </div>
+            <div className="h-2 bg-gray-100 rounded-full">
+              <div
+                className={`h-2 ${barColor} rounded-full transition-all`}
+                style={{ width: `${(item[valueKey] / maxVal) * 100}%` }}
+              />
+            </div>
+          </div>
+        </div>
       ))}
     </div>
   )
 }
 
 // ---------------------------------------------------------------------------
-// Page
+// Date range selector — quick presets + custom date inputs
+// ---------------------------------------------------------------------------
+function DateRangeSelector({ dateFrom, dateTo, onChangeDateFrom, onChangeDateTo, onApplyPreset }) {
+  const presets = [
+    { label: '7 ngày', days: 7 },
+    { label: '30 ngày', days: 30 },
+    { label: '90 ngày', days: 90 },
+  ]
+  const toIso = d => d.toISOString().slice(0, 10)
+  const applyPreset = days => {
+    const to = new Date()
+    const from = new Date()
+    from.setDate(from.getDate() - days + 1)
+    onApplyPreset(toIso(from), toIso(to))
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <div className="flex rounded-lg border border-gray-200 overflow-hidden text-sm">
+        {presets.map(p => (
+          <button
+            key={p.days}
+            onClick={() => applyPreset(p.days)}
+            className="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 transition-colors border-r border-gray-200 last:border-0"
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+      <div className="flex items-center gap-1.5">
+        <input
+          type="date"
+          value={dateFrom}
+          onChange={e => onChangeDateFrom(e.target.value)}
+          className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+        />
+        <span className="text-gray-400 text-sm">—</span>
+        <input
+          type="date"
+          value={dateTo}
+          min={dateFrom || undefined}
+          onChange={e => onChangeDateTo(e.target.value)}
+          className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+        />
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
 // ---------------------------------------------------------------------------
 const fmtVND = v => {
   if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`
   if (v >= 1_000) return `${(v / 1_000).toFixed(0)}K`
   return String(v)
 }
-
 const fmtDate = iso => {
-  // "2026-04-28" → "28/4"
   const [, m, d] = iso.split('-')
   return `${parseInt(d)}/${parseInt(m)}`
 }
+const toIso = d => d.toISOString().slice(0, 10)
 
+const CONTENT_TYPE_LABEL = {
+  technical: 'Kỹ thuật',
+  academic: 'Học thuật',
+  general: 'Tổng hợp',
+  professional: 'Chuyên nghiệp',
+  simplified: 'Đơn giản hóa',
+}
+
+// ---------------------------------------------------------------------------
+// Page
+// ---------------------------------------------------------------------------
 export function AdminDashboardPage() {
   const [stats, setStats] = useState(null)
   const [trends, setTrends] = useState([])
   const [paymentTrends, setPaymentTrends] = useState([])
-  const [topics, setTopics] = useState([])
-  const [period, setPeriod] = useState(30)
+  const [contentTypes, setContentTypes] = useState([])
+  const [topUsersTopup, setTopUsersTopup] = useState([])
+  const [topUsersTextbooks, setTopUsersTextbooks] = useState([])
   const [loading, setLoading] = useState(true)
   const [chartsLoading, setChartsLoading] = useState(false)
   const [error, setError] = useState(null)
 
-  // Load overview once
+  // Default: last 30 days
+  const [dateFrom, setDateFrom] = useState(() => {
+    const d = new Date(); d.setDate(d.getDate() - 29); return toIso(d)
+  })
+  const [dateTo, setDateTo] = useState(() => toIso(new Date()))
+
   useEffect(() => {
     adminAPI.getOverview()
       .then(r => setStats(r.data))
@@ -162,28 +212,30 @@ export function AdminDashboardPage() {
       .finally(() => setLoading(false))
   }, [])
 
-  // Load charts whenever period changes
   const loadCharts = useCallback(async () => {
     setChartsLoading(true)
     try {
-      const [trendsRes, payRes, topicsRes] = await Promise.all([
-        adminAPI.getGenerationTrends(period),
-        adminAPI.getPaymentTrends(period),
-        adminAPI.getTopTopics(5),
+      const params = { date_from: dateFrom, date_to: dateTo }
+      const [trendsRes, payRes, ctRes, topupRes, tbRes] = await Promise.all([
+        adminAPI.getGenerationTrends(params),
+        adminAPI.getPaymentTrends(params),
+        adminAPI.getTopContentTypes(5),
+        adminAPI.getTopUsersTopup(5),
+        adminAPI.getTopUsersTextbooks(5),
       ])
       setTrends(trendsRes.data)
       setPaymentTrends(payRes.data)
-      setTopics(topicsRes.data)
+      setContentTypes(ctRes.data)
+      setTopUsersTopup(topupRes.data)
+      setTopUsersTextbooks(tbRes.data)
     } catch {
-      // non-fatal, charts just stay empty
+      // non-fatal, charts stay empty
     } finally {
       setChartsLoading(false)
     }
-  }, [period])
+  }, [dateFrom, dateTo])
 
   useEffect(() => { loadCharts() }, [loadCharts])
-
-  const maxTopicCount = Math.max(...topics.map(t => t.count), 1)
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
@@ -192,12 +244,12 @@ export function AdminDashboardPage() {
       <div className="max-w-6xl mx-auto w-full px-6 py-8">
 
         {/* Header */}
-        <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
           <div>
             <h1 className="text-2xl font-bold text-gray-800">Admin Dashboard</h1>
             <p className="text-xs text-gray-400 mt-0.5">Tổng quan hệ thống</p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Link to="/admin/users" className="px-4 py-2 bg-primary text-white rounded-lg text-sm hover:bg-primary/90 transition-colors">
               Người dùng
             </Link>
@@ -231,56 +283,28 @@ export function AdminDashboardPage() {
           <>
             {/* ── Stats grid ── */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
-              <StatCard
-                label="Tổng người dùng"
-                value={stats?.total_users}
-                sub={`${stats?.active_users} đang hoạt động`}
-                icon="👥"
-              />
-              <StatCard
-                label="Tổng giáo trình"
-                value={stats?.total_textbooks}
-                sub={`${stats?.completed_textbooks} hoàn thành · ${stats?.failed_textbooks} thất bại`}
-                icon="📚"
-              />
-              <StatCard
-                label="Giáo trình tháng này"
-                value={stats?.textbooks_this_month}
-                color="text-blue-600"
-                icon="📅"
-              />
-              <StatCard
-                label="Thanh toán chờ xử lý"
-                value={stats?.pending_payments}
-                color={stats?.pending_payments > 0 ? 'text-yellow-600' : 'text-gray-900'}
-                icon="⏳"
-              />
+              <StatCard label="Tổng người dùng" value={stats?.total_users} sub={`${stats?.active_users} đang hoạt động`} icon="👥" />
+              <StatCard label="Tổng giáo trình" value={stats?.total_textbooks} sub={`${stats?.completed_textbooks} hoàn thành · ${stats?.failed_textbooks} thất bại`} icon="📚" />
+              <StatCard label="Giáo trình tháng này" value={stats?.textbooks_this_month} color="text-blue-600" icon="📅" />
+              <StatCard label="Thanh toán chờ xử lý" value={stats?.pending_payments} color={stats?.pending_payments > 0 ? 'text-yellow-600' : 'text-gray-900'} icon="⏳" />
             </div>
 
             <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
-              <StatCard
-                label="Tổng doanh thu"
-                value={`${(stats?.total_revenue || 0).toLocaleString('vi-VN')} ₫`}
-                color="text-green-600"
-                icon="💰"
-              />
-              <StatCard
-                label="Doanh thu tháng này"
-                value={`${(stats?.revenue_this_month || 0).toLocaleString('vi-VN')} ₫`}
-                color="text-green-600"
-                icon="📈"
-              />
-              <StatCard
-                label="Tổng credits đã bán"
-                value={(stats?.total_credits_sold || 0).toLocaleString('vi-VN')}
-                icon="🪙"
-              />
+              <StatCard label="Tổng doanh thu" value={`${(stats?.total_revenue || 0).toLocaleString('vi-VN')} ₫`} color="text-green-600" icon="💰" />
+              <StatCard label="Doanh thu tháng này" value={`${(stats?.revenue_this_month || 0).toLocaleString('vi-VN')} ₫`} color="text-green-600" icon="📈" />
+              <StatCard label="Tổng credits đã bán" value={(stats?.total_credits_sold || 0).toLocaleString('vi-VN')} icon="🪙" />
             </div>
 
-            {/* ── Period filter ── */}
-            <div className="flex items-center justify-between mb-4">
+            {/* ── Date range filter ── */}
+            <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
               <h2 className="text-base font-semibold text-gray-700">Biểu đồ theo thời gian</h2>
-              <PeriodSelector value={period} onChange={setPeriod} />
+              <DateRangeSelector
+                dateFrom={dateFrom}
+                dateTo={dateTo}
+                onChangeDateFrom={setDateFrom}
+                onChangeDateTo={setDateTo}
+                onApplyPreset={(from, to) => { setDateFrom(from); setDateTo(to) }}
+              />
             </div>
 
             {chartsLoading ? (
@@ -288,68 +312,66 @@ export function AdminDashboardPage() {
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
               </div>
             ) : (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-
-                {/* Textbook trend */}
-                <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-                  <p className="text-sm font-semibold text-gray-700 mb-3">
-                    Giáo trình tạo theo ngày
-                  </p>
-                  <BarChart
-                    data={trends}
-                    xKey="date"
-                    yKey="count"
-                    color="#3b82f6"
-                    height={180}
-                    formatX={fmtDate}
-                  />
+              <>
+                {/* ── Time series charts ── */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+                  <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+                    <p className="text-sm font-semibold text-gray-700 mb-3">Giáo trình tạo theo ngày</p>
+                    <BarChart data={trends} xKey="date" yKey="count" color="#3b82f6" height={180} formatX={fmtDate} />
+                  </div>
+                  <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+                    <p className="text-sm font-semibold text-gray-700 mb-3">Doanh thu giao dịch (₫)</p>
+                    <BarChart data={paymentTrends} xKey="date" yKey="revenue" color="#10b981" height={180} formatY={fmtVND} formatX={fmtDate} />
+                  </div>
                 </div>
 
-                {/* Payment revenue trend */}
-                <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-                  <p className="text-sm font-semibold text-gray-700 mb-3">
-                    Doanh thu thanh toán (₫)
-                  </p>
-                  <BarChart
-                    data={paymentTrends}
-                    xKey="date"
-                    yKey="revenue"
-                    color="#10b981"
-                    height={180}
-                    formatY={fmtVND}
-                    formatX={fmtDate}
-                  />
+                {/* ── Ranking section ── */}
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+                    <p className="text-sm font-semibold text-gray-700 mb-4">Top loại nội dung</p>
+                    <HorizontalRankList
+                      items={contentTypes.map(c => ({
+                        ...c,
+                        label: CONTENT_TYPE_LABEL[c.content_type] || c.content_type,
+                      }))}
+                      labelKey="label"
+                      valueKey="count"
+                      valueLabel="giáo trình"
+                      barColor="bg-blue-500"
+                    />
+                  </div>
+
+                  <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+                    <p className="text-sm font-semibold text-gray-700 mb-4">Top nạp tiền</p>
+                    <HorizontalRankList
+                      items={topUsersTopup.map(u => ({
+                        ...u,
+                        label: u.user_name || u.user_email || `User #${u.user_id}`,
+                      }))}
+                      labelKey="label"
+                      valueKey="total_amount"
+                      valueLabel="₫"
+                      barColor="bg-green-500"
+                      formatValue={fmtVND}
+                    />
+                  </div>
+
+                  <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+                    <p className="text-sm font-semibold text-gray-700 mb-4">Top tạo giáo trình</p>
+                    <HorizontalRankList
+                      items={topUsersTextbooks.map(u => ({
+                        ...u,
+                        label: u.user_name || u.user_email || `User #${u.user_id}`,
+                      }))}
+                      labelKey="label"
+                      valueKey="textbook_count"
+                      valueLabel="giáo trình"
+                      barColor="bg-purple-500"
+                    />
+                  </div>
                 </div>
-              </div>
+              </>
             )}
-
-            {/* Top topics */}
-            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-              <p className="text-sm font-semibold text-gray-700 mb-4">Top 5 chủ đề</p>
-              {topics.length === 0 ? (
-                <p className="text-sm text-gray-400 text-center py-6">Không có dữ liệu</p>
-              ) : (
-                <div className="space-y-3">
-                  {topics.map((t, i) => (
-                    <div key={t.topic} className="flex items-center gap-3">
-                      <span className="text-xs font-bold text-gray-400 w-4">{i + 1}</span>
-                      <div className="flex-1">
-                        <div className="flex justify-between text-sm mb-1">
-                          <span className="text-gray-700 truncate max-w-xs">{t.topic}</span>
-                          <span className="text-gray-500 ml-3 flex-shrink-0">{t.count} giáo trình</span>
-                        </div>
-                        <div className="h-2 bg-gray-100 rounded-full">
-                          <div
-                            className="h-2 bg-primary rounded-full transition-all"
-                            style={{ width: `${(t.count / maxTopicCount) * 100}%` }}
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
           </>
         )}
       </div>
