@@ -19,14 +19,14 @@ export function LoginPage() {
   const [rememberMe, setRememberMe] = useState(false)
   const [errors, setErrors] = useState({})
   const [loading, setLoading] = useState(false)
-  const [apiError, setApiError] = useState('')
+  const [apiError, setApiError] = useState('')    // generic banner error
+  const [fieldErrors, setFieldErrors] = useState({})  // per-field API errors
 
   const handleChange = (e) => {
     const { name, value } = e.target
     setFormData(prev => ({ ...prev, [name]: value }))
-    if (errors[name]) {
-      setErrors(prev => ({ ...prev, [name]: '' }))
-    }
+    if (errors[name]) setErrors(prev => ({ ...prev, [name]: '' }))
+    if (fieldErrors[name]) setFieldErrors(prev => ({ ...prev, [name]: '' }))
     setApiError('')
   }
 
@@ -61,10 +61,21 @@ export function LoginPage() {
       await login(formData.email, formData.password, rememberMe)
       navigate('/dashboard', { replace: true })
     } catch (error) {
-      setApiError(
-        error.response?.data?.detail ||
-        'Đăng nhập thất bại. Vui lòng kiểm tra lại thông tin.'
-      )
+      const detail = error.response?.data?.detail || ''
+      const status = error.response?.status
+
+      if (status === 404 || detail.includes('email')) {
+        // Account not found — highlight email field
+        setFieldErrors({ email: detail || 'Không tìm thấy tài khoản với email này' })
+      } else if (status === 401 || detail.includes('Mật khẩu')) {
+        // Wrong password — highlight password field, keep email intact
+        setFieldErrors({ password: detail || 'Mật khẩu không đúng' })
+        setFormData(prev => ({ ...prev, password: '' }))
+      } else if (status === 403) {
+        setApiError(detail || 'Tài khoản đã bị khóa. Vui lòng liên hệ hỗ trợ.')
+      } else {
+        setApiError(detail || 'Đăng nhập thất bại. Vui lòng kiểm tra lại thông tin.')
+      }
     } finally {
       setLoading(false)
     }
@@ -87,7 +98,7 @@ export function LoginPage() {
             name="email"
             value={formData.email}
             onChange={handleChange}
-            error={errors.email}
+            error={errors.email || fieldErrors.email}
             placeholder="email@cuaban.com"
             autoFocus
           />
@@ -97,7 +108,7 @@ export function LoginPage() {
             name="password"
             value={formData.password}
             onChange={handleChange}
-            error={errors.password}
+            error={errors.password || fieldErrors.password}
             placeholder="Nhập mật khẩu của bạn"
           />
 

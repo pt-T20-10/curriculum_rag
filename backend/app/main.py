@@ -22,7 +22,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.database import engine, Base
-from app.routers import admin, auth, base, payment, plans, textbook
+from app.routers import admin, auth, base, config, payment, plans, textbook
 
 
 @asynccontextmanager
@@ -108,6 +108,7 @@ app.include_router(payment.router, prefix="/api/v1", tags=["Payments"])
 app.include_router(plans.router, prefix="/api/v1", tags=["Plans"])
 app.include_router(textbook.router, prefix="/api/v1", tags=["Textbooks"])
 app.include_router(admin.router, prefix="/api/v1/admin", tags=["Admin"])
+app.include_router(config.router, prefix="/api/v1", tags=["Config"])
 
 # Global exception handler
 @app.exception_handler(Exception)

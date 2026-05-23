@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { plansAPI } from '../../api/plans'
 import { transactionsAPI } from '../../api/transactions'
 
@@ -21,37 +21,43 @@ function CopyButton({ text }) {
 }
 
 export function PaymentModal({ plan, onClose, onSuccess }) {
-  const [step, setStep] = useState('qr')       // 'qr' | 'done'
+  const [step, setStep] = useState('info')   // 'info' | 'qr' | 'done'
   const [bank, setBank] = useState(null)
-  const [txnData, setTxnData] = useState(null) // transaction from backend
+  const [txnData, setTxnData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  // Synchronous guard — useRef prevents double-create even before React re-renders
+  const creatingRef = useRef(false)
 
+  // Only fetch bank config on open — no transaction created yet
   useEffect(() => {
     let cancelled = false
     plansAPI.getBankConfig().then(r => { if (!cancelled) setBank(r.data) })
-    // Create the pending transaction immediately so TXN ID is server-generated
-    transactionsAPI.create(plan.id).then(r => {
-      if (!cancelled) setTxnData(r.data)
-    }).catch(() => {
-      if (!cancelled) setError('Không thể khởi tạo giao dịch. Vui lòng thử lại.')
-    })
     return () => { cancelled = true }
-  }, [plan.id])
+  }, [])
 
-  const handleConfirm = async () => {
-    if (!txnData) return
+  // Step 1 → Step 2: create transaction only when user explicitly continues
+  const handleContinue = async () => {
+    if (creatingRef.current) return
+    creatingRef.current = true
     setLoading(true)
     setError('')
     try {
-      // Transaction already created; just move to done step
-      setStep('done')
-      if (onSuccess) onSuccess(txnData)
-    } catch (e) {
-      setError('Có lỗi xảy ra. Vui lòng thử lại.')
+      const r = await transactionsAPI.create(plan.id)
+      setTxnData(r.data)
+      setStep('qr')
+    } catch {
+      setError('Không thể khởi tạo giao dịch. Vui lòng thử lại.')
+      creatingRef.current = false   // allow retry on failure
     } finally {
       setLoading(false)
     }
+  }
+
+  // Step 2 → Step 3: transaction already in DB, just confirm intent
+  const handleConfirm = () => {
+    setStep('done')
+    if (onSuccess) onSuccess(txnData)
   }
 
   const qrUrl = bank && txnData
@@ -75,70 +81,117 @@ export function PaymentModal({ plan, onClose, onSuccess }) {
         </div>
 
         <div className="p-5">
-          {step === 'qr' && (
+          {/* ── Step 1: Plan info confirmation ── */}
+          {step === 'info' && (
             <>
               {error && (
                 <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-600">{error}</div>
               )}
 
-              {!txnData ? (
-                <div className="flex justify-center py-8">
-                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+              {/* Plan summary */}
+              <div className="bg-gray-50 rounded-xl border border-gray-200 p-4 mb-5 space-y-3">
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-500">Gói</span>
+                  <span className="font-semibold text-gray-900">{plan.name}</span>
                 </div>
-              ) : (
-                <>
-                  {/* QR Code */}
-                  {qrUrl && (
-                    <div className="flex justify-center mb-5">
-                      <img
-                        src={qrUrl}
-                        alt="VietQR"
-                        className="rounded-xl border border-gray-200"
-                        style={{ width: 220, height: 220, objectFit: 'contain' }}
-                      />
-                    </div>
-                  )}
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-500">Credits nhận được</span>
+                  <span className="font-semibold text-primary">{plan.credits.toLocaleString('vi-VN')} credits</span>
+                </div>
+                <div className="border-t border-gray-200 pt-3 flex justify-between text-sm">
+                  <span className="text-gray-500">Số tiền thanh toán</span>
+                  <span className="font-bold text-gray-900 text-base">{plan.price_vnd.toLocaleString('vi-VN')}₫</span>
+                </div>
+              </div>
 
-                  {/* Bank details */}
-                  <div className="space-y-3 mb-5">
-                    <InfoRow label="Ngân hàng" value={bank?.bank_name} />
-                    <InfoRow
-                      label="Số tài khoản"
-                      value={bank?.account_number}
-                      action={<CopyButton text={bank?.account_number || ''} />}
-                    />
-                    <InfoRow label="Chủ tài khoản" value={bank?.account_holder} />
-                    <InfoRow label="Số tiền" value={txnData.amount_vnd.toLocaleString('vi-VN') + '₫'} highlight />
-                    <InfoRow
-                      label="Nội dung chuyển khoản"
-                      value={txnData.transfer_content}
-                      action={<CopyButton text={txnData.transfer_content} />}
-                      mono
-                    />
-                  </div>
-
-                  {/* Warning */}
-                  <div className="mb-5 p-3 bg-amber-50 border border-amber-200 rounded-lg flex gap-2">
-                    <svg className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-                    </svg>
-                    <p className="text-xs text-amber-700">
-                      <strong>Lưu ý quan trọng:</strong> Nội dung chuyển khoản phải khớp chính xác, nếu không giao dịch sẽ không được xác nhận.
-                    </p>
-                  </div>
-
-                  <button
-                    onClick={handleConfirm}
-                    disabled={loading}
-                    className="w-full py-3 bg-primary text-white rounded-xl font-semibold text-sm hover:bg-blue-500 disabled:opacity-60 transition-colors"
-                  >
-                    {loading ? 'Đang xử lý...' : 'Tôi đã chuyển khoản'}
-                  </button>
-                </>
+              {/* Features */}
+              {plan.features && plan.features.length > 0 && (
+                <ul className="mb-5 space-y-1.5">
+                  {plan.features.map((f, i) => (
+                    <li key={i} className="flex items-center gap-2 text-sm text-gray-600">
+                      <svg className="w-4 h-4 text-green-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                      </svg>
+                      {f}
+                    </li>
+                  ))}
+                </ul>
               )}
+
+              <div className="mb-5 p-3 bg-blue-50 border border-blue-200 rounded-lg flex gap-2">
+                <svg className="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <p className="text-xs text-blue-700">
+                  Nhấn <strong>Tiếp tục thanh toán</strong> để xem mã QR và thông tin chuyển khoản. Giao dịch sẽ được tạo sau bước này.
+                </p>
+              </div>
+
+              <button
+                onClick={handleContinue}
+                disabled={loading}
+                className="w-full py-3 bg-primary text-white rounded-xl font-semibold text-sm hover:bg-blue-500 disabled:opacity-60 transition-colors flex items-center justify-center gap-2"
+              >
+                {loading
+                  ? <><span className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" /> Đang chuẩn bị...</>
+                  : 'Tiếp tục thanh toán →'}
+              </button>
             </>
           )}
 
+          {/* ── Step 2: QR + bank details ── */}
+          {step === 'qr' && (
+            <>
+              {/* QR Code */}
+              {qrUrl && (
+                <div className="flex justify-center mb-5">
+                  <img
+                    src={qrUrl}
+                    alt="VietQR"
+                    className="rounded-xl border border-gray-200"
+                    style={{ width: 220, height: 220, objectFit: 'contain' }}
+                  />
+                </div>
+              )}
+
+              {/* Bank details */}
+              <div className="space-y-3 mb-5">
+                <InfoRow label="Ngân hàng" value={bank?.bank_name} />
+                <InfoRow
+                  label="Số tài khoản"
+                  value={bank?.account_number}
+                  action={<CopyButton text={bank?.account_number || ''} />}
+                />
+                <InfoRow label="Chủ tài khoản" value={bank?.account_holder} />
+                <InfoRow label="Số tiền" value={txnData.amount_vnd.toLocaleString('vi-VN') + '₫'} highlight />
+                <InfoRow
+                  label="Nội dung CK"
+                  value={txnData.transfer_content}
+                  action={<CopyButton text={txnData.transfer_content} />}
+                  mono
+                />
+              </div>
+
+              {/* Warning */}
+              <div className="mb-5 p-3 bg-amber-50 border border-amber-200 rounded-lg flex gap-2">
+                <svg className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                </svg>
+                <p className="text-xs text-amber-700">
+                  <strong>Lưu ý quan trọng:</strong> Nội dung chuyển khoản phải khớp chính xác, nếu không giao dịch sẽ không được xác nhận.
+                </p>
+              </div>
+
+              <button
+                onClick={handleConfirm}
+                className="w-full py-3 bg-primary text-white rounded-xl font-semibold text-sm hover:bg-blue-500 transition-colors"
+              >
+                Tôi đã chuyển khoản
+              </button>
+            </>
+          )}
+
+          {/* ── Step 3: Done ── */}
           {step === 'done' && (
             <div className="text-center py-6">
               <div className="w-14 h-14 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">

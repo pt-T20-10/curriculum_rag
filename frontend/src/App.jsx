@@ -13,6 +13,7 @@ import { AdminTextbooksPage } from './pages/admin/AdminTextbooksPage'
 import { AdminLandingPage } from './pages/admin/AdminLandingPage'
 import { AdminPlansPage } from './pages/admin/AdminPlansPage'
 import { AdminPaymentsPage } from './pages/admin/AdminPaymentsPage'
+import { AdminSystemConfigPage } from './pages/admin/AdminSystemConfigPage'
 import { GoogleCallbackPage } from './pages/GoogleCallbackPage'
 import { ForgotPasswordPage } from './pages/ForgotPasswordPage'
 import { ResetPasswordPage } from './pages/ResetPasswordPage'
@@ -115,6 +116,14 @@ function App() {
             element={
               <AdminRoute>
                 <AdminPaymentsPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/admin/config"
+            element={
+              <AdminRoute>
+                <AdminSystemConfigPage />
               </AdminRoute>
             }
           />

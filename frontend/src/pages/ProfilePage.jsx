@@ -6,6 +6,7 @@ import { PasswordInput } from '../components/common/PasswordInput'
 import { Button } from '../components/common/Button'
 import { Navbar } from '../components/layout/Navbar'
 import { TopUpTab } from '../components/topup/TopUpTab'
+import { AdvancedSettings } from '../components/settings/AdvancedSettings'
 
 const EMPTY_FORM = { currentPassword: '', newPassword: '', confirmPassword: '' }
 
@@ -161,13 +162,17 @@ function ChangePasswordTab() {
   )
 }
 
-const TABS = [
+const ALL_TABS = [
   { key: 'topup', label: 'Credits & Nạp tiền' },
   { key: 'password', label: 'Đổi mật khẩu' },
+  { key: 'advanced', label: 'Nâng cao', hideForAdmin: true },
 ]
 
 export function ProfilePage() {
   const { user } = useAuth()
+  const isAdmin = user?.role === 'admin'
+  const TABS = ALL_TABS.filter(t => !(t.hideForAdmin && isAdmin))
+
   const [activeTab, setActiveTab] = useState('topup')
 
   return (
@@ -188,6 +193,12 @@ export function ProfilePage() {
         <div className="mb-6">
           <h1 className="text-2xl font-bold text-gray-900">Cài đặt tài khoản</h1>
           <p className="text-gray-500 mt-1">{user?.email}</p>
+          {isAdmin && (
+            <p className="text-xs text-purple-600 mt-1">
+              Để chỉnh cấu hình hệ thống, vào{' '}
+              <Link to="/admin/config" className="underline hover:text-purple-700">Admin → Cấu hình hệ thống</Link>.
+            </p>
+          )}
         </div>
 
         {/* Tab nav */}
@@ -210,6 +221,14 @@ export function ProfilePage() {
         {/* Tab content */}
         {activeTab === 'topup' && <TopUpTab />}
         {activeTab === 'password' && <ChangePasswordTab />}
+        {activeTab === 'advanced' && (
+          <div>
+            <p className="text-sm text-gray-500 mb-4">
+              Ghi đè tham số tạo nội dung cho tài khoản của bạn. Thay đổi áp dụng từ lần tạo giáo trình tiếp theo.
+            </p>
+            <AdvancedSettings />
+          </div>
+        )}
       </div>
     </div>
   )

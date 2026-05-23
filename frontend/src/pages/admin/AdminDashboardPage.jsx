@@ -213,6 +213,9 @@ export function AdminDashboardPage() {
             <Link to="/admin/payments" className="px-4 py-2 border border-amber-300 text-amber-700 bg-amber-50 rounded-lg text-sm hover:bg-amber-100 transition-colors font-medium">
               Xác nhận TT
             </Link>
+            <Link to="/admin/config" className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm hover:bg-gray-50 transition-colors">
+              Cấu hình
+            </Link>
           </div>
         </div>
 

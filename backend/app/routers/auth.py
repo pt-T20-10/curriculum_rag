@@ -135,8 +135,11 @@ async def login(credentials: UserLogin, db: AsyncSession = Depends(get_async_db)
     result = await db.execute(select(User).where(User.email == credentials.email))
     user = result.scalar_one_or_none()
 
-    if not user or not verify_password(credentials.password, user.hashed_password): #type: ignore
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+    if not user:
+        raise HTTPException(status_code=404, detail="Không tìm thấy tài khoản với email này")
+
+    if not verify_password(credentials.password, user.hashed_password): #type: ignore
+        raise HTTPException(status_code=401, detail="Mật khẩu không đúng")
 
     if not user.is_active: #type: ignore
         raise HTTPException(status_code=403, detail="Account is inactive")
