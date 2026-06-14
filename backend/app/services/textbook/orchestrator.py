@@ -309,49 +309,6 @@ def check_next_step(state: AgentState) -> str:
         logger.error(f"Unexpected error in workflow decision: {e}", exc_info=True)
         return WorkflowDecision.FINISHED
 
-
-def check_next_step_ch1(state: AgentState) -> str:
-    """
-    Routing function for the Chapter-1-only workflow.
-
-    Identical to check_next_step() except NEXT_CHAPTER routes to END
-    instead of update_chapter, so the graph terminates after Chapter 1
-    completes and hands control back to the UI preview gate.
-    """
-    curriculum = state["curriculum"]
-    chap_idx   = state["current_chapter_index"]
-    sub_idx    = state["current_subsection_index"]
-    try:
-        if hasattr(curriculum, 'chapters'):
-            chapters    = curriculum.chapters
-            subsections = chapters[chap_idx].subsections
-        else:
-            chapters    = curriculum["chapters"]
-            subsections = chapters[chap_idx]["subsections"]
-
-        total_subsections = len(subsections)
-        total_chapters    = len(chapters)
-
-        if sub_idx < total_subsections - 1:
-            return WorkflowDecision.CONTINUE_SUBSECTION
-
-        elif chap_idx < total_chapters - 1:
-            # Chapter 1 done — stop here for preview gate
-            logger.info("Chapter 1 complete — routing to END for preview gate")
-            return WorkflowDecision.NEXT_CHAPTER   # mapped to update_chapter → END
-
-        else:
-            # Single-chapter textbook — go straight to publisher
-            return WorkflowDecision.FINISHED
-
-    except (IndexError, KeyError, AttributeError) as e:
-        logger.error(f"ch1 workflow decision error: {e}")
-        return WorkflowDecision.FINISHED
-    except Exception as e:
-        logger.error(f"Unexpected error in ch1 workflow decision: {e}", exc_info=True)
-        return WorkflowDecision.FINISHED
-
-
 # ---------------------------------------------------------------------------
 # Shared node registration helpers
 # ---------------------------------------------------------------------------
@@ -519,63 +476,4 @@ def create_workflow() -> CompiledStateGraph:
 
     graph = builder.compile()
     logger.info("✓ Full workflow compiled")
-    return graph
-
-def create_planning_workflow() -> CompiledStateGraph:
-    """
-    Phase-A workflow: topic validation + ingestion + curriculum planning.
-    Terminates after planner — UI curriculum review gate follows.
-
-    Entry point: validator
-    Route: validator → (invalid → END) | (valid → ingestion → planner → END)
-    """
-    logger.info("Building planning workflow (validator → ingestion → planner → END)...")
-    builder = StateGraph(AgentState)
-    builder.add_node("validator", _with_stop_check(validate_topic_node))
-    builder.add_node("ingestion", _with_stop_check(perform_ingestion))
-    builder.add_node("planner",   _with_stop_check(plan_curriculum))
-    builder.add_conditional_edges(
-        "validator",
-        lambda s: "end" if s.get("validation_failed") else "continue",
-        {"end": END, "continue": "ingestion"},
-    )
-    builder.add_edge("ingestion", "planner")
-    builder.add_edge("planner",   END)
-    builder.set_entry_point("validator")
-    graph = builder.compile()
-    logger.info("✓ Planning workflow compiled")
-    return graph
-
-
-
-def create_remaining_workflow() -> CompiledStateGraph:
-    """
-    Phase-B2 workflow: generate Chapter 2 onwards and publish.
-
-    Starts from current_chapter_index (already 1 after Chapter 1 checkpoint)
-    and runs the full content loop through to publisher.
-
-    Entry point: researcher
-    """
-    logger.info("Building remaining chapters workflow (researcher → … → publisher → END)...")
-    builder = StateGraph(AgentState)
-    _register_content_nodes(builder)
-    _define_content_edges(builder)
-    builder.set_entry_point("researcher")
-    graph = builder.compile()
-    logger.info("✓ Remaining chapters workflow compiled")
-    return graph
-
-
-def create_content_workflow() -> CompiledStateGraph:
-    """
-    Legacy Phase-B workflow: full content loop (all chapters) → publisher.
-    """
-    logger.info("Building content workflow (researcher → … → publisher → END)...")
-    builder = StateGraph(AgentState)
-    _register_content_nodes(builder)
-    _define_content_edges(builder)
-    builder.set_entry_point("researcher")
-    graph = builder.compile()
-    logger.info("✓ Content workflow compiled")
     return graph

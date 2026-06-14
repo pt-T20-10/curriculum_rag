@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import or_
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -88,18 +89,21 @@ async def register(
     result = await db.execute(
         select(User).where(User.email == user_data.email)
     )
-    existing_user = result.scalar_one_or_none()
+    if result.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Email này đã được đăng ký")
 
-    if existing_user:
-        raise HTTPException(
-            status_code=400,
-            detail="Email already registered"
+    if user_data.username:
+        result = await db.execute(
+            select(User).where(User.username == user_data.username)
         )
+        if result.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="Tên đăng nhập đã được sử dụng")
 
     hashed_password = pwd_context.hash(user_data.password)
 
     new_user = User(
         email=user_data.email,
+        username=user_data.username or None,
         hashed_password=hashed_password,
         full_name=user_data.full_name or "",
         credits=200,
@@ -132,17 +136,31 @@ async def register(
 @router.post("/login", response_model=Token)
 async def login(credentials: UserLogin, db: AsyncSession = Depends(get_async_db)):
     """Login and get access token. Supports remember_me for 30-day sessions."""
-    result = await db.execute(select(User).where(User.email == credentials.email))
+    identifier = credentials.identifier.strip()
+    result = await db.execute(
+        select(User).where(
+            or_(User.email == identifier, User.username == identifier)
+        )
+    )
     user = result.scalar_one_or_none()
 
     if not user:
-        raise HTTPException(status_code=404, detail="Không tìm thấy tài khoản với email này")
+        raise HTTPException(status_code=404, detail="Không tìm thấy tài khoản với thông tin đăng nhập này")
 
-    if not verify_password(credentials.password, user.hashed_password): #type: ignore
+    if user.is_locked:  # type: ignore[truthy-bool]
+        raise HTTPException(status_code=403, detail="Tài khoản đã bị khóa. Vui lòng liên hệ hỗ trợ.")
+
+    if not user.is_active:  # type: ignore[truthy-bool]
+        raise HTTPException(status_code=403, detail="Tài khoản chưa được kích hoạt.")
+
+    if not user.hashed_password: #type: ignore[truthy-bool]
+        raise HTTPException(
+            status_code=400,
+            detail="Tài khoản này đăng ký qua Google. Vui lòng đăng nhập bằng nút Google bên dưới."
+        )
+
+    if not verify_password(credentials.password, user.hashed_password): # type: ignore[arg-type]
         raise HTTPException(status_code=401, detail="Mật khẩu không đúng")
-
-    if not user.is_active: #type: ignore
-        raise HTTPException(status_code=403, detail="Account is inactive")
 
     if credentials.remember_me:
         expires_delta = timedelta(days=settings.REMEMBER_ME_EXPIRE_DAYS)

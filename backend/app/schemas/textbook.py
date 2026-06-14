@@ -85,7 +85,7 @@ class ProgressData(BaseModel):
 class TextbookProgressResponse(BaseModel):
     id: int
     status: str
-    progress_data: Optional[ProgressData] = None
+    progress_data: Optional[Dict[str, Any]] = None
 
 
 class CurriculumConfirmRequest(BaseModel):

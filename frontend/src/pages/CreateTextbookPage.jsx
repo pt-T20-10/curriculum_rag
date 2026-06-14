@@ -46,20 +46,24 @@ export function CreateTextbookPage() {
           if (data) {
             setTextbookId(urlTextbookId)
             setProgressData(data)
-            setPhase(data.phase || 'idle')
-            setTextbookTitle(data.title || data.topic || '')
-            
-            
-            if (data.num_chapters || data.content_level) {
-              setSubmittedConfig({
-                topic: data.topic || '',
-                num_chapters: data.num_chapters || 3,
-                content_level: data.content_level || 'Trung Bình',
-                max_subsections_per_chapter: data.max_subsections_per_chapter || 5,
-                enable_images: data.enable_images !== undefined ? data.enable_images : true
-              })
+            // Don't reset to 'idle' if Celery hasn't written phase yet (race on new submit)
+            if (data.phase) {
+              setPhase(data.phase)
             }
-            
+            // Don't overwrite a valid title with empty string
+            if (data.title || data.topic) {
+              setTextbookTitle(data.title || data.topic)
+            }
+
+            // Always restore config from API (fields now always present after backend fix)
+            setSubmittedConfig({
+              topic: data.topic || '',
+              num_chapters: data.num_chapters || 3,
+              content_level: data.content_level || 'Trung Bình',
+              max_subsections_per_chapter: data.max_subsections_per_chapter || 5,
+              enable_images: data.enable_images !== undefined ? data.enable_images : true
+            })
+
             const curriculum = data.curriculum_data
             if (curriculum) {
               setConfirmedCurriculum(curriculum)
@@ -90,8 +94,8 @@ export function CreateTextbookPage() {
           setProgressData(data)
           setPhase(data.phase)
           
-          // Update title if available
-          if (data.title && !textbookTitle) {
+          // Update to AI-generated title once planner produces it
+          if (data.title) {
             setTextbookTitle(data.title)
           }
 

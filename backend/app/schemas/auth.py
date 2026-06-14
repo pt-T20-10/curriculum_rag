@@ -1,12 +1,30 @@
+import re
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 class UserCreate(BaseModel):
     email: EmailStr
-    password: str = Field(..., min_length=8, max_length=72) 
+    username: str | None = None
+    password: str = Field(..., min_length=8, max_length=72)
     full_name: str | None = None
 
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        v = v.strip()
+        if not v:
+            return None
+        if len(v) < 3:
+            raise ValueError("Tên đăng nhập phải có ít nhất 3 ký tự")
+        if len(v) > 50:
+            raise ValueError("Tên đăng nhập tối đa 50 ký tự")
+        if not re.match(r"^[a-zA-Z0-9_.-]+$", v):
+            raise ValueError("Tên đăng nhập chỉ được chứa chữ cái, số, dấu _ . -")
+        return v
+
 class UserLogin(BaseModel):
-    email: EmailStr
+    identifier: str          # email hoặc username
     password: str
     remember_me: bool = False
 

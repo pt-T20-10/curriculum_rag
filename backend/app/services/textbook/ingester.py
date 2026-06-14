@@ -76,8 +76,8 @@ def perform_ingestion(state: AgentState) -> dict:
 
     Pipeline:
         1. Clear old ChromaDB directory (prevents previous-run contamination)
-        2. Expand topic into 3 VI + 3 EN queries via QueryExpansionAgent
-        3. Search all 6 query-region pairs in parallel — preserves full result
+        2. Expand topic into 6 VI + 6 EN queries via QueryExpansionAgent
+        3. Search all 12 query-region pairs in parallel — preserves full result
            dicts (title, href, body) for downstream snippet pre-filtering
         4. Deduplicate raw URLs, run static + snippet + dynamic URL filtering
            with topic context passed for accurate snippet scoring

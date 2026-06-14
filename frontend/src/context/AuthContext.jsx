@@ -34,11 +34,11 @@ export function AuthProvider({ children }) {
     loadUser()
   }, [loadUser])
 
-const login = async (email, password, rememberMe = false) => {
+const login = async (identifier, password, rememberMe = false) => {
   console.log('🔵 AuthContext.login called')
 
   // Step 1: Login to get token
-  const response = await authAPI.login(email, password, rememberMe)
+  const response = await authAPI.login(identifier, password, rememberMe)
   console.log('🔍 Login response:', response.data)
   
   const { access_token } = response.data
@@ -64,11 +64,11 @@ const login = async (email, password, rememberMe = false) => {
   return userResponse.data
 }
 
-const register = async (email, password, fullName) => {
+const register = async (email, password, fullName, username) => {
   console.log('🔵 AuthContext.register called')
-  
+
   // Step 1: Register to get token
-  const response = await authAPI.register(email, password, fullName)
+  const response = await authAPI.register(email, password, fullName, username)
   console.log('🔍 Register response:', response.data)
   
   const { access_token } = response.data

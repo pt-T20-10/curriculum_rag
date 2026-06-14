@@ -13,14 +13,15 @@ export function LoginPage() {
   const successMessage = location.state?.successMessage || ''
 
   const [formData, setFormData] = useState({
-    email: '',
+    identifier: '',
     password: '',
   })
   const [rememberMe, setRememberMe] = useState(false)
   const [errors, setErrors] = useState({})
   const [loading, setLoading] = useState(false)
-  const [apiError, setApiError] = useState('')    // generic banner error
-  const [fieldErrors, setFieldErrors] = useState({})  // per-field API errors
+  const [apiError, setApiError] = useState('')
+  const [fieldErrors, setFieldErrors] = useState({})
+  const [formRenderKey, setFormRenderKey] = useState(0)
 
   const handleChange = (e) => {
     const { name, value } = e.target
@@ -33,10 +34,8 @@ export function LoginPage() {
   const validate = () => {
     const newErrors = {}
 
-    if (!formData.email) {
-      newErrors.email = 'Email là bắt buộc'
-    } else if (!/\S+@\S+\.\S+/.test(formData.email)) {
-      newErrors.email = 'Email không hợp lệ'
+    if (!formData.identifier) {
+      newErrors.identifier = 'Tên đăng nhập là bắt buộc'
     }
 
     if (!formData.password) {
@@ -57,20 +56,29 @@ export function LoginPage() {
     setLoading(true)
     setApiError('')
 
+    // Capture values before async — browser may clear DOM fields on HTTP error,
+    // and React skips DOM update when state hasn't changed (same reference optimization).
+    const savedIdentifier = formData.identifier
+    const savedPassword = formData.password
+
     try {
-      await login(formData.email, formData.password, rememberMe)
+      await login(savedIdentifier, savedPassword, rememberMe)
       navigate('/dashboard', { replace: true })
     } catch (error) {
       const detail = error.response?.data?.detail || ''
       const status = error.response?.status
 
-      if (status === 404 || detail.includes('email')) {
-        // Account not found — highlight email field
-        setFieldErrors({ email: detail || 'Không tìm thấy tài khoản với email này' })
+      // Force form remount so browser-cleared DOM values are repopulated
+      // from React state. Key change causes React to unmount+remount inputs.
+      setFormData({ identifier: savedIdentifier, password: savedPassword })
+      setFormRenderKey(k => k + 1)
+
+      if (status === 404) {
+        setFieldErrors({ identifier: detail || 'Không tìm thấy tài khoản với thông tin đăng nhập này' })
       } else if (status === 401 || detail.includes('Mật khẩu')) {
-        // Wrong password — highlight password field, keep email intact
         setFieldErrors({ password: detail || 'Mật khẩu không đúng' })
-        setFormData(prev => ({ ...prev, password: '' }))
+      } else if (status === 400) {
+        setApiError(detail || 'Yêu cầu không hợp lệ.')
       } else if (status === 403) {
         setApiError(detail || 'Tài khoản đã bị khóa. Vui lòng liên hệ hỗ trợ.')
       } else {
@@ -91,15 +99,15 @@ export function LoginPage() {
           Đăng nhập vào tài khoản Hệ Thống Tạo Giáo Trình AI
         </p>
 
-        <form onSubmit={handleSubmit}>
+        <form key={formRenderKey} onSubmit={handleSubmit}>
           <Input
-            label="Email"
-            type="email"
-            name="email"
-            value={formData.email}
+            label="Tên đăng nhập"
+            type="text"
+            name="identifier"
+            value={formData.identifier}
             onChange={handleChange}
-            error={errors.email || fieldErrors.email}
-            placeholder="email@cuaban.com"
+            error={errors.identifier || fieldErrors.identifier}
+            placeholder="Tên đăng nhập hoặc email của bạn"
             autoFocus
           />
 

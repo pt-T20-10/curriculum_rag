@@ -242,7 +242,13 @@ async def get_textbook_progress(
         progress_data["title"] = textbook.title  # type: ignore
     if textbook.num_chapters:  # type: ignore
         progress_data.setdefault("num_chapters", textbook.num_chapters)  # type: ignore
-    
+    if textbook.content_level:  # type: ignore
+        progress_data.setdefault("content_level", textbook.content_level)  # type: ignore
+    if textbook.max_subsections_per_chapter:  # type: ignore
+        progress_data.setdefault("max_subsections_per_chapter", textbook.max_subsections_per_chapter)  # type: ignore
+    if textbook.enable_images is not None:  # type: ignore
+        progress_data.setdefault("enable_images", textbook.enable_images)  # type: ignore
+
     return TextbookProgressResponse(
         id=textbook.id,  # type: ignore
         status=textbook.status,  # type: ignore

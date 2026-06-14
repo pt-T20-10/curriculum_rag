@@ -1,11 +1,11 @@
 import apiClient from './axios'
 
 export const authAPI = {
-  login: (email, password, remember_me = false) =>
-    apiClient.post('/auth/login', { email, password, remember_me }),
+  login: (identifier, password, remember_me = false) =>
+    apiClient.post('/auth/login', { identifier, password, remember_me }),
 
-  register: (email, password, full_name) =>
-    apiClient.post('/auth/register', { email, password, full_name }),
+  register: (email, password, full_name, username) =>
+    apiClient.post('/auth/register', { email, username: username || undefined, password, full_name }),
 
   me: () =>
     apiClient.get('/auth/me'),
