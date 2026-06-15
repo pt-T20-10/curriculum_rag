@@ -54,6 +54,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     try:
         # Create database tables
         async with engine.begin() as conn:
+            import app.models  # noqa: F401 - register all SQLAlchemy models
             await conn.run_sync(Base.metadata.create_all)
         print("✅ Database tables created/verified")
     except Exception as e:

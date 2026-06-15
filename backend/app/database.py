@@ -108,7 +108,7 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         # Import all models here to ensure they're registered
         # before create_all is called
-        from app.models import user, payment, textbook, plan, transaction, bank_config, credit_history  # noqa: F401
+        import app.models  # noqa: F401
         
         await conn.run_sync(Base.metadata.create_all)
 

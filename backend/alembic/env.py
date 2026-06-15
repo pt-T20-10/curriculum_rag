@@ -7,8 +7,7 @@ import asyncio
 
 # Import Base and models
 from app.database import Base
-from app.models.user import User
-from app.models.textbook import Textbook
+import app.models  # noqa: F401 - register all models for target_metadata
 
 # Alembic Config object
 config = context.config
