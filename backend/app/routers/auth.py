@@ -70,7 +70,6 @@ async def _get_or_create_google_user(db: AsyncSession, google_info: dict) -> Use
         auth_provider=AuthProvider.GOOGLE.value,
         is_active=True,
         is_verified=True,   # Google email is already verified
-        credits=200,        # same starter credits as local signup
         role=UserRole.USER.value,
         is_locked=False,
     )
@@ -106,7 +105,6 @@ async def register(
         username=user_data.username or None,
         hashed_password=hashed_password,
         full_name=user_data.full_name or "",
-        credits=200,
         is_active=True,
         is_verified=False,
         auth_provider="local",
