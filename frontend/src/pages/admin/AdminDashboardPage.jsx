@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Link } from 'react-router-dom'
 import { adminAPI } from '../../api/admin'
 import { Navbar } from '../../components/layout/Navbar'
+import { AdminNavigation } from '../../components/layout/AdminNavigation'
 
 // ---------------------------------------------------------------------------
 // Stat card
@@ -242,32 +242,13 @@ export function AdminDashboardPage() {
       <Navbar />
 
       <div className="max-w-6xl mx-auto w-full px-6 py-8">
+        <AdminNavigation className="mb-6" />
 
         {/* Header */}
         <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
           <div>
             <h1 className="text-2xl font-bold text-gray-800">Admin Dashboard</h1>
             <p className="text-xs text-gray-400 mt-0.5">Tổng quan hệ thống</p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Link to="/admin/users" className="px-4 py-2 bg-primary text-white rounded-lg text-sm hover:bg-primary/90 transition-colors">
-              Người dùng
-            </Link>
-            <Link to="/admin/textbooks" className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm hover:bg-gray-50 transition-colors">
-              Giáo trình
-            </Link>
-            <Link to="/admin/landing" className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm hover:bg-gray-50 transition-colors">
-              Landing Page
-            </Link>
-            <Link to="/admin/plans" className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm hover:bg-gray-50 transition-colors">
-              Gói & Ngân hàng
-            </Link>
-            <Link to="/admin/payments" className="px-4 py-2 border border-amber-300 text-amber-700 bg-amber-50 rounded-lg text-sm hover:bg-amber-100 transition-colors font-medium">
-              Xác nhận TT
-            </Link>
-            <Link to="/admin/config" className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm hover:bg-gray-50 transition-colors">
-              Cấu hình
-            </Link>
           </div>
         </div>
 

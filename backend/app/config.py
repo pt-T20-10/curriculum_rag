@@ -21,10 +21,10 @@ class Settings(BaseSettings):
     """Application settings loaded from environment."""
     
     # ==================== Existing AI API Keys ====================
-    OPENAI_API_KEY: str
-    GROQ_API_KEY: str
-    GEMINI_API_KEY: str
-    ANTHROPIC_API_KEY: str
+    OPENAI_API_KEY: str = ""
+    GROQ_API_KEY: str = ""
+    GEMINI_API_KEY: str = ""
+    ANTHROPIC_API_KEY: str = ""
     SERPER_API_KEY: str = ""  # Optional
     
     # ==================== Database ====================
@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_HOURS: int = 24
     REMEMBER_ME_EXPIRE_DAYS: int = 30
+    
+    # ==================== Bootstrap Admin ====================
+    DEFAULT_ADMIN_ENABLED: bool = True
+    DEFAULT_ADMIN_EMAIL: str = "admin@example.com"
+    DEFAULT_ADMIN_USERNAME: str = "admin"
+    DEFAULT_ADMIN_FULL_NAME: str = "System Administrator"
+    DEFAULT_ADMIN_PASSWORD_HASH: str = "$2b$12$oHvFFApYhi6yUrJfVVORkuG2oQWumTsc37Qr6o9FLV5sqUO8nDvjy"
     
     # ==================== Google OAuth ====================
     GOOGLE_CLIENT_ID: str = ""
@@ -333,19 +340,21 @@ def get_embedding_model():
     """
     if settings.EMBEDDING_PROVIDER == "openai":
         # OpenAI API-based embedding (fast, multilingual)
-        if not settings.OPENAI_API_KEY:
+        from app.services.runtime_config import get_api_key
+
+        openai_api_key = get_api_key("OPENAI_API_KEY", required=True)
+        if not openai_api_key:
             raise ValueError(
                 "OPENAI_API_KEY required for OpenAI embeddings. "
-                "Set it in .env or switch to EMBEDDING_PROVIDER='local'"
+                "Set it in Admin system config, .env, or switch to EMBEDDING_PROVIDER='local'"
             )
         
         from langchain_openai import OpenAIEmbeddings
         
        
-        # OpenAIEmbeddings automatically reads from OPENAI_API_KEY env var
-        # which Pydantic Settings already set
         return OpenAIEmbeddings(
             model=settings.OPENAI_EMBEDDING_MODEL,
+            api_key=openai_api_key,
             # Dimensions: 1536 for text-embedding-3-small
             # No normalization needed - OpenAI handles internally
         )

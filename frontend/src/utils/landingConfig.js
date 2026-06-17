@@ -35,50 +35,6 @@ export const DEFAULT_CONFIG = {
     },
   ],
 
-  plans: [
-    {
-      id: 'starter',
-      name: 'Khởi Đầu',
-      price: 'Miễn phí',
-      features: [
-        '5 giáo trình / tháng',
-        'Tối đa 3 chương',
-        'Xuất PDF',
-        'Hỗ trợ cộng đồng',
-      ],
-      cta_label: 'Bắt đầu ngay',
-      is_recommended: false,
-    },
-    {
-      id: 'pro',
-      name: 'Chuyên Nghiệp',
-      price: '99.000₫ / tháng',
-      features: [
-        'Không giới hạn giáo trình',
-        'Tối đa 12 chương',
-        'Hình minh họa AI (DALL·E)',
-        'Xuất Word + PDF',
-        'Hỗ trợ ưu tiên',
-      ],
-      cta_label: 'Nâng cấp ngay',
-      is_recommended: true,
-    },
-    {
-      id: 'enterprise',
-      name: 'Doanh Nghiệp',
-      price: 'Liên hệ',
-      features: [
-        'Không giới hạn',
-        'API riêng',
-        'Tùy chỉnh thương hiệu',
-        'SLA 99.9%',
-        'Hỗ trợ 24/7',
-      ],
-      cta_label: 'Liên hệ chúng tôi',
-      is_recommended: false,
-    },
-  ],
-
   stats: [
     { value: '500+', label: 'Giáo trình đã tạo' },
     { value: 'Việt & Anh', label: 'Nguồn song ngữ' },

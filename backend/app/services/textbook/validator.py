@@ -3,9 +3,8 @@ Validator Agent for AI Textbook Generator.
 """
 
 import json
-from app.config import settings
 from langchain_groq import ChatGroq
-GROQ_API_KEY = settings.GROQ_API_KEY
+from app.services.runtime_config import get_api_key
 from app.schemas.curriculum import AgentState
 from app.utils.log_config import setup_logger
 
@@ -33,7 +32,7 @@ def validate_topic(topic: str) -> dict:
     try:
         llm = ChatGroq(
             model="llama-3.3-70b-versatile",
-            api_key=GROQ_API_KEY, #type: ignore
+            api_key=get_api_key("GROQ_API_KEY"), #type: ignore
             temperature=0,
             max_tokens=512,  # Increased for better response
         )

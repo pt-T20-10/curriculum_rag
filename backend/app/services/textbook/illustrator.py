@@ -40,10 +40,9 @@ from pathlib import Path
 from PIL import Image
 
 from app.config import settings
+from app.services.runtime_config import get_api_key
 from app.utils.log_config import setup_logger, setup_prompt_logger
 
-OPENAI_API_KEY = settings.OPENAI_API_KEY
-SERPER_API_KEY = settings.SERPER_API_KEY
 BASE_DIR = settings.BASE_DIR
 INDICATE_LINKS_FOR_PICS = settings.INDICATE_LINKS_FOR_PICS
 IMAGE_MODEL_DEFAULT = settings.IMAGE_MODEL_DEFAULT
@@ -149,16 +148,25 @@ class IllustratorAgent:
         degraded mode (tags stripped without replacement) is visible in logs
         rather than silently failing per-image later.
         """
-        self.api_key = SERPER_API_KEY
+        self.api_key = get_api_key("SERPER_API_KEY", required=False)
+        openai_api_key = get_api_key("OPENAI_API_KEY", required=False)
         if not self.api_key:
             logger.warning("⚠️ SERPER_API_KEY is missing — image search disabled.")
-        if not OPENAI_API_KEY:
+        if not openai_api_key:
             logger.warning("OPENAI_API_KEY not set — DRAW mode disabled, SEARCH only.")
 
         self.prompt_logger = setup_prompt_logger("illustrator")
         # temperature=0 for classification and query tasks — determinism is
         # preferred over creativity for routing and short-form outputs.
-        self.llm = ChatOpenAI(model=LLM_MODEL_CHEAP, temperature=0)
+        self.llm = (
+            ChatOpenAI(
+                model=LLM_MODEL_CHEAP,
+                api_key=openai_api_key,
+                temperature=0,
+            )
+            if openai_api_key
+            else None
+        )
 
     # ------------------------------------------------------------------
     # LLM helper methods
@@ -398,14 +406,15 @@ class IllustratorAgent:
         Returns:
             Absolute path string to the saved PNG, or "" on any failure.
         """
-        if not OPENAI_API_KEY:
+        openai_api_key = get_api_key("OPENAI_API_KEY", required=False)
+        if not openai_api_key:
             logger.warning("OPENAI_API_KEY not set — cannot generate image, triggering fallback")
             return ""
 
         try:
             
 
-            client = OpenAI(api_key=OPENAI_API_KEY)
+            client = OpenAI(api_key=openai_api_key)
 
             image_model = (
                 IMAGE_MODEL_PREMIUM
@@ -601,7 +610,11 @@ class IllustratorAgent:
             with open(local_path, "rb") as f:
                 img_b64 = base64.b64encode(f.read()).decode()
 
-            validator = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+            validator = ChatOpenAI(
+                model="gpt-4o-mini",
+                api_key=get_api_key("OPENAI_API_KEY"),
+                temperature=0,
+            )
             response = validator.invoke([
                 {
                     "role": "user",
@@ -955,7 +968,9 @@ def illustrate_section(state: AgentState) -> dict:
 
     # Graceful degradation when both image APIs are unavailable.
     # Tags are stripped so the PDF does not contain broken placeholders.
-    if not SERPER_API_KEY and not OPENAI_API_KEY:
+    serper_api_key = get_api_key("SERPER_API_KEY", required=False)
+    openai_api_key = get_api_key("OPENAI_API_KEY", required=False)
+    if not serper_api_key and not openai_api_key:
         logger.warning("No image API configured (SERPER + OPENAI both missing) — removing tags")
         cleaned = re.sub(r"> \[IMAGE(?:\s+SUGGESTION)?: .*?\]", "", current_content)
         return {"current_content": cleaned}

@@ -1,0 +1,119 @@
+"""
+Runtime configuration resolver.
+
+External service credentials are resolved DB-first from system_config, then
+fall back to pydantic Settings/.env. Bootstrap values such as MYSQL_*,
+REDIS_*, and SECRET_KEY intentionally remain environment-only.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import time
+from threading import RLock
+from typing import Any
+
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
+
+from app.config import settings
+
+
+logger = logging.getLogger("RuntimeConfig")
+
+MASKED_VALUE = "••••••••"
+_CACHE_TTL_SECONDS = 30
+_cache: dict[str, tuple[float, Any]] = {}
+_engine: Engine | None = None
+_lock = RLock()
+
+
+class RuntimeConfigError(RuntimeError):
+    """Raised when a required runtime setting is missing from DB and .env."""
+
+
+def _get_engine() -> Engine:
+    global _engine
+    if _engine is None:
+        _engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True)
+    return _engine
+
+
+def _decode(raw: str) -> Any:
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return raw
+
+
+def _is_missing(value: Any) -> bool:
+    return value is None or value == "" or value == MASKED_VALUE
+
+
+def _read_db_value(key: str) -> Any:
+    try:
+        with _get_engine().connect() as conn:
+            row = conn.execute(
+                text("SELECT value FROM system_config WHERE `key` = :key LIMIT 1"),
+                {"key": key},
+            ).first()
+    except Exception as exc:
+        logger.warning("DB runtime config lookup failed for %s: %s", key, exc)
+        return None
+
+    if not row:
+        return None
+    return _decode(row[0])
+
+
+def invalidate_runtime_config_cache() -> None:
+    """Clear cached DB-first runtime config values after admin updates."""
+    with _lock:
+        _cache.clear()
+    try:
+        from app.config import get_embedding_model
+
+        get_embedding_model.cache_clear()
+    except Exception as exc:
+        logger.debug("Could not clear embedding model cache: %s", exc)
+    try:
+        from app.services.textbook import retriever
+
+        retriever._chunk_classifier = None
+        retriever._retriever_instance = None
+    except Exception as exc:
+        logger.debug("Could not clear retriever runtime caches: %s", exc)
+
+
+def get_runtime_config(key: str, required: bool = False) -> Any:
+    """
+    Resolve a runtime config value using DB-first fallback semantics.
+
+    Order:
+        1. system_config table
+        2. Settings/.env
+        3. RuntimeConfigError when required=True
+    """
+    now = time.monotonic()
+    with _lock:
+        cached = _cache.get(key)
+        if cached and now - cached[0] < _CACHE_TTL_SECONDS:
+            value = cached[1]
+        else:
+            db_value = _read_db_value(key)
+            value = db_value if not _is_missing(db_value) else getattr(settings, key, None)
+            _cache[key] = (now, value)
+
+    if required and _is_missing(value):
+        raise RuntimeConfigError(
+            f"{key} is required but missing. Tried system_config first, "
+            "then Settings/.env fallback."
+        )
+    return value
+
+
+def get_api_key(key: str, required: bool = True) -> str:
+    """Resolve a credential-like setting as a string."""
+    value = get_runtime_config(key, required=required)
+    return "" if _is_missing(value) else str(value)

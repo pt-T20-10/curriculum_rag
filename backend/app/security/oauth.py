@@ -1,6 +1,6 @@
 import httpx
 
-from app.config import settings
+from app.services.runtime_config import get_runtime_config
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -9,8 +9,8 @@ GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
 
 def get_google_auth_url(state: str) -> str:
     params = {
-        "client_id": settings.GOOGLE_CLIENT_ID,
-        "redirect_uri": settings.GOOGLE_REDIRECT_URI,
+        "client_id": get_runtime_config("GOOGLE_CLIENT_ID", required=True),
+        "redirect_uri": get_runtime_config("GOOGLE_REDIRECT_URI", required=True),
         "response_type": "code",
         "scope": "openid email profile",
         "state": state,
@@ -25,9 +25,9 @@ async def exchange_google_code(code: str) -> dict:
             GOOGLE_TOKEN_URL,
             data={
                 "code": code,
-                "client_id": settings.GOOGLE_CLIENT_ID,
-                "client_secret": settings.GOOGLE_CLIENT_SECRET,
-                "redirect_uri": settings.GOOGLE_REDIRECT_URI,
+                "client_id": get_runtime_config("GOOGLE_CLIENT_ID", required=True),
+                "client_secret": get_runtime_config("GOOGLE_CLIENT_SECRET", required=True),
+                "redirect_uri": get_runtime_config("GOOGLE_REDIRECT_URI", required=True),
                 "grant_type": "authorization_code",
             },
         )

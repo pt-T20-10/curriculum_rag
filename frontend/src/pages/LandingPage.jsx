@@ -231,7 +231,7 @@ function FeaturesSection({ cfg }) {
 // ---------------------------------------------------------------------------
 // Section 3 — Pricing
 // ---------------------------------------------------------------------------
-function PricingSection({ cfg, user }) {
+function PricingSection({ plans, plansLoading, user }) {
   const navigate = useNavigate()
 
   return (
@@ -246,84 +246,96 @@ function PricingSection({ cfg, user }) {
           </p>
         </FadeUp>
 
-        <div className="grid md:grid-cols-3 gap-6 items-start max-w-5xl mx-auto">
-          {cfg.plans.map((plan, i) => (
-            <FadeUp key={plan.id || i} delay={i * 100}>
-              <div
-                className={`relative rounded-2xl p-8 flex flex-col transition-all duration-300 hover:-translate-y-1 ${
-                  plan.is_recommended
-                    ? 'bg-primary text-white shadow-2xl shadow-primary/30 border-2 border-primary scale-[1.02]'
-                    : 'bg-white border border-gray-200 hover:border-primary/40 hover:shadow-lg text-gray-900'
-                }`}
-              >
-                {plan.is_recommended && (
-                  <div className="absolute -top-4 left-1/2 -translate-x-1/2 bg-amber-400 text-gray-900 text-xs font-bold px-4 py-1 rounded-full uppercase tracking-wide shadow">
-                    Phổ biến nhất
-                  </div>
-                )}
-
-                <div className="mb-6">
-                  <h3
-                    className={`text-xl font-bold mb-2 ${
-                      plan.is_recommended ? 'text-white' : 'text-gray-900'
-                    }`}
-                  >
-                    {plan.name}
-                  </h3>
+        {plansLoading ? (
+          <div className="flex justify-center py-12">
+            <div className="animate-spin rounded-full h-9 w-9 border-b-2 border-primary" />
+          </div>
+        ) : plans.length === 0 ? (
+          <div className="max-w-xl mx-auto rounded-2xl border border-gray-200 bg-white px-6 py-8 text-center text-gray-500">
+            Chưa có gói nạp tiền đang hoạt động.
+          </div>
+        ) : (
+          <div className="grid md:grid-cols-3 gap-6 items-start max-w-5xl mx-auto">
+            {plans.map((plan, i) => {
+              const price = `${plan.price_vnd.toLocaleString('vi-VN')}₫`
+              return (
+                <FadeUp key={plan.id} delay={i * 100}>
                   <div
-                    className={`text-3xl font-extrabold ${
-                      plan.is_recommended ? 'text-white' : 'text-gray-900'
+                    className={`relative rounded-2xl p-8 flex flex-col transition-all duration-300 hover:-translate-y-1 ${
+                      plan.is_recommended
+                        ? 'bg-primary text-white shadow-2xl shadow-primary/30 border-2 border-primary scale-[1.02]'
+                        : 'bg-white border border-gray-200 hover:border-primary/40 hover:shadow-lg text-gray-900'
                     }`}
                   >
-                    {plan.price}
+                    {plan.is_recommended && (
+                      <div className="absolute -top-4 left-1/2 -translate-x-1/2 bg-amber-400 text-gray-900 text-xs font-bold px-4 py-1 rounded-full uppercase tracking-wide shadow">
+                        Phổ biến nhất
+                      </div>
+                    )}
+
+                    <div className="mb-6">
+                      <h3
+                        className={`text-xl font-bold mb-2 ${
+                          plan.is_recommended ? 'text-white' : 'text-gray-900'
+                        }`}
+                      >
+                        {plan.name}
+                      </h3>
+                      <div
+                        className={`text-3xl font-extrabold ${
+                          plan.is_recommended ? 'text-white' : 'text-gray-900'
+                        }`}
+                      >
+                        {price}
+                      </div>
+                      <div className={`text-sm mt-2 ${plan.is_recommended ? 'text-white/80' : 'text-gray-500'}`}>
+                        {plan.credits.toLocaleString('vi-VN')} credits
+                      </div>
+                    </div>
+
+                    <ul className="space-y-3 flex-1 mb-8">
+                      {(plan.features || []).map((feat, fi) => (
+                        <li key={fi} className="flex items-start gap-2.5">
+                          <svg
+                            className={`w-5 h-5 flex-shrink-0 mt-0.5 ${
+                              plan.is_recommended ? 'text-white/80' : 'text-primary'
+                            }`}
+                            fill="currentColor"
+                            viewBox="0 0 20 20"
+                          >
+                            <path
+                              fillRule="evenodd"
+                              d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                              clipRule="evenodd"
+                            />
+                          </svg>
+                          <span
+                            className={`text-sm ${
+                              plan.is_recommended ? 'text-white/90' : 'text-gray-600'
+                            }`}
+                          >
+                            {feat}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+
+                    <button
+                      onClick={() => navigate(user ? '/dashboard' : `/register?plan=${plan.id}`)}
+                      className={`w-full py-3 rounded-xl font-semibold text-sm transition-all duration-200 hover:scale-[1.02] active:scale-95 ${
+                        plan.is_recommended
+                          ? 'bg-white text-primary hover:bg-gray-50 shadow-lg'
+                          : 'bg-primary text-white hover:bg-blue-500 shadow-md'
+                      }`}
+                    >
+                      Mua ngay
+                    </button>
                   </div>
-                </div>
-
-                <ul className="space-y-3 flex-1 mb-8">
-                  {(plan.features || []).map((feat, fi) => (
-                    <li key={fi} className="flex items-start gap-2.5">
-                      <svg
-                        className={`w-5 h-5 flex-shrink-0 mt-0.5 ${
-                          plan.is_recommended ? 'text-white/80' : 'text-primary'
-                        }`}
-                        fill="currentColor"
-                        viewBox="0 0 20 20"
-                      >
-                        <path
-                          fillRule="evenodd"
-                          d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-                          clipRule="evenodd"
-                        />
-                      </svg>
-                      <span
-                        className={`text-sm ${
-                          plan.is_recommended ? 'text-white/90' : 'text-gray-600'
-                        }`}
-                      >
-                        {feat}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-
-                <button
-                  onClick={() =>
-                    navigate(
-                      user ? '/dashboard' : `${plan.cta_label === 'Liên hệ chúng tôi' ? '/register' : `/register?plan=${plan.id}`}`,
-                    )
-                  }
-                  className={`w-full py-3 rounded-xl font-semibold text-sm transition-all duration-200 hover:scale-[1.02] active:scale-95 ${
-                    plan.is_recommended
-                      ? 'bg-white text-primary hover:bg-gray-50 shadow-lg'
-                      : 'bg-primary text-white hover:bg-blue-500 shadow-md'
-                  }`}
-                >
-                  {plan.cta_label}
-                </button>
-              </div>
-            </FadeUp>
-          ))}
-        </div>
+                </FadeUp>
+              )
+            })}
+          </div>
+        )}
       </div>
     </section>
   )
@@ -504,6 +516,8 @@ export function LandingPage() {
   const { user, loading } = useAuth()
   // Lazy initializer: loadConfig() runs once synchronously before first render
   const [config, setConfig] = useState(() => loadConfig())
+  const [plans, setPlans] = useState([])
+  const [plansLoading, setPlansLoading] = useState(true)
 
   // Re-load config when window regains focus so admin changes in another tab
   // take effect immediately — only registers/unregisters a listener, no sync setState
@@ -513,20 +527,24 @@ export function LandingPage() {
     return () => window.removeEventListener('focus', onFocus)
   }, [])
 
-  // Fetch live plans from DB and replace the static plan list
+  // Fetch live plans from DB. Pricing never renders DEFAULT_CONFIG.plans.
   useEffect(() => {
-    plansAPI.listActive().then(r => {
-      if (!r.data || r.data.length === 0) return
-      const apiPlans = r.data.map(p => ({
-        id: String(p.id),
-        name: p.name,
-        price: p.price_vnd.toLocaleString('vi-VN') + '₫',
-        features: p.features,
-        is_recommended: p.is_recommended,
-        cta_label: 'Mua ngay',
-      }))
-      setConfig(prev => ({ ...prev, plans: apiPlans }))
-    }).catch(() => {/* keep default config on error */})
+    let cancelled = false
+    setPlansLoading(true)
+
+    plansAPI.listActive()
+      .then(r => {
+        if (cancelled) return
+        setPlans(Array.isArray(r.data) ? r.data : [])
+      })
+      .catch(() => {
+        if (!cancelled) setPlans([])
+      })
+      .finally(() => {
+        if (!cancelled) setPlansLoading(false)
+      })
+
+    return () => { cancelled = true }
   }, [])
 
   if (loading) {
@@ -541,7 +559,7 @@ export function LandingPage() {
     <div className="overflow-x-hidden">
       <HeroSection cfg={config.hero} user={user} />
       <FeaturesSection cfg={config} />
-      <PricingSection cfg={config} user={user} />
+      <PricingSection plans={plans} plansLoading={plansLoading} user={user} />
       <StatsSection cfg={config} />
       <TestimonialsSection cfg={config} />
       <PartnersSection cfg={config} />

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
 import { adminAPI } from '../../api/admin'
 import { Navbar } from '../../components/layout/Navbar'
+import { AdminNavigation } from '../../components/layout/AdminNavigation'
 
 const STATUS_STYLE = {
   pending: 'bg-yellow-100 text-yellow-700 border-yellow-200',
@@ -109,15 +109,14 @@ export function AdminPaymentsPage() {
     <div className="min-h-screen bg-gray-50">
       <Navbar />
       <div className="max-w-6xl mx-auto px-4 py-8">
+        <AdminNavigation className="mb-6" />
+
         {/* Header */}
         <div className="flex items-center justify-between mb-8">
           <div>
             <h1 className="text-2xl font-bold text-gray-900">Xác nhận thanh toán</h1>
             <p className="text-sm text-gray-500 mt-1">Duyệt giao dịch nạp tiền của người dùng</p>
           </div>
-          <Link to="/admin" className="text-sm text-gray-500 hover:text-primary transition-colors">
-            ← Quay lại Dashboard
-          </Link>
         </div>
 
     <div className="space-y-5">

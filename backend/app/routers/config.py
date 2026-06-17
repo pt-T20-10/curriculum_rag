@@ -34,6 +34,7 @@ from app.database import get_async_db
 from app.models.config import ConfigAuditLog, SystemConfig, UserConfig
 from app.models.user import User, UserRole
 from app.security.jwt import get_current_user_id, require_admin
+from app.services.runtime_config import MASKED_VALUE, invalidate_runtime_config_cache
 
 router = APIRouter()
 
@@ -53,6 +54,19 @@ def _decode(raw: str) -> Any:
         return json.loads(raw)
     except (json.JSONDecodeError, TypeError):
         return raw
+
+
+def _mask_sensitive_raw(key: str, raw: Optional[str]) -> Optional[str]:
+    if raw is None:
+        return None
+    entry = PARAMETER_REGISTRY.get(key, {})
+    if not entry.get("sensitive"):
+        return raw
+    try:
+        decoded = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        decoded = raw
+    return MASKED_VALUE if decoded else raw
 
 
 def _coerce(key: str, value: Any) -> Any:
@@ -404,6 +418,8 @@ async def update_system_config(
             continue
         entry = admin_registry[key]
         if entry.get("sensitive"):
+            if raw_value == MASKED_VALUE:
+                continue
             # Allow updating sensitive params (value is stored, never returned)
             continue
         value = _coerce(key, raw_value)
@@ -416,6 +432,9 @@ async def update_system_config(
 
     for key, raw_value in body.updates.items():
         if key not in admin_registry:
+            continue
+        entry = admin_registry[key]
+        if entry.get("sensitive") and raw_value == MASKED_VALUE:
             continue
         value = _coerce(key, raw_value)
 
@@ -441,14 +460,22 @@ async def update_system_config(
             db.add(SystemConfig(key=key, value=_encode(value), updated_by=admin_id))
 
         # Append audit log
+        if entry.get("sensitive"):
+            audit_old = _mask_sensitive_raw(key, old_raw)
+            audit_new = MASKED_VALUE if value else _encode(value)
+        else:
+            audit_old = old_raw
+            audit_new = _encode(value)
+
         db.add(ConfigAuditLog(
             admin_id=admin_id,
             key=key,
-            old_value=old_raw,
-            new_value=_encode(value),
+            old_value=audit_old,
+            new_value=audit_new,
         ))
 
     await db.commit()
+    invalidate_runtime_config_cache()
 
     # Return fresh state
     system_overrides = await _load_system_config(db)
@@ -489,8 +516,8 @@ async def get_audit_log(
             admin_id=log_row.admin_id,
             admin_email=admin_email,
             key=log_row.key,
-            old_value=log_row.old_value,
-            new_value=log_row.new_value,
+            old_value=_mask_sensitive_raw(log_row.key, log_row.old_value),
+            new_value=_mask_sensitive_raw(log_row.key, log_row.new_value) or "",
             created_at=log_row.created_at,
         ))
     return entries

@@ -57,6 +57,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
             import app.models  # noqa: F401 - register all SQLAlchemy models
             await conn.run_sync(Base.metadata.create_all)
         print("✅ Database tables created/verified")
+
+        from app.services.bootstrap import ensure_default_admin_user
+
+        if await ensure_default_admin_user():
+            print("✅ Default admin account created/verified")
     except Exception as e:
         print(f"❌ Database initialization failed: {e}")
         raise

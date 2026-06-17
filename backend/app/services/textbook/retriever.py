@@ -34,9 +34,9 @@ from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 import re
 from app.config import settings, get_embedding_model
+from app.services.runtime_config import get_api_key
 
 LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
-OPENAI_API_KEY = settings.OPENAI_API_KEY
 CHROMA_DB_DIR = settings.CHROMA_DB_DIR
 RAG_TOP_K    = settings.RAG_TOP_K
 RAG_INITIAL_K = settings.RAG_INITIAL_K
@@ -702,7 +702,7 @@ def _get_chunk_classifier() -> ChatOpenAI:
     if _chunk_classifier is None:
         _chunk_classifier = ChatOpenAI(
             model=LLM_MODEL_CHEAP,
-            openai_api_key=OPENAI_API_KEY,       # type: ignore[arg-type]
+            openai_api_key=get_api_key("OPENAI_API_KEY"),       # type: ignore[arg-type]
             temperature=0,
             max_completion_tokens=10
                          

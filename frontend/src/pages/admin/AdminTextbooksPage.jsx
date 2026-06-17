@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { adminAPI } from '../../api/admin'
 import { Navbar } from '../../components/layout/Navbar'
+import { AdminNavigation } from '../../components/layout/AdminNavigation'
 
 function Badge({ children, color = 'gray' }) {
   const colors = {
@@ -94,6 +95,8 @@ export function AdminTextbooksPage() {
     <div className="min-h-screen bg-gray-50 flex flex-col">
       <Navbar />
       <div className="max-w-7xl mx-auto w-full px-6 py-8">
+        <AdminNavigation className="mb-6" />
+
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold text-gray-800">Quản lý giáo trình</h1>

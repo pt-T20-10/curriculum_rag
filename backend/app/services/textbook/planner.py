@@ -19,11 +19,11 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from app.schemas.curriculum import AgentState, CurriculumOutline
 from app.config import settings
+from app.services.runtime_config import get_api_key
 from app.utils.log_config import setup_logger, setup_prompt_logger
 
 LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
 LLM_MODEL_PREMIUM = settings.LLM_MODEL_PREMIUM
-OPENAI_API_KEY = settings.OPENAI_API_KEY
 
 logger = setup_logger(name="PlannerAgent", logfile="logs/agents.log")
 
@@ -50,7 +50,7 @@ class HybridPlanner:
         """
         self.llm = ChatOpenAI(
             model=LLM_MODEL_PREMIUM,
-            api_key=OPENAI_API_KEY,  # type: ignore[arg-type]
+            api_key=get_api_key("OPENAI_API_KEY"),  # type: ignore[arg-type]
             temperature=0.3,
         )
         self.prompt_logger = setup_prompt_logger("planner")

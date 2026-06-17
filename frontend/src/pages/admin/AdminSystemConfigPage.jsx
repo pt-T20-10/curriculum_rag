@@ -1,7 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { Navbar } from '../../components/layout/Navbar'
+import { AdminNavigation } from '../../components/layout/AdminNavigation'
 import { configAPI } from '../../api/config'
+
+const MASKED_VALUE = '••••••••'
 
 // ---------------------------------------------------------------------------
 // Spinner / Tooltip
@@ -40,6 +43,7 @@ function Tooltip({ text }) {
 // ---------------------------------------------------------------------------
 function SaveConfirmModal({ changes, overrideCounts, onConfirm, onCancel }) {
   const totalAffectedUsers = changes.reduce((sum, c) => sum + (overrideCounts[c.key] || 0), 0)
+  const displayValue = (change, value) => change.sensitive && value ? MASKED_VALUE : String(value)
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
@@ -74,8 +78,8 @@ function SaveConfirmModal({ changes, overrideCounts, onConfirm, onCancel }) {
                     <p className="font-medium text-gray-700">{c.label}</p>
                     <code className="text-gray-400 font-mono">{c.key}</code>
                   </td>
-                  <td className="px-3 py-2 font-mono text-gray-500">{String(c.oldValue)}</td>
-                  <td className="px-3 py-2 font-mono text-green-700 font-semibold">{String(c.newValue)}</td>
+                  <td className="px-3 py-2 font-mono text-gray-500">{displayValue(c, c.oldValue)}</td>
+                  <td className="px-3 py-2 font-mono text-green-700 font-semibold">{displayValue(c, c.newValue)}</td>
                   <td className="px-3 py-2 text-right">
                     {(overrideCounts[c.key] || 0) > 0
                       ? <span className="text-purple-600 font-medium">{overrideCounts[c.key]}</span>
@@ -116,7 +120,9 @@ function SaveConfirmModal({ changes, overrideCounts, onConfirm, onCancel }) {
 // Parameter field — free editing, no per-field modal
 // ---------------------------------------------------------------------------
 function AdminParamField({ param, pendingValue, savedValue, defaultValue, overrideCount, onChange, onReset }) {
-  const effectiveValue = pendingValue !== undefined ? pendingValue
+  const isMaskedSensitive = param.sensitive && savedValue === MASKED_VALUE && pendingValue === undefined
+  const effectiveValue = isMaskedSensitive ? ''
+    : pendingValue !== undefined ? pendingValue
     : savedValue !== undefined ? savedValue
     : defaultValue
 
@@ -124,12 +130,12 @@ function AdminParamField({ param, pendingValue, savedValue, defaultValue, overri
   const isPending = pendingValue !== undefined &&
     pendingValue !== (savedValue !== undefined ? savedValue : defaultValue)
 
-  const borderClass = param.sensitive
-    ? 'border-gray-200 bg-gray-50'
-    : isPending
+  const borderClass = isPending
     ? 'border-amber-400 ring-1 ring-amber-200'
     : isModified
     ? 'border-blue-400 ring-1 ring-blue-100'
+    : param.sensitive
+    ? 'border-gray-200 bg-gray-50'
     : 'border-gray-300'
 
   const commonCls = `w-full px-3 py-2 rounded-lg text-sm border focus:outline-none focus:ring-2 focus:ring-primary ${borderClass}`
@@ -139,7 +145,7 @@ function AdminParamField({ param, pendingValue, savedValue, defaultValue, overri
       return (
         <input type="password" value={effectiveValue}
           onChange={e => onChange(e.target.value)}
-          placeholder="Nhập giá trị mới (để trống để giữ nguyên)"
+          placeholder={savedValue === MASKED_VALUE ? 'Đã có giá trị, nhập giá trị mới để thay đổi' : 'Nhập giá trị'}
           className={commonCls} />
       )
     }
@@ -286,7 +292,7 @@ function AuditTable({ entries }) {
   )
 }
 
-const GROUP_ORDER = ['rag', 'generation', 'ingestion', 'domain_caps']
+const GROUP_ORDER = ['api_keys', 'rag', 'generation', 'ingestion', 'domain_caps']
 
 // ---------------------------------------------------------------------------
 // Page
@@ -331,10 +337,16 @@ export function AdminSystemConfigPage() {
 
   const getDefault = (key) => registry?.parameters?.[key]?.default
 
-  const handleChange = (key, newValue) => {
+  const handleChange = (param, newValue) => {
+    const key = param.key
     const savedVal = systemConfig[key]
     const defaultVal = getDefault(key)
     const baseline = savedVal !== undefined ? savedVal : defaultVal
+
+    if (param.sensitive && savedVal === MASKED_VALUE && newValue === '') {
+      setPending(prev => { const n = { ...prev }; delete n[key]; return n })
+      return
+    }
 
     if (newValue === baseline) {
       setPending(prev => { const n = { ...prev }; delete n[key]; return n })
@@ -357,7 +369,7 @@ export function AdminSystemConfigPage() {
     return Object.entries(pending).map(([key, newValue]) => {
       const param = registry.parameters[key]
       const oldValue = systemConfig[key] !== undefined ? systemConfig[key] : getDefault(key)
-      return { key, label: param?.label ?? key, oldValue, newValue }
+      return { key, label: param?.label ?? key, oldValue, newValue, sensitive: Boolean(param?.sensitive) }
     })
   }
 
@@ -371,7 +383,13 @@ export function AdminSystemConfigPage() {
     setApiError('')
     setSaving(true)
     try {
-      const res = await configAPI.updateSystemConfig(pending)
+      const sanitizedPending = Object.fromEntries(
+        Object.entries(pending).filter(([key, value]) => {
+          const param = registry?.parameters?.[key]
+          return !(param?.sensitive && value === MASKED_VALUE)
+        })
+      )
+      const res = await configAPI.updateSystemConfig(sanitizedPending)
       setSystemConfig(res.data.config || {})
       setPending({})
       setSaveSuccess(true)
@@ -397,6 +415,8 @@ export function AdminSystemConfigPage() {
       <Navbar />
 
       <div className="max-w-4xl mx-auto px-4 py-10">
+        <AdminNavigation className="mb-6" />
+
         {/* Breadcrumb */}
         <div className="mb-6 flex items-center gap-2 text-sm text-gray-500">
           <Link to="/admin" className="hover:text-primary transition-colors">Admin</Link>
@@ -412,19 +432,6 @@ export function AdminSystemConfigPage() {
               Mặc định hệ thống — Thay đổi ở đây sẽ trở thành mặc định mới cho tất cả người dùng.
               Người dùng vẫn có thể ghi đè trong phần Cài đặt nâng cao của họ.
             </p>
-          </div>
-          <div className="flex gap-2 flex-wrap">
-            {[
-              { to: '/admin', label: 'Dashboard' },
-              { to: '/admin/users', label: 'Người dùng' },
-              { to: '/admin/textbooks', label: 'Giáo trình' },
-              { to: '/admin/payments', label: 'Thanh toán' },
-            ].map(({ to, label }) => (
-              <Link key={to} to={to}
-                className="px-3 py-1.5 border border-gray-300 text-gray-600 rounded-lg text-sm hover:bg-gray-50 transition-colors">
-                {label}
-              </Link>
-            ))}
           </div>
         </div>
 
@@ -450,7 +457,7 @@ export function AdminSystemConfigPage() {
               if (params.length === 0) return null
               return (
                 <GroupAccordion key={groupKey} title={group.label} description={group.description}
-                  defaultOpen={groupKey === 'rag'}>
+                  defaultOpen={groupKey === 'api_keys'}>
                   {params.map(param => (
                     <AdminParamField
                       key={param.key}
@@ -459,7 +466,7 @@ export function AdminSystemConfigPage() {
                       savedValue={systemConfig[param.key]}
                       defaultValue={param.default}
                       overrideCount={overrideCounts[param.key] || 0}
-                      onChange={(val) => handleChange(param.key, val)}
+                      onChange={(val) => handleChange(param, val)}
                       onReset={() => handleReset(param.key)}
                     />
                   ))}

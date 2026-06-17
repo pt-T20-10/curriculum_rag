@@ -29,8 +29,8 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.config import settings
+from app.services.runtime_config import get_api_key
 
-OPENAI_API_KEY = settings.OPENAI_API_KEY
 LLM_MODEL_PREMIUM = settings.LLM_MODEL_PREMIUM
 LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
 from app.utils.log_config import setup_logger, setup_prompt_logger
@@ -273,7 +273,7 @@ class ContentWriter:
     def __init__(self) -> None:
         self._llm = ChatOpenAI(
             model=LLM_MODEL_PREMIUM,
-            api_key=OPENAI_API_KEY, #type: ignore
+            api_key=get_api_key("OPENAI_API_KEY"), #type: ignore
             temperature=0.4,
         )
         self._prompt_logger = setup_prompt_logger("writer")
@@ -536,7 +536,7 @@ Return ONLY the formatted [IMAGE: ...] tags, one per line. No commentary."""
     def __init__(self) -> None:
         self._llm = ChatOpenAI(
             model=LLM_MODEL_CHEAP,
-            api_key=OPENAI_API_KEY, #type: ignore
+            api_key=get_api_key("OPENAI_API_KEY"), #type: ignore
             temperature=0.3,
         )
 

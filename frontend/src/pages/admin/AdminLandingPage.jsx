@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { Navbar } from '../../components/layout/Navbar'
+import { AdminNavigation } from '../../components/layout/AdminNavigation'
 import { loadConfig, saveConfig, DEFAULT_CONFIG } from '../../utils/landingConfig'
 
 // ---------------------------------------------------------------------------
@@ -67,28 +68,6 @@ function SectionCard({ title, icon, children, defaultOpen = false }) {
         <div className="px-6 py-5 border-t border-gray-100">{children}</div>
       )}
     </div>
-  )
-}
-
-// Toggle for boolean fields
-function ToggleField({ label, enabled, onChange }) {
-  return (
-    <label className="flex items-center gap-3 cursor-pointer">
-      <span className="text-sm text-gray-700">{label}</span>
-      <button
-        type="button"
-        onClick={() => onChange(!enabled)}
-        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-          enabled ? 'bg-primary' : 'bg-gray-300'
-        }`}
-      >
-        <span
-          className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform shadow ${
-            enabled ? 'translate-x-6' : 'translate-x-1'
-          }`}
-        />
-      </button>
-    </label>
   )
 }
 
@@ -172,87 +151,6 @@ function FeaturesEditor({ features, onChange }) {
           </Field>
         </div>
       ))}
-    </div>
-  )
-}
-
-function PlansEditor({ plans, onChange }) {
-  const addPlan = () =>
-    onChange([
-      ...plans,
-      {
-        id: `plan_${Date.now()}`,
-        name: 'Gói mới',
-        price: '0₫',
-        features: ['Tính năng 1'],
-        cta_label: 'Chọn gói',
-        is_recommended: false,
-      },
-    ])
-
-  const removePlan = i => onChange(plans.filter((_, idx) => idx !== i))
-
-  const setPlan = (i, key, val) =>
-    onChange(plans.map((p, idx) => (idx === i ? { ...p, [key]: val } : p)))
-
-  const setRecommended = i =>
-    onChange(plans.map((p, idx) => ({ ...p, is_recommended: idx === i })))
-
-  const setFeatureList = (i, raw) => {
-    const feats = raw.split('\n').map(s => s.trim()).filter(Boolean)
-    setPlan(i, 'features', feats)
-  }
-
-  return (
-    <div className="space-y-4">
-      {plans.map((plan, i) => (
-        <div key={plan.id || i} className="p-4 bg-gray-50 rounded-xl border border-gray-200 relative">
-          <div className="flex items-center justify-between mb-3">
-            <p className="text-xs font-bold text-gray-400 uppercase">Gói {i + 1}</p>
-            <div className="flex items-center gap-3">
-              <ToggleField
-                label="Phổ biến nhất"
-                enabled={plan.is_recommended}
-                onChange={() => setRecommended(i)}
-              />
-              {plans.length > 1 && (
-                <button
-                  type="button"
-                  onClick={() => removePlan(i)}
-                  className="text-xs text-red-500 hover:text-red-700 px-2 py-1 rounded border border-red-200 hover:bg-red-50 transition-colors"
-                >
-                  Xóa
-                </button>
-              )}
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Tên gói">
-              <TextInput value={plan.name} onChange={v => setPlan(i, 'name', v)} />
-            </Field>
-            <Field label="Giá (hiển thị)">
-              <TextInput value={plan.price} onChange={v => setPlan(i, 'price', v)} placeholder="99.000₫/tháng" />
-            </Field>
-          </div>
-          <Field label="Tính năng" hint="Mỗi dòng là một tính năng">
-            <TextArea
-              value={(plan.features || []).join('\n')}
-              onChange={v => setFeatureList(i, v)}
-              rows={4}
-            />
-          </Field>
-          <Field label="Nhãn nút CTA">
-            <TextInput value={plan.cta_label} onChange={v => setPlan(i, 'cta_label', v)} />
-          </Field>
-        </div>
-      ))}
-      <button
-        type="button"
-        onClick={addPlan}
-        className="w-full py-3 border-2 border-dashed border-gray-300 rounded-xl text-sm text-gray-500 hover:border-primary hover:text-primary transition-colors font-medium"
-      >
-        + Thêm gói
-      </button>
     </div>
   )
 }
@@ -489,7 +387,6 @@ function FooterEditor({ footer, onChange }) {
 // Page
 // ---------------------------------------------------------------------------
 export function AdminLandingPage() {
-  const navigate = useNavigate()
   const [config, setConfig] = useState(null)
   const [saved, setSaved] = useState(false)
 
@@ -533,6 +430,8 @@ export function AdminLandingPage() {
       <Navbar />
 
       <div className="max-w-4xl mx-auto w-full px-6 py-8">
+        <AdminNavigation className="mb-6" />
+
         {/* Header */}
         <div className="flex items-start justify-between mb-6">
           <div>
@@ -547,19 +446,6 @@ export function AdminLandingPage() {
             <p className="text-xs text-gray-400 mt-0.5">
               Thay đổi được lưu vào trình duyệt và có hiệu lực ngay lập tức.
             </p>
-          </div>
-
-          <div className="flex items-center gap-2 flex-shrink-0">
-            {/* Admin tab navigation */}
-            <Link to="/admin" className="px-3 py-2 border border-gray-300 text-gray-600 rounded-lg text-sm hover:bg-gray-50 transition-colors">
-              Dashboard
-            </Link>
-            <Link to="/admin/users" className="px-3 py-2 border border-gray-300 text-gray-600 rounded-lg text-sm hover:bg-gray-50 transition-colors">
-              Người dùng
-            </Link>
-            <Link to="/admin/textbooks" className="px-3 py-2 border border-gray-300 text-gray-600 rounded-lg text-sm hover:bg-gray-50 transition-colors">
-              Giáo trình
-            </Link>
           </div>
         </div>
 
@@ -620,10 +506,6 @@ export function AdminLandingPage() {
 
         <SectionCard title="Tính năng nổi bật" icon="✨">
           <FeaturesEditor features={config.features} onChange={v => set('features', v)} />
-        </SectionCard>
-
-        <SectionCard title="Bảng giá" icon="💎">
-          <PlansEditor plans={config.plans} onChange={v => set('plans', v)} />
         </SectionCard>
 
         <SectionCard title="Thống kê" icon="📊">

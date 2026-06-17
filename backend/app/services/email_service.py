@@ -4,7 +4,7 @@ from email.mime.text import MIMEText
 
 import aiosmtplib
 
-from app.config import settings
+from app.services.runtime_config import get_runtime_config
 
 logger = logging.getLogger(__name__)
 
@@ -69,13 +69,19 @@ def _build_otp_html(otp_code: str) -> str:
 
 async def send_password_reset_email(to_email: str, otp_code: str) -> None:
     """Send OTP reset code to `to_email` via SMTP (TLS/STARTTLS on port 587)."""
-    if not settings.SMTP_USER or not settings.SMTP_PASSWORD:
+    smtp_user = str(get_runtime_config("SMTP_USER", required=False) or "")
+    smtp_password = str(get_runtime_config("SMTP_PASSWORD", required=False) or "")
+    if not smtp_user or not smtp_password:
         logger.warning("SMTP not configured — skipping email send (OTP: %s)", otp_code)
         return
 
+    smtp_host = str(get_runtime_config("SMTP_HOST", required=False) or "smtp.gmail.com")
+    smtp_port = int(get_runtime_config("SMTP_PORT", required=False) or 587)
+    email_from = str(get_runtime_config("EMAIL_FROM", required=False) or smtp_user)
+
     msg = MIMEMultipart("alternative")
     msg["Subject"] = "Mã xác nhận đặt lại mật khẩu"
-    msg["From"] = settings.EMAIL_FROM or settings.SMTP_USER
+    msg["From"] = email_from
     msg["To"] = to_email
 
     msg.attach(MIMEText(_build_otp_html(otp_code), "html", "utf-8"))
@@ -83,10 +89,10 @@ async def send_password_reset_email(to_email: str, otp_code: str) -> None:
     try:
         await aiosmtplib.send(
             msg,
-            hostname=settings.SMTP_HOST,
-            port=settings.SMTP_PORT,
-            username=settings.SMTP_USER,
-            password=settings.SMTP_PASSWORD,
+            hostname=smtp_host,
+            port=smtp_port,
+            username=smtp_user,
+            password=smtp_password,
             start_tls=True,
         )
         logger.info("Password reset email sent to %s", to_email)

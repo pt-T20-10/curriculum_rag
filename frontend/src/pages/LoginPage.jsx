@@ -55,6 +55,7 @@ export function LoginPage() {
 
     setLoading(true)
     setApiError('')
+    setFieldErrors({})
 
     // Capture values before async — browser may clear DOM fields on HTTP error,
     // and React skips DOM update when state hasn't changed (same reference optimization).
@@ -68,20 +69,27 @@ export function LoginPage() {
       const detail = error.response?.data?.detail || ''
       const status = error.response?.status
 
-      // Force form remount so browser-cleared DOM values are repopulated
-      // from React state. Key change causes React to unmount+remount inputs.
-      setFormData({ identifier: savedIdentifier, password: savedPassword })
-      setFormRenderKey(k => k + 1)
-
       if (status === 404) {
+        // Keep both fields so the user can correct only the identifier.
+        setFormData({ identifier: savedIdentifier, password: savedPassword })
+        setFormRenderKey(k => k + 1)
         setFieldErrors({ identifier: detail || 'Không tìm thấy tài khoản với thông tin đăng nhập này' })
       } else if (status === 401 || detail.includes('Mật khẩu')) {
+        // Wrong password: keep username/email, clear only password.
+        setFormData({ identifier: savedIdentifier, password: '' })
+        setFormRenderKey(k => k + 1)
         setFieldErrors({ password: detail || 'Mật khẩu không đúng' })
       } else if (status === 400) {
+        setFormData({ identifier: savedIdentifier, password: savedPassword })
+        setFormRenderKey(k => k + 1)
         setApiError(detail || 'Yêu cầu không hợp lệ.')
       } else if (status === 403) {
+        setFormData({ identifier: savedIdentifier, password: savedPassword })
+        setFormRenderKey(k => k + 1)
         setApiError(detail || 'Tài khoản đã bị khóa. Vui lòng liên hệ hỗ trợ.')
       } else {
+        setFormData({ identifier: savedIdentifier, password: savedPassword })
+        setFormRenderKey(k => k + 1)
         setApiError(detail || 'Đăng nhập thất bại. Vui lòng kiểm tra lại thông tin.')
       }
     } finally {

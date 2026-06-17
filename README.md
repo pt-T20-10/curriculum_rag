@@ -292,13 +292,21 @@ http://localhost:8000/outputs/...
 
 ## Configuration
 
-Config tĩnh nằm trong `backend/app/config.py` dưới dạng Pydantic `Settings`. File `.env` được đọc từ project root.
+Config bootstrap nằm trong `backend/app/config.py` dưới dạng Pydantic `Settings`. File `.env` được đọc từ project root.
+
+Các external/API secrets được resolve theo thứ tự:
+
+```text
+system_config trong database -> .env / Settings -> lỗi rõ ràng nếu key bắt buộc bị thiếu
+```
+
+Vì vậy trên máy mới, chỉ cần cấu hình bootstrap cho MySQL/Redis/JWT trong `.env`, đăng nhập bằng admin mặc định, rồi nhập API keys tại Admin System Config. `.env` vẫn có thể giữ API keys như fallback, nhưng không còn là nơi bắt buộc duy nhất.
 
 Các nhóm config chính:
 
 | Nhóm | Setting tiêu biểu |
 |---|---|
-| API keys | `OPENAI_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `SERPER_API_KEY` |
+| API keys | `OPENAI_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `SERPER_API_KEY`, Google OAuth, SMTP, SePay |
 | Database | `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE` |
 | Redis | `REDIS_HOST`, `REDIS_PORT` |
 | LLM | `LLM_MODEL_CHEAP`, `LLM_MODEL_PREMIUM`, `IMAGE_MODEL_DEFAULT`, `IMAGE_MODEL_PREMIUM` |
@@ -313,7 +321,7 @@ Các nhóm config chính:
 | Security | `SECRET_KEY`, `ALGORITHM`, token expiry settings |
 | OAuth/email/payment | Google OAuth, SMTP, SePay settings |
 
-Tạo `.env` ở project root. Repo hiện không có `.env.example`, nên cần tạo thủ công:
+Tạo `.env` ở project root. Repo hiện không có `.env.example`, nên cần tạo thủ công. Các API keys dưới đây là fallback tùy chọn nếu chưa nhập trong Admin System Config:
 
 ```env
 OPENAI_API_KEY=
@@ -353,6 +361,12 @@ FRONTEND_URL=http://localhost:5173
 BACKEND_URL=http://localhost:8000
 ENVIRONMENT=development
 
+DEFAULT_ADMIN_ENABLED=true
+DEFAULT_ADMIN_EMAIL=admin@example.com
+DEFAULT_ADMIN_USERNAME=admin
+DEFAULT_ADMIN_FULL_NAME=System Administrator
+DEFAULT_ADMIN_PASSWORD_HASH="$2b$12$oHvFFApYhi6yUrJfVVORkuG2oQWumTsc37Qr6o9FLV5sqUO8nDvjy"
+
 EMBEDDING_PROVIDER=openai
 OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 EMBEDDING_MODEL_NAME=BAAI/bge-m3
@@ -363,7 +377,7 @@ IMAGE_MODEL_DEFAULT=gpt-image-1-mini
 IMAGE_MODEL_PREMIUM=gpt-image-1.5
 ```
 
-`GEMINI_API_KEY` và `ANTHROPIC_API_KEY` hiện là required fields trong `Settings` dù workflow chính không gọi trực tiếp hai provider này. Nếu thiếu, app có thể fail ngay khi load config.
+`MYSQL_*`, `REDIS_*`, `SECRET_KEY`, URL app và model/config vận hành vẫn nên nằm trong `.env`. API keys có thể nhập bằng Admin UI; nếu DB chưa có key thì runtime fallback về `.env`.
 
 ### Advanced Settings API
 
@@ -374,7 +388,7 @@ IMAGE_MODEL_PREMIUM=gpt-image-1.5
 - admin system config: `/api/v1/config/admin/system`
 - audit log và override counts cho admin
 
-Lưu ý hiện trạng: các agent trong workflow đang import và đọc trực tiếp `settings` từ `config.py`. DB overrides hiện có API/UI quản lý nhưng chưa được inject vào Celery workflow theo từng textbook/user. Nếu muốn per-user runtime config thật sự ảnh hưởng generation, cần wiring thêm phần merge effective config trước khi chạy task hoặc trước khi build graph.
+Nhóm `API Keys` trong Admin System Config lưu secret vào bảng `system_config`. GET response sẽ mask sensitive values bằng `••••••••`; nếu admin không nhập giá trị mới thì mask không overwrite secret đang lưu.
 
 ## Installation
 
@@ -410,6 +424,8 @@ docker compose up -d mysql redis
 
 Nếu dùng compose mặc định, đảm bảo `.env` và `backend/alembic.ini` dùng cùng credential/database. `alembic.ini` hiện chứa một local MySQL URL hard-coded, nên chỉnh lại nếu DB của bạn khác.
 
+`docker-compose.yml` chỉ khởi tạo database service. Khi backend kết nối vào database này ở lần chạy đầu, backend sẽ tạo/verify tables và seed tài khoản admin mặc định nếu chưa tồn tại.
+
 ### Backend
 
 Từ project root:
@@ -432,13 +448,38 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Chạy migration và API từ thư mục `backend`:
+Chạy API từ thư mục `backend`. Ở fresh local database, backend startup sẽ tự tạo/verify tables bằng SQLAlchemy metadata và seed admin mặc định:
+
+```bash
+cd backend
+uvicorn app.main:app --reload --port 8000
+```
+
+Với database đã có schema cũ và đang được Alembic quản lý, chạy migration trước khi start API:
 
 ```bash
 cd backend
 alembic upgrade head
-uvicorn app.main:app --reload --port 8000
 ```
+
+### First Login And API Keys
+
+Sau khi backend và frontend chạy, đăng nhập bằng tài khoản admin mặc định:
+
+```text
+Username: admin
+Email: admin@example.com
+Password: password123@
+```
+
+Việc cần làm đầu tiên trong Admin UI:
+
+1. Vào trang Admin System Config.
+2. Mở nhóm `API Keys`.
+3. Nhập tối thiểu các key đang dùng trong workflow: `OPENAI_API_KEY`, `GROQ_API_KEY`; nếu bật ảnh/search thì thêm `SERPER_API_KEY`.
+4. Nếu dùng Google OAuth, email reset password hoặc thanh toán thì nhập thêm Google OAuth, SMTP và SePay tương ứng.
+
+Nếu chưa nhập API keys trong Admin UI và `.env` cũng không có fallback, các task gọi provider tương ứng sẽ fail với lỗi chỉ rõ key nào đang thiếu.
 
 Chạy Celery worker ở terminal khác. Trên Windows nên dùng `--pool=solo`:
 

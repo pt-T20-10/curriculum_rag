@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
 import { adminAPI } from '../../api/admin'
 import { Navbar } from '../../components/layout/Navbar'
+import { AdminNavigation } from '../../components/layout/AdminNavigation'
 
 const EMPTY_PLAN = { name: '', price_vnd: '', credits: '', features: '', is_recommended: false, is_active: true, sort_order: 0 }
 
@@ -193,15 +193,14 @@ export function AdminPlansPage() {
     <div className="min-h-screen bg-gray-50">
       <Navbar />
       <div className="max-w-4xl mx-auto px-4 py-8">
+        <AdminNavigation className="mb-6" />
+
         {/* Header */}
         <div className="flex items-center justify-between mb-8">
           <div>
             <h1 className="text-2xl font-bold text-gray-900">Gói & Ngân hàng</h1>
             <p className="text-sm text-gray-500 mt-1">Quản lý gói nạp tiền và thông tin thanh toán</p>
           </div>
-          <Link to="/admin" className="text-sm text-gray-500 hover:text-primary transition-colors">
-            ← Quay lại Dashboard
-          </Link>
         </div>
 
         {loading ? (

@@ -2,6 +2,10 @@ version: '3.8'
 
 services:
   # ==================== MySQL Database ====================
+  # Fresh local setup note:
+  # - This service creates the database and loads backend/scripts/init.sql.
+  # - When the backend starts against this database, it seeds a default admin:
+  #   username: admin, email: admin@example.com, password: password123@
   mysql:
     image: mysql:8.0
     container_name: ai_textbook_mysql

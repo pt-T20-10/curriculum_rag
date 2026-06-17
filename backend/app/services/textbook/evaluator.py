@@ -18,6 +18,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
 
 from app.config import settings
+from app.services.runtime_config import get_api_key
 from app.utils import stop_signal
 from app.utils.log_config import setup_logger
 from app.schemas.curriculum import (
@@ -31,7 +32,6 @@ from app.services.textbook.writer import _build_prior_summary_block
 
 logger = setup_logger(name="EvaluatorAgent", logfile="logs/agents.log")
 
-OPENAI_API_KEY = settings.OPENAI_API_KEY
 LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
 LLM_MODEL_PREMIUM = settings.LLM_MODEL_PREMIUM
 _RETRIEVAL_MAX_ROUNDS: int = settings.WRITER_RETRIEVAL_MAX_ROUNDS
@@ -60,7 +60,7 @@ class EvaluatorAgent:
     def __init__(self) -> None:
         self._llm = ChatOpenAI(
             model=LLM_MODEL_PREMIUM, #type: ignore
-            api_key=OPENAI_API_KEY, #type: ignore
+            api_key=get_api_key("OPENAI_API_KEY"), #type: ignore
             temperature=0,
         )
         self._llm_with_tools = self._llm.bind_tools([retrieve_context_tool])

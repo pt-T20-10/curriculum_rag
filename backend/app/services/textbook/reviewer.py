@@ -34,9 +34,9 @@ from app.schemas.curriculum import (
     clean_section_title,
 )
 from app.config import settings
+from app.services.runtime_config import get_api_key
 
 LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
-OPENAI_API_KEY = settings.OPENAI_API_KEY
 
 logger = setup_logger(name="ReviewerAgent", logfile="logs/agents.log")
 
@@ -71,7 +71,7 @@ class ReviewerAgent:
 
         self.llm = ChatOpenAI(
             model=LLM_MODEL_CHEAP,
-            api_key=OPENAI_API_KEY, # type: ignore[arg-type]
+            api_key=get_api_key("OPENAI_API_KEY"), # type: ignore[arg-type]
             temperature=0.1,
         )
         self.prompt_logger = setup_prompt_logger("reviewer")
@@ -373,7 +373,7 @@ No fences, no preamble, no explanation.
 
             llm_format = ChatOpenAI(
                 model=LLM_MODEL_CHEAP,
-                api_key=OPENAI_API_KEY,  # type: ignore[arg-type]
+                api_key=get_api_key("OPENAI_API_KEY"),  # type: ignore[arg-type]
                 temperature=0.0,
             )
             prompt = ChatPromptTemplate.from_messages([
@@ -527,7 +527,7 @@ Output rules:
 
             llm_content = ChatOpenAI(
                 model=LLM_MODEL_CHEAP,
-                api_key=OPENAI_API_KEY,  # type: ignore[arg-type]
+                api_key=get_api_key("OPENAI_API_KEY"),  # type: ignore[arg-type]
                 temperature=0.2,
             )
             prompt = ChatPromptTemplate.from_messages([
