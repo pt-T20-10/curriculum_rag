@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
+import { FiEye, FiEyeOff } from 'react-icons/fi'
 import { Navbar } from '../../components/layout/Navbar'
 import { AdminNavigation } from '../../components/layout/AdminNavigation'
 import { configAPI } from '../../api/config'
@@ -119,7 +120,18 @@ function SaveConfirmModal({ changes, overrideCounts, onConfirm, onCancel }) {
 // ---------------------------------------------------------------------------
 // Parameter field — free editing, no per-field modal
 // ---------------------------------------------------------------------------
-function AdminParamField({ param, pendingValue, savedValue, defaultValue, overrideCount, onChange, onReset }) {
+function AdminParamField({
+  param,
+  pendingValue,
+  savedValue,
+  defaultValue,
+  overrideCount,
+  isRevealing,
+  onChange,
+  onReset,
+  onReveal,
+}) {
+  const [showSensitiveValue, setShowSensitiveValue] = useState(false)
   const isMaskedSensitive = param.sensitive && savedValue === MASKED_VALUE && pendingValue === undefined
   const effectiveValue = isMaskedSensitive ? ''
     : pendingValue !== undefined ? pendingValue
@@ -140,13 +152,37 @@ function AdminParamField({ param, pendingValue, savedValue, defaultValue, overri
 
   const commonCls = `w-full px-3 py-2 rounded-lg text-sm border focus:outline-none focus:ring-2 focus:ring-primary ${borderClass}`
 
+  const handleSensitiveVisibilityToggle = async () => {
+    const shouldShow = !showSensitiveValue
+    if (shouldShow && isMaskedSensitive) {
+      const revealed = await onReveal(param.key)
+      if (!revealed) return
+    }
+    setShowSensitiveValue(shouldShow)
+  }
+
   const renderInput = () => {
     if (param.sensitive) {
       return (
-        <input type="password" value={effectiveValue}
-          onChange={e => onChange(e.target.value)}
-          placeholder={savedValue === MASKED_VALUE ? 'Đã có giá trị, nhập giá trị mới để thay đổi' : 'Nhập giá trị'}
-          className={commonCls} />
+        <div className="relative">
+          <input type={showSensitiveValue ? 'text' : 'password'} value={effectiveValue}
+            onChange={e => onChange(e.target.value)}
+            placeholder={savedValue === MASKED_VALUE ? 'Đã có giá trị, nhập giá trị mới để thay đổi' : 'Nhập giá trị'}
+            className={`${commonCls} pr-10`} />
+          <button
+            type="button"
+            tabIndex={-1}
+            onClick={handleSensitiveVisibilityToggle}
+            disabled={isRevealing}
+            className="absolute inset-y-0 right-0 flex items-center px-3 text-gray-400 hover:text-gray-600 transition-colors disabled:cursor-wait disabled:opacity-70"
+            title={isRevealing ? 'Đang tải giá trị' : showSensitiveValue ? 'Ẩn giá trị' : 'Hiện giá trị'}
+            aria-label={isRevealing ? 'Đang tải giá trị' : showSensitiveValue ? 'Ẩn giá trị' : 'Hiện giá trị'}
+          >
+            {isRevealing
+              ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-gray-500" />
+              : showSensitiveValue ? <FiEyeOff className="h-4 w-4" /> : <FiEye className="h-4 w-4" />}
+          </button>
+        </div>
       )
     }
     if (param.type === 'bool') {
@@ -308,6 +344,7 @@ export function AdminSystemConfigPage() {
   const [overrideCounts, setOverrideCounts] = useState({})
   const [auditLog, setAuditLog] = useState([])
   const [pending, setPending] = useState({})
+  const [revealingKeys, setRevealingKeys] = useState({})
 
   const [showSaveConfirm, setShowSaveConfirm] = useState(false)
 
@@ -336,6 +373,44 @@ export function AdminSystemConfigPage() {
   useEffect(() => { load() }, [load])
 
   const getDefault = (key) => registry?.parameters?.[key]?.default
+
+  const handleRevealSensitive = useCallback(async (key) => {
+    if (systemConfig[key] !== MASKED_VALUE) return true
+
+    setApiError('')
+    setRevealingKeys(prev => ({ ...prev, [key]: true }))
+    try {
+      const res = await configAPI.getSystemConfig({ revealSensitive: true, revealKey: key })
+      const revealedConfig = res.data.config || {}
+      const revealedValue = revealedConfig[key]
+
+      if (revealedValue === undefined || revealedValue === MASKED_VALUE) {
+        setApiError('Không thể tải raw secret cho tham số này.')
+        return false
+      }
+
+      setSystemConfig(prev => ({ ...prev, [key]: revealedValue }))
+      setPending(prev => {
+        const next = { ...prev }
+        if (next[key] === revealedValue) {
+          delete next[key]
+        }
+        return next
+      })
+
+      return true
+    } catch (e) {
+      const detail = e.response?.data?.detail
+      setApiError(typeof detail === 'object' ? JSON.stringify(detail) : (detail || 'Không thể tải raw secret.'))
+      return false
+    } finally {
+      setRevealingKeys(prev => {
+        const next = { ...prev }
+        delete next[key]
+        return next
+      })
+    }
+  }, [systemConfig])
 
   const handleChange = (param, newValue) => {
     const key = param.key
@@ -466,8 +541,10 @@ export function AdminSystemConfigPage() {
                       savedValue={systemConfig[param.key]}
                       defaultValue={param.default}
                       overrideCount={overrideCounts[param.key] || 0}
+                      isRevealing={Boolean(revealingKeys[param.key])}
                       onChange={(val) => handleChange(param, val)}
                       onReset={() => handleReset(param.key)}
+                      onReveal={handleRevealSensitive}
                     />
                   ))}
                 </GroupAccordion>

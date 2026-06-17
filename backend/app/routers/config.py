@@ -17,7 +17,7 @@ import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -67,6 +67,27 @@ def _mask_sensitive_raw(key: str, raw: Optional[str]) -> Optional[str]:
     except (json.JSONDecodeError, TypeError):
         decoded = raw
     return MASKED_VALUE if decoded else raw
+
+
+def _build_admin_system_config(
+    admin_registry: Dict[str, Dict[str, Any]],
+    system_overrides: Dict[str, Any],
+    reveal_sensitive: bool = False,
+    reveal_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build admin-visible system config, optionally revealing sensitive values."""
+    config: Dict[str, Any] = {}
+    for key, entry in admin_registry.items():
+        try:
+            base_value = getattr(settings, key, entry["default"])
+        except Exception:
+            base_value = entry["default"]
+
+        value = system_overrides.get(key, base_value)
+        reveal_this_key = reveal_sensitive and (reveal_key is None or reveal_key == key)
+        config[key] = MASKED_VALUE if (entry.get("sensitive") and value and not reveal_this_key) else value
+
+    return config
 
 
 def _coerce(key: str, value: Any) -> Any:
@@ -374,28 +395,32 @@ async def reset_user_overrides(
 
 @router.get("/config/admin/system", response_model=SystemConfigResponse, summary="System-level config (admin only)")
 async def get_system_config(
+    reveal_sensitive: bool = Query(
+        False,
+        description="Return raw sensitive values for admins instead of masked placeholders.",
+    ),
+    reveal_key: Optional[str] = Query(
+        None,
+        description="When revealing sensitive values, reveal only this parameter key.",
+    ),
     admin_id: int = Depends(require_admin),
     db: AsyncSession = Depends(get_async_db),
 ):
     await _require_admin_user(db, admin_id)
     system_overrides = await _load_system_config(db)
+    admin_registry = get_admin_registry()
 
-    # Build full picture: every admin-visible param with its current effective value
-    config: Dict[str, Any] = {}
-    for key, entry in get_admin_registry().items():
-        try:
-            base_value = getattr(settings, key, entry["default"])
-        except Exception:
-            base_value = entry["default"]
+    if reveal_key is not None and reveal_key not in admin_registry:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Unknown parameter: {reveal_key}")
 
-        value = system_overrides.get(key, base_value)
-
-        if entry.get("sensitive") and value:
-            config[key] = "••••••••"
-        else:
-            config[key] = value
-
-    return SystemConfigResponse(config=config)
+    return SystemConfigResponse(
+        config=_build_admin_system_config(
+            admin_registry,
+            system_overrides,
+            reveal_sensitive=reveal_sensitive,
+            reveal_key=reveal_key,
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -420,7 +445,8 @@ async def update_system_config(
         if entry.get("sensitive"):
             if raw_value == MASKED_VALUE:
                 continue
-            # Allow updating sensitive params (value is stored, never returned)
+            # Allow updating sensitive params. They are masked by default and
+            # revealed only when an admin explicitly requests it.
             continue
         value = _coerce(key, raw_value)
         err = _validate(key, value)
@@ -479,16 +505,7 @@ async def update_system_config(
 
     # Return fresh state
     system_overrides = await _load_system_config(db)
-    config: Dict[str, Any] = {}
-    for key, entry in admin_registry.items():
-        try:
-            base_value = getattr(settings, key, entry["default"])
-        except Exception:
-            base_value = entry["default"]
-        value = system_overrides.get(key, base_value)
-        config[key] = "••••••••" if (entry.get("sensitive") and value) else value
-
-    return SystemConfigResponse(config=config)
+    return SystemConfigResponse(config=_build_admin_system_config(admin_registry, system_overrides))
 
 
 # ---------------------------------------------------------------------------

@@ -13,7 +13,12 @@ export const configAPI = {
   resetUserOverrides: () => apiClient.delete('/config/user/advanced'),
 
   // Admin system config
-  getSystemConfig: () => apiClient.get('/config/admin/system'),
+  getSystemConfig: (options = {}) => apiClient.get('/config/admin/system', {
+    params: {
+      ...(options.revealSensitive ? { reveal_sensitive: true } : {}),
+      ...(options.revealKey ? { reveal_key: options.revealKey } : {}),
+    },
+  }),
   updateSystemConfig: (updates) => apiClient.put('/config/admin/system', { updates }),
   getAuditLog: (limit = 20) => apiClient.get('/config/admin/system/audit', { params: { limit } }),
   getOverrideCounts: () => apiClient.get('/config/admin/system/overrides'),
