@@ -1,3 +1,5 @@
+import { useTranslation } from 'react-i18next'
+
 export function SubStageCard({ 
   subStages, 
   chapter, 
@@ -5,21 +7,24 @@ export function SubStageCard({
   totalChapters,
   curriculumData  // ⭐ NEW: For calculating subsections
 }) {
+  const { t } = useTranslation()
   // Calculate subsections from curriculum if available
   const currentChapterSubsections = curriculumData?.chapters?.[chapter]?.subsections?.length || 0
   
   const icons = {
     researcher: '🔍',
+    retriever: '🔎',
     writer: '✍️',
     reviewer: '👁️',
     illustrator: '🎨',
   }
   
   const labels = {
-    researcher: 'Nghiên cứu',
-    writer: 'Viết nội dung',
-    reviewer: 'Kiểm tra',
-    illustrator: 'Hình ảnh',
+    researcher: t('textbook.workflow.researcher'),
+    retriever: t('textbook.workflow.retriever'),
+    writer: t('textbook.workflow.writer'),
+    reviewer: t('textbook.workflow.reviewer'),
+    illustrator: t('textbook.workflow.illustrator'),
   }
   
   const stateSymbols = {
@@ -31,7 +36,7 @@ export function SubStageCard({
   const anyActive = Object.values(subStages).some(s => s === 'active')
   const cardClass = anyActive ? 'border-l-4 border-l-blue-500 bg-blue-50' : 'border-l-4 border-l-gray-300 bg-gray-50'
   const badgeClass = anyActive ? 'bg-blue-100 text-blue-800 border border-blue-300' : 'bg-gray-100 text-gray-600'
-  const badgeText = anyActive ? '⏳ Đang xử lý' : '⏸️ Chờ xử lý'
+  const badgeText = anyActive ? `⏳ ${t('textbook.workflow.active')}` : `⏸️ ${t('textbook.workflow.pending')}`
 
   return (
     <div className={`p-4 rounded-lg border ${cardClass} mb-3`}>
@@ -39,7 +44,12 @@ export function SubStageCard({
         <div>
           <span className="text-lg">⚙️</span>
           <span className="ml-2 font-semibold">
-            Chương {chapter + 1}/{totalChapters} — Mục {subsection + 1}/{currentChapterSubsections}
+            {t('textbook.workflow.chapterSubsectionProgress', {
+              chapter: chapter + 1,
+              total: totalChapters,
+              subsection: subsection + 1,
+              subsectionTotal: currentChapterSubsections,
+            })}
           </span>
         </div>
         <span className={`px-3 py-1 rounded-full text-xs font-semibold ${badgeClass}`}>

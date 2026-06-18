@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { FiEye, FiEyeOff } from 'react-icons/fi'
 import { Navbar } from '../../components/layout/Navbar'
 import { AdminNavigation } from '../../components/layout/AdminNavigation'
 import { configAPI } from '../../api/config'
+import { translateConfigGroup, translateConfigParam } from '../../utils/configTranslations'
 
 const MASKED_VALUE = '••••••••'
 
@@ -43,6 +45,7 @@ function Tooltip({ text }) {
 // Batch save confirm modal — shows ALL pending changes with admin warning
 // ---------------------------------------------------------------------------
 function SaveConfirmModal({ changes, overrideCounts, onConfirm, onCancel }) {
+  const { t } = useTranslation()
   const totalAffectedUsers = changes.reduce((sum, c) => sum + (overrideCounts[c.key] || 0), 0)
   const displayValue = (change, value) => change.sensitive && value ? MASKED_VALUE : String(value)
 
@@ -56,8 +59,8 @@ function SaveConfirmModal({ changes, overrideCounts, onConfirm, onCancel }) {
             </svg>
           </div>
           <div>
-            <h3 className="text-base font-semibold text-gray-900">Xác nhận thay đổi mặc định hệ thống?</h3>
-            <p className="text-xs text-gray-500 mt-0.5">{changes.length} tham số sẽ được cập nhật trên toàn hệ thống</p>
+            <h3 className="text-base font-semibold text-gray-900">{t('admin.config.confirmTitle')}</h3>
+            <p className="text-xs text-gray-500 mt-0.5">{t('admin.config.confirmCount', { count: changes.length })}</p>
           </div>
         </div>
 
@@ -66,10 +69,10 @@ function SaveConfirmModal({ changes, overrideCounts, onConfirm, onCancel }) {
           <table className="w-full text-xs">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200">
-                <th className="text-left px-3 py-2 font-medium text-gray-600">Tham số</th>
-                <th className="text-left px-3 py-2 font-medium text-gray-600">Giá trị cũ</th>
-                <th className="text-left px-3 py-2 font-medium text-gray-600">Giá trị mới</th>
-                <th className="text-right px-3 py-2 font-medium text-gray-600">Ghi đè người dùng</th>
+                <th className="text-left px-3 py-2 font-medium text-gray-600">{t('admin.config.param')}</th>
+                <th className="text-left px-3 py-2 font-medium text-gray-600">{t('admin.config.oldValue')}</th>
+                <th className="text-left px-3 py-2 font-medium text-gray-600">{t('admin.config.newValue')}</th>
+                <th className="text-right px-3 py-2 font-medium text-gray-600">{t('admin.config.userOverrides')}</th>
               </tr>
             </thead>
             <tbody>
@@ -94,22 +97,20 @@ function SaveConfirmModal({ changes, overrideCounts, onConfirm, onCancel }) {
 
         {/* Admin warning */}
         <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-5 text-xs text-red-800 space-y-1">
-          <p className="font-semibold">Thay đổi này sẽ ảnh hưởng đến TẤT CẢ người dùng chưa đặt ghi đè cá nhân.</p>
+          <p className="font-semibold">{t('admin.config.affectAll')}</p>
           {totalAffectedUsers > 0 && (
-            <p>
-              Tổng cộng <strong>{totalAffectedUsers}</strong> ghi đè người dùng hiện có sẽ vẫn được ưu tiên hơn giá trị mới.
-            </p>
+            <p>{t('admin.config.overrideInfo', { count: totalAffectedUsers })}</p>
           )}
         </div>
 
         <div className="flex gap-3">
           <button type="button" onClick={onCancel}
             className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors">
-            Hủy, tiếp tục chỉnh sửa
+            {t('admin.config.cancelEdit')}
           </button>
           <button type="button" onClick={onConfirm}
             className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-semibold hover:bg-red-700 transition-colors">
-            Xác nhận thay đổi toàn hệ thống
+            {t('admin.config.confirmSystem')}
           </button>
         </div>
       </div>
@@ -131,6 +132,7 @@ function AdminParamField({
   onReset,
   onReveal,
 }) {
+  const { t } = useTranslation()
   const [showSensitiveValue, setShowSensitiveValue] = useState(false)
   const isMaskedSensitive = param.sensitive && savedValue === MASKED_VALUE && pendingValue === undefined
   const effectiveValue = isMaskedSensitive ? ''
@@ -167,7 +169,7 @@ function AdminParamField({
         <div className="relative">
           <input type={showSensitiveValue ? 'text' : 'password'} value={effectiveValue}
             onChange={e => onChange(e.target.value)}
-            placeholder={savedValue === MASKED_VALUE ? 'Đã có giá trị, nhập giá trị mới để thay đổi' : 'Nhập giá trị'}
+            placeholder={savedValue === MASKED_VALUE ? t('admin.config.secretPlaceholder') : t('admin.config.valuePlaceholder')}
             className={`${commonCls} pr-10`} />
           <button
             type="button"
@@ -175,8 +177,8 @@ function AdminParamField({
             onClick={handleSensitiveVisibilityToggle}
             disabled={isRevealing}
             className="absolute inset-y-0 right-0 flex items-center px-3 text-gray-400 hover:text-gray-600 transition-colors disabled:cursor-wait disabled:opacity-70"
-            title={isRevealing ? 'Đang tải giá trị' : showSensitiveValue ? 'Ẩn giá trị' : 'Hiện giá trị'}
-            aria-label={isRevealing ? 'Đang tải giá trị' : showSensitiveValue ? 'Ẩn giá trị' : 'Hiện giá trị'}
+            title={isRevealing ? t('admin.config.revealing') : showSensitiveValue ? t('admin.config.hideValue') : t('admin.config.showValue')}
+            aria-label={isRevealing ? t('admin.config.revealing') : showSensitiveValue ? t('admin.config.hideValue') : t('admin.config.showValue')}
           >
             {isRevealing
               ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-gray-500" />
@@ -227,30 +229,29 @@ function AdminParamField({
         <Tooltip text={param.description} />
         {overrideCount > 0 && (
           <span className="text-xs px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 font-medium">
-            {overrideCount} ghi đè người dùng
+            {t('admin.config.overrides', { count: overrideCount })}
           </span>
         )}
         {isPending && (
-          <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium">Chưa lưu</span>
+          <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium">{t('app.unsaved')}</span>
         )}
         {isModified && !isPending && (
-          <span className="text-xs px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-medium">Đã sửa</span>
+          <span className="text-xs px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-medium">{t('app.edited')}</span>
         )}
         {showReset && (
           <button type="button" onClick={onReset}
             className="ml-auto text-xs text-gray-400 hover:text-red-500 transition-colors flex items-center gap-1"
-            title="Khôi phục về mặc định config.py">
+            title={t('admin.config.restoreConfigDefault')}>
             <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
-            Khôi phục mặc định
+            {t('admin.config.restoreDefault')}
           </button>
         )}
       </div>
       {param.min != null && param.max != null && param.type !== 'bool' && !param.sensitive && (
         <p className="text-xs text-gray-400 mb-1">
-          Phạm vi: {param.min} – {param.max}&nbsp;·&nbsp;Mặc định:{' '}
-          <span className="font-mono">{String(defaultValue)}</span>
+          {t('admin.config.range', { min: param.min, max: param.max, defaultValue: String(defaultValue) })}
         </p>
       )}
       {renderInput()}
@@ -285,26 +286,29 @@ function GroupAccordion({ title, description, children, defaultOpen = false }) {
 // Audit log table
 // ---------------------------------------------------------------------------
 function AuditTable({ entries }) {
+  const { t, i18n } = useTranslation()
+  const locale = i18n.language === 'vi' ? 'vi-VN' : 'en-US'
+
   if (entries.length === 0) {
-    return <p className="text-sm text-gray-400 text-center py-6">Chưa có thay đổi nào được ghi lại.</p>
+    return <p className="text-sm text-gray-400 text-center py-6">{t('admin.config.noHistory')}</p>
   }
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-xs">
         <thead>
           <tr className="border-b border-gray-200 text-gray-500">
-            <th className="text-left pb-2 pr-3 font-medium">Thời gian</th>
-            <th className="text-left pb-2 pr-3 font-medium">Quản trị viên</th>
-            <th className="text-left pb-2 pr-3 font-medium">Tham số</th>
-            <th className="text-left pb-2 pr-3 font-medium">Giá trị cũ</th>
-            <th className="text-left pb-2 font-medium">Giá trị mới</th>
+            <th className="text-left pb-2 pr-3 font-medium">{t('admin.config.time')}</th>
+            <th className="text-left pb-2 pr-3 font-medium">{t('admin.config.admin')}</th>
+            <th className="text-left pb-2 pr-3 font-medium">{t('admin.config.param')}</th>
+            <th className="text-left pb-2 pr-3 font-medium">{t('admin.config.oldValue')}</th>
+            <th className="text-left pb-2 font-medium">{t('admin.config.newValue')}</th>
           </tr>
         </thead>
         <tbody>
           {entries.map(entry => (
             <tr key={entry.id} className="border-b border-gray-100 last:border-0">
               <td className="py-2 pr-3 text-gray-500 whitespace-nowrap">
-                {new Date(entry.created_at).toLocaleString('vi-VN')}
+                {new Date(entry.created_at).toLocaleString(locale)}
               </td>
               <td className="py-2 pr-3 text-gray-700 truncate max-w-[140px]">
                 {entry.admin_email || `#${entry.admin_id}`}
@@ -334,6 +338,7 @@ const GROUP_ORDER = ['api_keys', 'rag', 'generation', 'ingestion', 'domain_caps'
 // Page
 // ---------------------------------------------------------------------------
 export function AdminSystemConfigPage() {
+  const { t } = useTranslation()
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [saveSuccess, setSaveSuccess] = useState(false)
@@ -349,6 +354,7 @@ export function AdminSystemConfigPage() {
   const [showSaveConfirm, setShowSaveConfirm] = useState(false)
 
   const load = useCallback(async () => {
+    await Promise.resolve()
     setLoading(true)
     try {
       const [regRes, sysRes, overRes, auditRes] = await Promise.all([
@@ -364,13 +370,16 @@ export function AdminSystemConfigPage() {
       setOverrideCounts(countMap)
       setAuditLog(auditRes.data || [])
     } catch {
-      setApiError('Không thể tải cấu hình hệ thống.')
+      setApiError(t('admin.config.loadError'))
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [t])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    const timer = setTimeout(() => { load() }, 0)
+    return () => clearTimeout(timer)
+  }, [load])
 
   const getDefault = (key) => registry?.parameters?.[key]?.default
 
@@ -385,7 +394,7 @@ export function AdminSystemConfigPage() {
       const revealedValue = revealedConfig[key]
 
       if (revealedValue === undefined || revealedValue === MASKED_VALUE) {
-        setApiError('Không thể tải raw secret cho tham số này.')
+        setApiError(t('admin.config.revealError'))
         return false
       }
 
@@ -401,7 +410,7 @@ export function AdminSystemConfigPage() {
       return true
     } catch (e) {
       const detail = e.response?.data?.detail
-      setApiError(typeof detail === 'object' ? JSON.stringify(detail) : (detail || 'Không thể tải raw secret.'))
+      setApiError(typeof detail === 'object' ? JSON.stringify(detail) : (detail || t('admin.config.rawSecretError')))
       return false
     } finally {
       setRevealingKeys(prev => {
@@ -410,7 +419,7 @@ export function AdminSystemConfigPage() {
         return next
       })
     }
-  }, [systemConfig])
+  }, [systemConfig, t])
 
   const handleChange = (param, newValue) => {
     const key = param.key
@@ -443,8 +452,9 @@ export function AdminSystemConfigPage() {
     if (!registry) return []
     return Object.entries(pending).map(([key, newValue]) => {
       const param = registry.parameters[key]
+      const translatedParam = translateConfigParam(param, t)
       const oldValue = systemConfig[key] !== undefined ? systemConfig[key] : getDefault(key)
-      return { key, label: param?.label ?? key, oldValue, newValue, sensitive: Boolean(param?.sensitive) }
+      return { key, label: translatedParam?.label ?? key, oldValue, newValue, sensitive: Boolean(param?.sensitive) }
     })
   }
 
@@ -473,7 +483,7 @@ export function AdminSystemConfigPage() {
       setAuditLog(auditRes.data || [])
     } catch (e) {
       const detail = e.response?.data?.detail
-      setApiError(typeof detail === 'object' ? JSON.stringify(detail) : (detail || 'Không thể lưu.'))
+      setApiError(typeof detail === 'object' ? JSON.stringify(detail) : (detail || t('admin.config.saveError')))
     } finally {
       setSaving(false)
     }
@@ -496,16 +506,15 @@ export function AdminSystemConfigPage() {
         <div className="mb-6 flex items-center gap-2 text-sm text-gray-500">
           <Link to="/admin" className="hover:text-primary transition-colors">Admin</Link>
           <span>/</span>
-          <span className="text-gray-700 font-medium">Cấu hình hệ thống</span>
+          <span className="text-gray-700 font-medium">{t('admin.config.breadcrumb')}</span>
         </div>
 
         {/* Header + nav */}
         <div className="mb-8 flex items-start justify-between flex-wrap gap-4">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">Cấu hình hệ thống</h1>
+            <h1 className="text-2xl font-bold text-gray-900">{t('admin.config.title')}</h1>
             <p className="text-sm text-gray-500 mt-1 max-w-xl">
-              Mặc định hệ thống — Thay đổi ở đây sẽ trở thành mặc định mới cho tất cả người dùng.
-              Người dùng vẫn có thể ghi đè trong phần Cài đặt nâng cao của họ.
+              {t('admin.config.subtitle')}
             </p>
           </div>
         </div>
@@ -520,23 +529,25 @@ export function AdminSystemConfigPage() {
                 <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
               </svg>
               <p className="text-xs text-red-800">
-                <span className="font-semibold">Chú ý:</span> Thay đổi tại đây ảnh hưởng đến tất cả người dùng không có ghi đè cá nhân.
-                Xem lại kỹ trước khi lưu. Số <span className="font-semibold text-purple-700">ghi đè người dùng</span> trên mỗi tham số hiển thị số tài khoản đang dùng giá trị riêng.
+                <span className="font-semibold">{t('admin.config.warningTitle')}</span> {t('admin.config.warningText')}
               </p>
             </div>
 
             {GROUP_ORDER.map(groupKey => {
               const group = registry.groups[groupKey]
               if (!group) return null
+              const translatedGroup = translateConfigGroup(groupKey, group, t)
               const params = groupedParams(groupKey)
               if (params.length === 0) return null
               return (
-                <GroupAccordion key={groupKey} title={group.label} description={group.description}
+                <GroupAccordion key={groupKey} title={translatedGroup.label} description={translatedGroup.description}
                   defaultOpen={groupKey === 'api_keys'}>
-                  {params.map(param => (
+                  {params.map(param => {
+                    const translatedParam = translateConfigParam(param, t)
+                    return (
                     <AdminParamField
                       key={param.key}
-                      param={param}
+                      param={translatedParam}
                       pendingValue={pending[param.key]}
                       savedValue={systemConfig[param.key]}
                       defaultValue={param.default}
@@ -546,7 +557,8 @@ export function AdminSystemConfigPage() {
                       onReset={() => handleReset(param.key)}
                       onReveal={handleRevealSensitive}
                     />
-                  ))}
+                    )
+                  })}
                 </GroupAccordion>
               )
             })}
@@ -560,7 +572,7 @@ export function AdminSystemConfigPage() {
             {saveSuccess && (
               <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg">
                 <p className="text-sm text-green-700">
-                  Đã lưu cấu hình hệ thống. Thay đổi có hiệu lực ngay cho tất cả yêu cầu mới.
+                  {t('admin.config.saveSuccess')}
                 </p>
               </div>
             )}
@@ -570,8 +582,8 @@ export function AdminSystemConfigPage() {
               <div className="bg-white border border-gray-200 rounded-xl px-5 py-3 shadow-lg flex items-center justify-between">
                 <span className="text-sm text-gray-500">
                   {pendingCount > 0
-                    ? <span className="text-amber-600 font-medium">{pendingCount} thay đổi chưa lưu</span>
-                    : 'Đã lưu tất cả thay đổi'}
+                    ? <span className="text-amber-600 font-medium">{t('admin.config.pendingChanges', { count: pendingCount })}</span>
+                    : t('app.allSaved')}
                 </span>
                 <button type="button" onClick={handleSaveClick}
                   disabled={saving || pendingCount === 0}
@@ -580,14 +592,14 @@ export function AdminSystemConfigPage() {
                       ? 'bg-primary text-white hover:bg-blue-600'
                       : 'bg-gray-100 text-gray-400 cursor-not-allowed'
                   }`}>
-                  {saving ? 'Đang lưu…' : 'Lưu mặc định hệ thống'}
+                  {saving ? t('app.saving') : t('admin.config.saveDefaults')}
                 </button>
               </div>
             </div>
 
             {/* Audit log */}
             <div className="mt-10">
-              <h2 className="text-base font-semibold text-gray-800 mb-3">Nhật ký thay đổi cấu hình</h2>
+              <h2 className="text-base font-semibold text-gray-800 mb-3">{t('admin.config.historyTitle')}</h2>
               <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm">
                 <AuditTable entries={auditLog} />
               </div>

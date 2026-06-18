@@ -1,4 +1,9 @@
+import { useTranslation } from 'react-i18next'
+import { translateProgressText } from '../../utils/progressText'
+
 export function StopWarningModal({ isOpen, onClose, onConfirm, currentProgress }) {
+  const { t } = useTranslation()
+
   if (!isOpen) return null
 
   return (
@@ -20,31 +25,31 @@ export function StopWarningModal({ isOpen, onClose, onConfirm, currentProgress }
 
         {/* Title */}
         <h3 className="text-xl font-bold text-gray-900 text-center mb-2">
-          ⚠️ Dừng tạo giáo trình?
+          ⚠️ {t('textbook.stopModal.title')}
         </h3>
 
         {/* Message */}
         <div className="mb-6 space-y-2">
           <p className="text-gray-700 text-center">
-            Bạn có chắc chắn muốn dừng quá trình này?
+            {t('textbook.stopModal.description')}
           </p>
           
           {currentProgress && (
             <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
               <p className="text-sm text-yellow-800 font-medium mb-1">
-                📊 Tiến độ hiện tại:
+                📊 {t('textbook.stopModal.currentProgress')}:
               </p>
               <p className="text-sm text-yellow-700">
-                {currentProgress}
+                {translateProgressText(currentProgress, t)}
               </p>
             </div>
           )}
 
           <p className="text-sm text-red-600 font-medium text-center">
-            ⚠️ Toàn bộ tiến độ sẽ bị mất và không thể khôi phục!
+            ⚠️ {t('textbook.stopModal.lostWarning')}
           </p>
           <p className="text-xs text-gray-500 text-center">
-            Credit đã sử dụng sẽ không được hoàn lại
+            {t('textbook.stopModal.creditWarning')}
           </p>
         </div>
 
@@ -54,7 +59,7 @@ export function StopWarningModal({ isOpen, onClose, onConfirm, currentProgress }
             onClick={onClose}
             className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 font-medium rounded-lg hover:bg-gray-300 transition-colors"
           >
-            ❌ Hủy
+            ❌ {t('textbook.stopModal.cancel')}
           </button>
           <button
             onClick={() => {
@@ -63,7 +68,7 @@ export function StopWarningModal({ isOpen, onClose, onConfirm, currentProgress }
             }}
             className="flex-1 px-4 py-2 bg-red-600 text-white font-medium rounded-lg hover:bg-red-700 transition-colors"
           >
-            ⛔ Dừng lại
+            ⛔ {t('textbook.stopModal.confirm')}
           </button>
         </div>
       </div>

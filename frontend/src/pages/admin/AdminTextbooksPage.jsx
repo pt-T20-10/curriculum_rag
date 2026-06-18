@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
 import { adminAPI } from '../../api/admin'
 import { Navbar } from '../../components/layout/Navbar'
 import { AdminNavigation } from '../../components/layout/AdminNavigation'
@@ -25,22 +26,9 @@ const STATUS_COLOR = {
   pending: 'yellow',
 }
 
-const STATUS_LABEL = {
-  completed: 'Hoàn thành',
-  failed: 'Thất bại',
-  generating: 'Đang tạo',
-  pending: 'Chờ',
-}
-
-const CONTENT_TYPE_LABEL = {
-  technical: 'Kỹ thuật',
-  academic: 'Học thuật',
-  general: 'Tổng hợp',
-  professional: 'Chuyên nghiệp',
-  simplified: 'Đơn giản hóa',
-}
-
 export function AdminTextbooksPage() {
+  const { i18n, t } = useTranslation()
+  const locale = i18n.resolvedLanguage === 'en' ? 'en-US' : 'vi-VN'
   const [textbooks, setTextbooks] = useState([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -54,6 +42,7 @@ export function AdminTextbooksPage() {
   const PAGE_SIZE = 20
 
   const load = useCallback(async () => {
+    await Promise.resolve()
     setLoading(true)
     setError(null)
     try {
@@ -66,13 +55,16 @@ export function AdminTextbooksPage() {
       setTextbooks(res.data.items)
       setTotal(res.data.total)
     } catch (err) {
-      setError(err.response?.data?.detail || 'Không thể tải dữ liệu')
+      setError(err.response?.data?.detail || t('admin.textbooks.loadError'))
     } finally {
       setLoading(false)
     }
-  }, [page, search, statusFilter, dateFrom, dateTo])
+  }, [page, search, statusFilter, dateFrom, dateTo, t])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    const timer = setTimeout(() => { load() }, 0)
+    return () => clearTimeout(timer)
+  }, [load])
 
   const handleSearch = (e) => {
     e.preventDefault()
@@ -99,8 +91,8 @@ export function AdminTextbooksPage() {
 
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-2xl font-bold text-gray-800">Quản lý giáo trình</h1>
-            <p className="text-sm text-gray-500 mt-0.5">Tổng: {total} giáo trình</p>
+            <h1 className="text-2xl font-bold text-gray-800">{t('admin.textbooks.title')}</h1>
+            <p className="text-sm text-gray-500 mt-0.5">{t('admin.textbooks.total', { count: total })}</p>
           </div>
         </div>
 
@@ -108,31 +100,31 @@ export function AdminTextbooksPage() {
         <form onSubmit={handleSearch} className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 mb-6">
           <div className="flex flex-wrap gap-3 items-end">
             <div className="flex-1 min-w-[200px]">
-              <label className="block text-xs text-gray-500 mb-1">Tìm kiếm</label>
+              <label className="block text-xs text-gray-500 mb-1">{t('admin.textbooks.searchLabel')}</label>
               <input
                 type="text"
-                placeholder="Tiêu đề hoặc chủ đề..."
+                placeholder={t('admin.textbooks.searchPlaceholder')}
                 value={search}
                 onChange={e => setSearch(e.target.value)}
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
               />
             </div>
             <div>
-              <label className="block text-xs text-gray-500 mb-1">Trạng thái</label>
+              <label className="block text-xs text-gray-500 mb-1">{t('admin.textbooks.status')}</label>
               <select
                 value={statusFilter}
                 onChange={e => { setStatusFilter(e.target.value); setPage(1) }}
                 className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
               >
-                <option value="">Tất cả</option>
-                <option value="completed">Hoàn thành</option>
-                <option value="generating">Đang tạo</option>
-                <option value="pending">Chờ</option>
-                <option value="failed">Thất bại</option>
+                <option value="">{t('app.all')}</option>
+                <option value="completed">{t('textbook.status.completed')}</option>
+                <option value="generating">{t('textbook.status.generating')}</option>
+                <option value="pending">{t('textbook.status.pending')}</option>
+                <option value="failed">{t('textbook.status.failed')}</option>
               </select>
             </div>
             <div>
-              <label className="block text-xs text-gray-500 mb-1">Từ ngày</label>
+              <label className="block text-xs text-gray-500 mb-1">{t('app.fromDate')}</label>
               <input
                 type="date"
                 value={dateFrom}
@@ -141,7 +133,7 @@ export function AdminTextbooksPage() {
               />
             </div>
             <div>
-              <label className="block text-xs text-gray-500 mb-1">Đến ngày</label>
+              <label className="block text-xs text-gray-500 mb-1">{t('app.toDate')}</label>
               <input
                 type="date"
                 value={dateTo}
@@ -155,7 +147,7 @@ export function AdminTextbooksPage() {
                 type="submit"
                 className="px-4 py-2 bg-primary text-white rounded-lg text-sm hover:bg-primary/90"
               >
-                Tìm kiếm
+                {t('app.search')}
               </button>
               {hasActiveFilters && (
                 <button
@@ -163,7 +155,7 @@ export function AdminTextbooksPage() {
                   onClick={handleClearFilters}
                   className="px-3 py-2 border border-gray-300 text-gray-600 rounded-lg text-sm hover:bg-gray-50"
                 >
-                  Xóa bộ lọc
+                  {t('textbook.filter.clear')}
                 </button>
               )}
             </div>
@@ -180,14 +172,14 @@ export function AdminTextbooksPage() {
           <table className="w-full text-sm">
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
-                <th className="text-left px-4 py-3 text-gray-600 font-medium">Tiêu đề</th>
-                <th className="text-left px-4 py-3 text-gray-600 font-medium">Chủ đề</th>
-                <th className="text-left px-4 py-3 text-gray-600 font-medium">Loại nội dung</th>
-                <th className="text-left px-4 py-3 text-gray-600 font-medium">Người tạo</th>
-                <th className="text-left px-4 py-3 text-gray-600 font-medium">Trạng thái</th>
-                <th className="text-left px-4 py-3 text-gray-600 font-medium">Cấu hình</th>
+                <th className="text-left px-4 py-3 text-gray-600 font-medium">{t('admin.textbooks.titleColumn')}</th>
+                <th className="text-left px-4 py-3 text-gray-600 font-medium">{t('admin.textbooks.topic')}</th>
+                <th className="text-left px-4 py-3 text-gray-600 font-medium">{t('admin.textbooks.contentType')}</th>
+                <th className="text-left px-4 py-3 text-gray-600 font-medium">{t('admin.textbooks.creator')}</th>
+                <th className="text-left px-4 py-3 text-gray-600 font-medium">{t('app.status')}</th>
+                <th className="text-left px-4 py-3 text-gray-600 font-medium">{t('admin.textbooks.config')}</th>
                 <th className="text-left px-4 py-3 text-gray-600 font-medium">Credits</th>
-                <th className="text-left px-4 py-3 text-gray-600 font-medium">Ngày tạo</th>
+                <th className="text-left px-4 py-3 text-gray-600 font-medium">{t('app.createdAt')}</th>
               </tr>
             </thead>
             <tbody>
@@ -200,40 +192,40 @@ export function AdminTextbooksPage() {
               ) : textbooks.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="text-center py-12 text-gray-400">
-                    Không có giáo trình
+                    {t('admin.textbooks.noTextbooks')}
                   </td>
                 </tr>
               ) : (
-                textbooks.map(t => (
-                  <tr key={t.id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
+                textbooks.map(textbook => (
+                  <tr key={textbook.id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
                     <td className="px-4 py-3">
-                      <div className="font-medium text-gray-800 max-w-[180px] truncate" title={t.title}>
-                        {t.title}
+                      <div className="font-medium text-gray-800 max-w-[180px] truncate" title={textbook.title}>
+                        {textbook.title}
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-gray-600 max-w-[140px] truncate" title={t.topic}>
-                      {t.topic}
+                    <td className="px-4 py-3 text-gray-600 max-w-[140px] truncate" title={textbook.topic}>
+                      {textbook.topic}
                     </td>
                     <td className="px-4 py-3">
                       <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded text-xs font-medium">
-                        {CONTENT_TYPE_LABEL[t.content_type] || t.content_type || '—'}
+                        {textbook.content_type ? t(`textbook.contentType.${textbook.content_type}`, textbook.content_type) : '—'}
                       </span>
                     </td>
                     <td className="px-4 py-3">
-                      <div className="text-gray-800">{t.owner_name || '—'}</div>
-                      <div className="text-gray-400 text-xs">{t.owner_email}</div>
+                      <div className="text-gray-800">{textbook.owner_name || '—'}</div>
+                      <div className="text-gray-400 text-xs">{textbook.owner_email}</div>
                     </td>
                     <td className="px-4 py-3">
-                      <Badge color={STATUS_COLOR[t.status] || 'gray'}>
-                        {STATUS_LABEL[t.status] || t.status}
+                      <Badge color={STATUS_COLOR[textbook.status] || 'gray'}>
+                        {t(`textbook.status.${textbook.status}`, textbook.status)}
                       </Badge>
                     </td>
                     <td className="px-4 py-3 text-gray-600 text-xs">
-                      {t.num_chapters} chương · {t.content_level}
+                      {t('admin.textbooks.chaptersAndLevel', { chapters: textbook.num_chapters, level: textbook.content_level })}
                     </td>
-                    <td className="px-4 py-3 text-gray-700">{t.credits_used}</td>
+                    <td className="px-4 py-3 text-gray-700">{textbook.credits_used}</td>
                     <td className="px-4 py-3 text-gray-500 text-xs">
-                      {new Date(t.created_at).toLocaleDateString('vi-VN')}
+                      {new Date(textbook.created_at).toLocaleDateString(locale)}
                     </td>
                   </tr>
                 ))
@@ -245,7 +237,7 @@ export function AdminTextbooksPage() {
         {totalPages > 1 && (
           <div className="flex items-center justify-between mt-4">
             <p className="text-sm text-gray-500">
-              Trang {page} / {totalPages} ({total} giáo trình)
+              {t('admin.textbooks.pageInfo', { page, totalPages, total })}
             </p>
             <div className="flex gap-2">
               <button
@@ -253,14 +245,14 @@ export function AdminTextbooksPage() {
                 disabled={page === 1}
                 className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-40"
               >
-                ← Trước
+                ← {t('app.previous')}
               </button>
               <button
                 onClick={() => setPage(p => Math.min(totalPages, p + 1))}
                 disabled={page === totalPages}
                 className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-40"
               >
-                Sau →
+                {t('app.next')} →
               </button>
             </div>
           </div>

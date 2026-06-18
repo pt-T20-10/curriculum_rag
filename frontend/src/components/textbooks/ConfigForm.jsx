@@ -1,4 +1,20 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { CONTENT_LEVEL } from '../../constants/textbookOptions'
+
+const CONTENT_LEVEL_LABEL_KEYS = {
+  [CONTENT_LEVEL.SHORT]: 'textbook.form.levelShort',
+  [CONTENT_LEVEL.MEDIUM]: 'textbook.form.levelMedium',
+  [CONTENT_LEVEL.LONG]: 'textbook.form.levelLong',
+  [CONTENT_LEVEL.VERY_LONG]: 'textbook.form.levelVeryLong',
+}
+
+const CONTENT_LEVEL_HINT_KEYS = {
+  [CONTENT_LEVEL.SHORT]: 'textbook.form.levelShortHint',
+  [CONTENT_LEVEL.MEDIUM]: 'textbook.form.levelMediumHint',
+  [CONTENT_LEVEL.LONG]: 'textbook.form.levelLongHint',
+  [CONTENT_LEVEL.VERY_LONG]: 'textbook.form.levelVeryLongHint',
+}
 
 export function ConfigForm({
   onSubmit,
@@ -11,10 +27,11 @@ export function ConfigForm({
   currentTopic = '',
   submittedConfig = null // ⭐ NEW - actual submitted config
 }) {
+  const { t } = useTranslation()
   const [formData, setFormData] = useState({
     topic: '',
     num_chapters: 3,
-    content_level: 'Trung Bình',
+    content_level: CONTENT_LEVEL.MEDIUM,
     max_subsections_per_chapter: 5,
     enable_images: true
   })
@@ -46,14 +63,14 @@ export function ConfigForm({
         {/* Topic banner — always shows user's query immediately */}
         <div className="p-4 bg-blue-50 border border-blue-100 rounded-lg">
           <p className="text-xs font-semibold text-blue-500 uppercase tracking-wider mb-2">
-            📚 Đang tạo giáo trình
+            📚 {t('textbook.form.generating')}
           </p>
           <p className="font-bold text-gray-900 text-base leading-relaxed">
             {displayQuery || '…'}
           </p>
           {aiTitle && (
             <p className="text-xs text-blue-600 mt-2">
-              ✨ Tiêu đề: <span className="font-medium">{aiTitle}</span>
+              ✨ {t('textbook.form.aiTitle')}: <span className="font-medium">{aiTitle}</span>
             </p>
           )}
         </div>
@@ -71,29 +88,31 @@ export function ConfigForm({
           >
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
           </svg>
-          <span className="font-medium">⚙️ Cấu hình</span>
-          <span className="text-xs text-gray-500">(không thể thay đổi khi đang chạy)</span>
+          <span className="font-medium">⚙️ {t('textbook.form.config')}</span>
+          <span className="text-xs text-gray-500">({t('textbook.form.locked')})</span>
         </button>
 
         {configExpanded && (
           <div className="p-4 bg-gray-50 rounded-lg border border-gray-200 space-y-3 opacity-70">
             <div className="grid grid-cols-2 gap-3 text-sm">
               <div className="flex flex-col gap-0.5">
-                <span className="text-xs text-gray-500">Số chương</span>
+                <span className="text-xs text-gray-500">{t('textbook.form.chapters')}</span>
                 <span className="font-semibold text-gray-800">{submittedConfig?.num_chapters || formData.num_chapters}</span>
               </div>
               <div className="flex flex-col gap-0.5">
-                <span className="text-xs text-gray-500">Độ dài</span>
-                <span className="font-semibold text-gray-800">{submittedConfig?.content_level || formData.content_level}</span>
+                <span className="text-xs text-gray-500">{t('textbook.form.contentLength')}</span>
+                <span className="font-semibold text-gray-800">
+                  {t(CONTENT_LEVEL_LABEL_KEYS[submittedConfig?.content_level || formData.content_level] || 'textbook.form.levelMedium')}
+                </span>
               </div>
               <div className="flex flex-col gap-0.5">
-                <span className="text-xs text-gray-500">Mục/chương</span>
+                <span className="text-xs text-gray-500">{t('textbook.form.maxSubsections')}</span>
                 <span className="font-semibold text-gray-800">{submittedConfig?.max_subsections_per_chapter || formData.max_subsections_per_chapter}</span>
               </div>
               <div className="flex flex-col gap-0.5">
-                <span className="text-xs text-gray-500">Hình ảnh</span>
+                <span className="text-xs text-gray-500">{t('textbook.form.images')}</span>
                 <span className="font-semibold text-gray-800">
-                  {(submittedConfig?.enable_images !== undefined ? submittedConfig.enable_images : formData.enable_images) ? 'Có' : 'Không'}
+                  {(submittedConfig?.enable_images !== undefined ? submittedConfig.enable_images : formData.enable_images) ? t('app.yes') : t('app.no')}
                 </span>
               </div>
             </div>
@@ -108,20 +127,20 @@ export function ConfigForm({
       {/* Topic Input */}
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-2">
-          Chủ đề giáo trình <span className="text-red-500">*</span>
+          {t('textbook.form.topic')} <span className="text-red-500">*</span>
         </label>
         <textarea
           name="topic"
           value={formData.topic}
           onChange={handleChange}
-          placeholder="VD: Lập trình Python cho Data Science, Lịch sử Việt Nam hiện đại, ..."
+          placeholder={t('textbook.form.topicPlaceholder')}
           className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none transition-all"
           rows={3}
           disabled={loading}
           required
         />
         <p className="mt-1 text-xs text-gray-500">
-          Hãy cụ thể để có kết quả tốt nhất (VD: "Python cho Data Science" thay vì "Lập trình")
+          {t('textbook.form.topicHint')}
         </p>
       </div>
 
@@ -139,7 +158,7 @@ export function ConfigForm({
         >
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
         </svg>
-        <span className="font-medium">⚙️ Tùy chỉnh nâng cao</span>
+        <span className="font-medium">⚙️ {t('textbook.form.advanced')}</span>
       </button>
 
       {/* Advanced Config */}
@@ -148,7 +167,7 @@ export function ConfigForm({
           {/* Number of Chapters */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              Số chương
+              {t('textbook.form.chapters')}
             </label>
             <input
               type="number"
@@ -161,14 +180,14 @@ export function ConfigForm({
               disabled={loading}
             />
             <p className="mt-1 text-xs text-gray-500">
-              Từ 2-12 chương. Nhiều chương hơn = nội dung toàn diện hơn
+              {t('textbook.form.chaptersHint')}
             </p>
           </div>
 
           {/* Content Level */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              Độ dài nội dung
+              {t('textbook.form.contentLength')}
             </label>
             <select
               name="content_level"
@@ -177,23 +196,19 @@ export function ConfigForm({
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               disabled={loading}
             >
-              <option value="Ngắn">Ngắn (súc tích)</option>
-              <option value="Trung Bình">Trung Bình (cân bằng)</option>
-              <option value="Dài">Dài (chi tiết)</option>
-              <option value="Rất Dài">Rất Dài (toàn diện)</option>
+              {Object.entries(CONTENT_LEVEL_LABEL_KEYS).map(([value, labelKey]) => (
+                <option key={value} value={value}>{t(labelKey)}</option>
+              ))}
             </select>
             <p className="mt-1 text-xs text-gray-500">
-              {formData.content_level === 'Ngắn' && '~300-500 từ/mục (nhanh, ngắn gọn)'}
-              {formData.content_level === 'Trung Bình' && '~500-800 từ/mục (cân bằng chi tiết)'}
-              {formData.content_level === 'Dài' && '~800-1200 từ/mục (chi tiết, sâu sắc)'}
-              {formData.content_level === 'Rất Dài' && '~1200-1500 từ/mục (toàn diện nhất)'}
+              {t(CONTENT_LEVEL_HINT_KEYS[formData.content_level] || 'textbook.form.levelMediumHint')}
             </p>
           </div>
 
           {/* Subsections per Chapter */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              Số mục tối đa mỗi chương
+              {t('textbook.form.maxSubsections')}
             </label>
             <input
               type="number"
@@ -206,7 +221,7 @@ export function ConfigForm({
               disabled={loading}
             />
             <p className="mt-1 text-xs text-gray-500">
-              Từ 2-8 mục. Nhiều mục hơn = cấu trúc chi tiết hơn
+              {t('textbook.form.maxSubsectionsHint')}
             </p>
           </div>
 
@@ -223,7 +238,7 @@ export function ConfigForm({
                 disabled={loading}
               />
               <label htmlFor="enable_images" className="text-sm font-medium text-gray-700">
-                Tạo hình ảnh minh họa
+                {t('textbook.form.images')}
               </label>
             </div>
             
@@ -236,11 +251,10 @@ export function ConfigForm({
                   </svg>
                   <div className="flex-1">
                     <p className="text-sm font-medium text-yellow-800">
-                      ⚠️ Lưu ý về tính năng tạo hình ảnh
+                      ⚠️ {t('textbook.form.imageWarningTitle')}
                     </p>
                     <p className="text-xs text-yellow-700 mt-1">
-                      Hình ảnh được tạo bởi AI có thể không chính xác 100%. 
-                      Vui lòng kiểm tra và chỉnh sửa nếu cần thiết.
+                      {t('textbook.form.imageWarningText')}
                     </p>
                   </div>
                 </div>
@@ -256,7 +270,7 @@ export function ConfigForm({
           <p className="text-red-600 font-medium text-sm">❌ {error.message}</p>
           {error.suggestions && error.suggestions.length > 0 && (
             <div className="mt-2">
-              <p className="text-red-700 text-sm font-medium">💡 Gợi ý:</p>
+              <p className="text-red-700 text-sm font-medium">💡 {t('textbook.validationSuggestions')}</p>
               <ul className="mt-1 text-red-700 text-sm space-y-1">
                 {error.suggestions.map((suggestion, idx) => (
                   <li key={idx}>• {suggestion}</li>
@@ -271,9 +285,9 @@ export function ConfigForm({
       {user && (
         <div className="flex items-center justify-between p-3 bg-blue-50 border border-blue-200 rounded-lg">
           <span className="text-sm text-blue-900">
-            💳 Credits khả dụng: <span className="font-bold">{user.credits}</span>
+            💳 {t('textbook.form.creditsAvailable')} <span className="font-bold">{user.credits}</span>
           </span>
-          <span className="text-xs text-blue-700">Tạo giáo trình: -1 credit</span>
+          <span className="text-xs text-blue-700">{t('textbook.form.createCost')}</span>
         </div>
       )}
 
@@ -289,10 +303,10 @@ export function ConfigForm({
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
             </svg>
-            Đang xử lý...
+            {t('textbook.form.submitting')}
           </span>
         ) : (
-          '🚀 Tạo giáo trình'
+          `🚀 ${t('textbook.form.submit')}`
         )}
       </button>
     </form>

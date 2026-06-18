@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
 import { configAPI } from '../../api/config'
+import { translateConfigGroup, translateConfigParam } from '../../utils/configTranslations'
 
 // ---------------------------------------------------------------------------
 // Spinner
@@ -44,6 +46,8 @@ function Tooltip({ text }) {
 // Batch save confirmation modal — shows all pending changes at once
 // ---------------------------------------------------------------------------
 function SaveConfirmModal({ changes, onConfirm, onCancel }) {
+  const { t } = useTranslation()
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto">
@@ -54,8 +58,8 @@ function SaveConfirmModal({ changes, onConfirm, onCancel }) {
             </svg>
           </div>
           <div>
-            <h3 className="text-base font-semibold text-gray-900">Xác nhận lưu thay đổi?</h3>
-            <p className="text-xs text-gray-500 mt-0.5">{changes.length} tham số sẽ được cập nhật</p>
+            <h3 className="text-base font-semibold text-gray-900">{t('settings.confirmSaveTitle')}</h3>
+            <p className="text-xs text-gray-500 mt-0.5">{t('settings.confirmSaveCount', { count: changes.length })}</p>
           </div>
         </div>
 
@@ -64,9 +68,9 @@ function SaveConfirmModal({ changes, onConfirm, onCancel }) {
           <table className="w-full text-xs">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200">
-                <th className="text-left px-3 py-2 font-medium text-gray-600">Tham số</th>
-                <th className="text-left px-3 py-2 font-medium text-gray-600">Giá trị cũ</th>
-                <th className="text-left px-3 py-2 font-medium text-gray-600">Giá trị mới</th>
+                <th className="text-left px-3 py-2 font-medium text-gray-600">{t('settings.param')}</th>
+                <th className="text-left px-3 py-2 font-medium text-gray-600">{t('settings.oldValue')}</th>
+                <th className="text-left px-3 py-2 font-medium text-gray-600">{t('settings.newValue')}</th>
               </tr>
             </thead>
             <tbody>
@@ -85,7 +89,7 @@ function SaveConfirmModal({ changes, onConfirm, onCancel }) {
         </div>
 
         <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-5">
-          Giá trị không hợp lệ có thể làm giảm chất lượng tạo nội dung hoặc gây lỗi. Thay đổi sẽ áp dụng từ lần tạo giáo trình tiếp theo.
+          {t('settings.saveWarning')}
         </p>
 
         <div className="flex gap-3">
@@ -94,14 +98,14 @@ function SaveConfirmModal({ changes, onConfirm, onCancel }) {
             onClick={onCancel}
             className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
           >
-            Hủy, tiếp tục chỉnh sửa
+            {t('settings.cancelEdit')}
           </button>
           <button
             type="button"
             onClick={onConfirm}
             className="flex-1 px-4 py-2 bg-primary text-white rounded-lg text-sm font-semibold hover:bg-blue-600 transition-colors"
           >
-            Xác nhận lưu {changes.length} thay đổi
+            {t('settings.confirmSave', { count: changes.length })}
           </button>
         </div>
       </div>
@@ -113,21 +117,23 @@ function SaveConfirmModal({ changes, onConfirm, onCancel }) {
 // Reset-all confirmation modal
 // ---------------------------------------------------------------------------
 function ResetAllModal({ onConfirm, onCancel }) {
+  const { t } = useTranslation()
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6">
-        <h3 className="text-base font-semibold text-gray-900 mb-3">Đặt lại tất cả về mặc định?</h3>
+        <h3 className="text-base font-semibold text-gray-900 mb-3">{t('settings.resetTitle')}</h3>
         <p className="text-sm text-gray-500 mb-6">
-          Tất cả giá trị tùy chỉnh của bạn sẽ bị xóa. Các giá trị mặc định hệ thống sẽ được áp dụng ngay lập tức.
+          {t('settings.resetText')}
         </p>
         <div className="flex gap-3">
           <button type="button" onClick={onCancel}
             className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors">
-            Hủy
+            {t('app.cancel')}
           </button>
           <button type="button" onClick={onConfirm}
             className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-semibold hover:bg-red-700 transition-colors">
-            Đặt lại tất cả
+            {t('settings.resetAll')}
           </button>
         </div>
       </div>
@@ -139,11 +145,13 @@ function ResetAllModal({ onConfirm, onCancel }) {
 // Field badges
 // ---------------------------------------------------------------------------
 function FieldBadge({ isModified, isPending }) {
+  const { t } = useTranslation()
+
   if (isPending) return (
-    <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium">Chưa lưu</span>
+    <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium">{t('app.unsaved')}</span>
   )
   if (isModified) return (
-    <span className="text-xs px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-medium">Đã lưu</span>
+    <span className="text-xs px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-medium">{t('app.saved')}</span>
   )
   return null
 }
@@ -152,6 +160,7 @@ function FieldBadge({ isModified, isPending }) {
 // Single parameter field — no confirm modal, just free editing
 // ---------------------------------------------------------------------------
 function ParamField({ param, pendingValue, savedValue, defaultValue, onChange, onReset, disabled }) {
+  const { t } = useTranslation()
   const effectiveValue = pendingValue !== undefined ? pendingValue
     : savedValue !== undefined ? savedValue
     : defaultValue
@@ -177,7 +186,7 @@ function ParamField({ param, pendingValue, savedValue, defaultValue, onChange, o
             <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
           </svg>
           <span className="font-mono">{String(effectiveValue)}</span>
-          <span className="text-xs italic">(chỉ admin)</span>
+          <span className="text-xs italic">({t('settings.adminOnly')})</span>
         </div>
       )
     }
@@ -233,18 +242,17 @@ function ParamField({ param, pendingValue, savedValue, defaultValue, onChange, o
         {showReset && (
           <button type="button" onClick={onReset}
             className="ml-auto text-xs text-gray-400 hover:text-red-500 transition-colors flex items-center gap-1"
-            title="Khôi phục về mặc định">
+            title={t('settings.restoreDefault')}>
             <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
-            Khôi phục
+            {t('settings.restore')}
           </button>
         )}
       </div>
       {param.min != null && param.max != null && param.type !== 'bool' && (
         <p className="text-xs text-gray-400 mb-1">
-          Phạm vi: {param.min} – {param.max}&nbsp;·&nbsp;Mặc định:{' '}
-          <span className="font-mono">{String(defaultValue)}</span>
+          {t('settings.range', { min: param.min, max: param.max, defaultValue: String(defaultValue) })}
         </p>
       )}
       {renderInput()}
@@ -281,6 +289,7 @@ const GROUP_ORDER = ['rag', 'generation', 'ingestion', 'domain_caps']
 // Main AdvancedSettings component
 // ---------------------------------------------------------------------------
 export function AdvancedSettings() {
+  const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -297,6 +306,7 @@ export function AdvancedSettings() {
   const [apiError, setApiError] = useState('')
 
   const load = useCallback(async () => {
+    await Promise.resolve()
     setLoading(true)
     try {
       const [regRes, overridesRes] = await Promise.all([
@@ -307,14 +317,16 @@ export function AdvancedSettings() {
       setSavedOverrides(overridesRes.data.overrides || {})
       setPending({})
     } catch {
-      setApiError('Không thể tải cài đặt. Vui lòng thử lại.')
+      setApiError(t('settings.loadError'))
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [t])
 
   useEffect(() => {
-    if (expanded && !registry) load()
+    if (!expanded || registry) return undefined
+    const timer = setTimeout(() => { load() }, 0)
+    return () => clearTimeout(timer)
   }, [expanded, registry, load])
 
   const getDefault = (key) => registry?.parameters?.[key]?.default
@@ -348,8 +360,9 @@ export function AdvancedSettings() {
     if (!registry) return []
     return Object.entries(pending).map(([key, newValue]) => {
       const param = registry.parameters[key]
+      const translatedParam = translateConfigParam(param, t)
       const oldValue = savedOverrides[key] !== undefined ? savedOverrides[key] : getDefault(key)
-      return { key, label: param?.label ?? key, oldValue, newValue }
+      return { key, label: translatedParam?.label ?? key, oldValue, newValue }
     })
   }
 
@@ -379,7 +392,7 @@ export function AdvancedSettings() {
       setTimeout(() => setSaveSuccess(false), 3000)
     } catch (e) {
       const detail = e.response?.data?.detail
-      setApiError(typeof detail === 'object' ? JSON.stringify(detail) : (detail || 'Không thể lưu cài đặt.'))
+      setApiError(typeof detail === 'object' ? JSON.stringify(detail) : (detail || t('settings.saveError')))
     } finally {
       setSaving(false)
     }
@@ -395,7 +408,7 @@ export function AdvancedSettings() {
       setSaveSuccess(true)
       setTimeout(() => setSaveSuccess(false), 3000)
     } catch {
-      setApiError('Không thể đặt lại cài đặt.')
+      setApiError(t('settings.resetError'))
     } finally {
       setResetting(false)
     }
@@ -417,11 +430,11 @@ export function AdvancedSettings() {
           className="w-full flex items-center justify-between px-5 py-4 hover:bg-gray-50 transition-colors">
           <div className="text-left">
             <p className="font-semibold text-gray-800">
-              Cấu hình nâng cao{' '}
-              <span className="text-xs font-normal text-gray-500 ml-1 bg-gray-100 px-2 py-0.5 rounded">Chế độ nhà phát triển</span>
+              {t('settings.title')}{' '}
+              <span className="text-xs font-normal text-gray-500 ml-1 bg-gray-100 px-2 py-0.5 rounded">{t('settings.developerMode')}</span>
             </p>
             <p className="text-xs text-gray-500 mt-0.5">
-              Các cài đặt này ghi đè mặc định hệ thống chỉ cho tài khoản của bạn.
+              {t('settings.description')}
             </p>
           </div>
           <svg className={`w-5 h-5 text-gray-400 transition-transform duration-200 flex-shrink-0 ml-4 ${expanded ? 'rotate-180' : ''}`}
@@ -438,8 +451,7 @@ export function AdvancedSettings() {
                 <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
               </svg>
               <p className="text-xs text-amber-800">
-                <span className="font-semibold">Chú ý:</span> Các tham số này kiểm soát hành vi nội bộ của pipeline tạo giáo trình.
-                Giá trị sai có thể làm giảm chất lượng hoặc gây lỗi. Chỉ thay đổi nếu bạn hiểu rõ tác động.
+                <span className="font-semibold">{t('settings.warningTitle')}</span> {t('settings.warningText')}
               </p>
             </div>
 
@@ -450,15 +462,18 @@ export function AdvancedSettings() {
                 {GROUP_ORDER.map(groupKey => {
                   const group = registry.groups[groupKey]
                   if (!group) return null
+                  const translatedGroup = translateConfigGroup(groupKey, group, t)
                   const params = groupedParams(groupKey)
                   if (params.length === 0) return null
                   return (
-                    <GroupAccordion key={groupKey} title={group.label} description={group.description}
+                    <GroupAccordion key={groupKey} title={translatedGroup.label} description={translatedGroup.description}
                       defaultOpen={groupKey === 'rag'}>
-                      {params.map(param => (
+                      {params.map(param => {
+                        const translatedParam = translateConfigParam(param, t)
+                        return (
                         <ParamField
                           key={param.key}
-                          param={param}
+                          param={translatedParam}
                           pendingValue={pending[param.key]}
                           savedValue={savedOverrides[param.key]}
                           defaultValue={param.default}
@@ -466,7 +481,8 @@ export function AdvancedSettings() {
                           onReset={() => handleReset(param.key)}
                           disabled={param.admin_only}
                         />
-                      ))}
+                        )
+                      })}
                     </GroupAccordion>
                   )
                 })}
@@ -480,7 +496,7 @@ export function AdvancedSettings() {
                 {saveSuccess && (
                   <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg">
                     <p className="text-sm text-green-700">
-                      Đã lưu cài đặt. Các thay đổi sẽ áp dụng cho lần tạo giáo trình tiếp theo.
+                      {t('settings.saveSuccess')}
                     </p>
                   </div>
                 )}
@@ -490,12 +506,12 @@ export function AdvancedSettings() {
                   <button type="button" onClick={() => setShowResetAll(true)}
                     disabled={resetting || !hasSavedOverrides}
                     className="text-sm text-gray-400 hover:text-red-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
-                    {resetting ? 'Đang đặt lại…' : 'Đặt lại tất cả về mặc định'}
+                    {resetting ? t('app.processing') : t('settings.resetButton')}
                   </button>
                   <div className="flex items-center gap-3">
                     {pendingCount > 0 && (
                       <span className="text-xs text-amber-600 font-medium">
-                        {pendingCount} thay đổi chưa lưu
+                        {t('settings.pendingCount', { count: pendingCount })}
                       </span>
                     )}
                     <button type="button" onClick={handleSaveClick}
@@ -505,7 +521,7 @@ export function AdvancedSettings() {
                           ? 'bg-primary text-white hover:bg-blue-600'
                           : 'bg-gray-100 text-gray-400 cursor-not-allowed'
                       }`}>
-                      {saving ? 'Đang lưu…' : 'Lưu cài đặt nâng cao'}
+                      {saving ? t('settings.saving') : t('settings.saveButton')}
                     </button>
                   </div>
                 </div>

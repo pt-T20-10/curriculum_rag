@@ -1,16 +1,12 @@
+import { useTranslation } from 'react-i18next'
+
 export function StatusBadge({ status }) {
+  const { t } = useTranslation()
   const styles = {
     pending: 'bg-gray-100 text-gray-800 border border-gray-300',
     generating: 'bg-blue-100 text-blue-800 border border-blue-300',
     completed: 'bg-green-100 text-green-800 border border-green-300',
     failed: 'bg-red-100 text-red-800 border border-red-300',
-  }
-
-  const labels = {
-    pending: 'Đang chờ',
-    generating: 'Đang tạo',
-    completed: 'Hoàn thành',
-    failed: 'Thất bại',
   }
 
   return (
@@ -34,12 +30,13 @@ export function StatusBadge({ status }) {
           />
         </svg>
       )}
-      {labels[status] || status}
+      {t(`textbook.status.${status}`, status)}
     </span>
   )
 }
 
 export function ContentTypeBadge({ type }) {
+  const { t } = useTranslation()
   const styles = {
     scholarly: 'bg-purple-100 text-purple-800 border border-purple-300',
     technical: 'bg-blue-100 text-blue-800 border border-blue-300',
@@ -47,11 +44,11 @@ export function ContentTypeBadge({ type }) {
     lifestyle: 'bg-orange-100 text-orange-800 border border-orange-300',
   }
 
-  const labels = {
-    scholarly: '📚 Học thuật',
-    technical: '🔧 Kỹ thuật',
-    practical: '💼 Thực tiễn',
-    lifestyle: '🌱 Đời sống',
+  const icons = {
+    scholarly: '📚',
+    technical: '🔧',
+    practical: '💼',
+    lifestyle: '🌱',
   }
 
   return (
@@ -59,7 +56,7 @@ export function ContentTypeBadge({ type }) {
       px-2 py-1 rounded-full text-xs font-medium
       ${styles[type] || styles.technical}
     `}>
-      {labels[type] || type}
+      {icons[type] ? `${icons[type]} ` : ''}{t(`textbook.contentType.${type}`, type)}
     </span>
   )
 }

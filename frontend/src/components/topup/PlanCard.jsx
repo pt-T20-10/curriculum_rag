@@ -1,5 +1,9 @@
+import { useTranslation } from 'react-i18next'
+
 export function PlanCard({ plan, onSelect }) {
-  const price = plan.price_vnd.toLocaleString('vi-VN') + '₫'
+  const { i18n, t } = useTranslation()
+  const locale = i18n.resolvedLanguage === 'en' ? 'en-US' : 'vi-VN'
+  const price = plan.price_vnd.toLocaleString(locale) + '₫'
 
   return (
     <div
@@ -12,7 +16,7 @@ export function PlanCard({ plan, onSelect }) {
     >
       {plan.is_recommended && (
         <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-amber-400 text-gray-900 text-xs font-bold px-3 py-0.5 rounded-full uppercase tracking-wide shadow">
-          Phổ biến nhất
+          {t('topup.recommended')}
         </div>
       )}
 
@@ -24,7 +28,7 @@ export function PlanCard({ plan, onSelect }) {
           {price}
         </div>
         <div className={`text-sm mt-1 ${plan.is_recommended ? 'text-white/80' : 'text-gray-500'}`}>
-          {plan.credits} credits
+          {plan.credits.toLocaleString(locale)} credits
         </div>
       </div>
 
@@ -55,7 +59,7 @@ export function PlanCard({ plan, onSelect }) {
             : 'bg-primary text-white hover:bg-blue-500 shadow-md'
         }`}
       >
-        Mua gói này
+        {t('topup.buy')}
       </button>
     </div>
   )

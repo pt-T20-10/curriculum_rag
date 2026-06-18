@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 function EyeIcon() {
   return (
@@ -40,6 +41,7 @@ function EyeSlashIcon() {
 }
 
 export function PasswordInput({ label, error, ...props }) {
+  const { t } = useTranslation()
   const [show, setShow] = useState(false)
 
   return (
@@ -66,7 +68,7 @@ export function PasswordInput({ label, error, ...props }) {
           tabIndex={-1}
           onClick={() => setShow(v => !v)}
           className="absolute inset-y-0 right-0 px-3 flex items-center text-gray-400 hover:text-gray-600 transition-colors"
-          aria-label={show ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
+          aria-label={show ? t('auth.passwordInput.hide') : t('auth.passwordInput.show')}
         >
           {show ? <EyeSlashIcon /> : <EyeIcon />}
         </button>

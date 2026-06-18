@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { textbooksAPI } from '../api/textbooks'
 import { Navbar } from '../components/layout/Navbar'
 import { TextbookFilter } from '../components/textbooks/TextbookFilter'
@@ -11,6 +12,7 @@ import { Button } from '../components/common/Button'
 
 export function DashboardPage() {
   const navigate = useNavigate()
+  const { t } = useTranslation()
 
   const [textbooks, setTextbooks] = useState([])
   const [loading, setLoading] = useState(true)
@@ -59,7 +61,7 @@ export function DashboardPage() {
       } catch (err) {
         console.error('Failed to fetch textbooks:', err)
         if (!cancelled) {
-          setError('Không thể tải danh sách giáo trình. Vui lòng thử lại.')
+          setError(t('dashboard.loadError'))
         }
       } finally {
         if (!cancelled) setLoading(false)
@@ -68,7 +70,7 @@ export function DashboardPage() {
 
     load()
     return () => { cancelled = true }
-  }, [filters, pagination.page, pagination.size, refreshKey])
+  }, [filters, pagination.page, pagination.size, refreshKey, t])
 
   const handleFilterChange = (key, value) => {
     if (key === 'clear') {
@@ -93,14 +95,14 @@ export function DashboardPage() {
         <div className="flex justify-between items-center mb-6">
           <div>
             <h1 className="text-2xl font-bold text-gray-900">
-              Giáo trình của tôi
+              {t('dashboard.title')}
             </h1>
             <p className="text-gray-600 mt-1">
-              Quản lý và tải xuống các giáo trình được tạo bởi AI
+              {t('dashboard.subtitle')}
             </p>
           </div>
           <Button onClick={() => navigate('/create')}>
-            + Tạo giáo trình
+            + {t('dashboard.create')}
           </Button>
         </div>
 
@@ -115,7 +117,7 @@ export function DashboardPage() {
           <div className="py-12">
             <Spinner size="lg" />
             <p className="text-center text-gray-600 mt-4">
-              Đang tải giáo trình...
+              {t('dashboard.loading')}
             </p>
           </div>
         )}
@@ -129,7 +131,7 @@ export function DashboardPage() {
               variant="secondary"
               className="mt-2"
             >
-              Thử lại
+              {t('app.retry')}
             </Button>
           </div>
         )}
@@ -142,13 +144,13 @@ export function DashboardPage() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
               </svg>
             }
-            title={filters.content_type || filters.status ? 'Không tìm thấy giáo trình' : 'Chưa có giáo trình nào'}
+            title={filters.content_type || filters.status ? t('dashboard.notFound') : t('dashboard.emptyTitle')}
             description={
               filters.content_type || filters.status
-                ? 'Thử thay đổi bộ lọc để xem thêm kết quả.'
-                : 'Bắt đầu bằng cách tạo giáo trình AI đầu tiên của bạn.'
+                ? t('dashboard.filterHint')
+                : t('dashboard.emptyDescription')
             }
-            actionLabel={filters.content_type || filters.status ? 'Xóa bộ lọc' : 'Tạo giáo trình'}
+            actionLabel={filters.content_type || filters.status ? t('textbook.filter.clear') : t('dashboard.create')}
             onAction={() => {
               if (filters.content_type || filters.status) {
                 handleFilterChange('clear')

@@ -1,4 +1,5 @@
 import { useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 import { StatsSection } from './StatsSection'
 import { ChapterList } from './ChapterList'
 
@@ -31,6 +32,7 @@ function transformChapterData(progressData) {
 }
 
 export function ContentSidebar({ progressData }) {
+  const { t } = useTranslation()
   // Transform chapter data (must be before early return - hooks rule)
   const chapters = useMemo(
     () => transformChapterData(progressData),
@@ -49,7 +51,7 @@ export function ContentSidebar({ progressData }) {
         <div>
           <div className="text-4xl mb-3">📊</div>
           <p className="text-sm">
-            Sidebar sẽ hiển thị khi đang tạo nội dung
+            {t('textbook.sidebarWaiting')}
           </p>
         </div>
       </div>
@@ -78,9 +80,9 @@ export function ContentSidebar({ progressData }) {
           <span className="animate-pulse">🔄</span>
           <span className="font-medium">
             {current_chapter > 0 && current_subsection > 0 ? (
-              <>Đang viết: Chương {current_chapter}, Mục {current_subsection}</>
+              <>{t('textbook.contentSidebar.writing', { chapter: current_chapter, subsection: current_subsection })}</>
             ) : (
-              <>Đang khởi tạo...</>
+              <>{t('textbook.contentSidebar.initializing')}</>
             )}
           </span>
         </div>

@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { useAuth } from '../context/AuthContext'
 import { loadConfig } from '../utils/landingConfig'
 import { plansAPI } from '../api/plans'
+import { LanguageSwitcher } from '../components/common/LanguageSwitcher'
 
 // ---------------------------------------------------------------------------
 // IntersectionObserver hook — fires once when element enters viewport
@@ -91,6 +93,7 @@ function CtaButton({ label, url, variant = 'primary', user, className = '' }) {
 // Section 1 — Hero
 // ---------------------------------------------------------------------------
 function HeroSection({ cfg, user }) {
+  const { t } = useTranslation()
   const bgStyle =
     cfg.bg_type === 'image' && cfg.bg_image_url
       ? {
@@ -124,12 +127,13 @@ function HeroSection({ cfg, user }) {
           📖 AI Textbook
         </span>
         <div className="flex items-center gap-3">
+          <LanguageSwitcher compact />
           {user ? (
             <Link
               to="/dashboard"
               className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white text-sm font-medium rounded-lg border border-white/20 transition-colors"
             >
-              Dashboard →
+              {t('landing.dashboard')}
             </Link>
           ) : (
             <>
@@ -137,13 +141,13 @@ function HeroSection({ cfg, user }) {
                 to="/login"
                 className="px-4 py-2 text-white/80 hover:text-white text-sm font-medium transition-colors"
               >
-                Đăng nhập
+                {t('landing.navLogin')}
               </Link>
               <Link
                 to="/register"
                 className="px-4 py-2 bg-primary hover:bg-blue-500 text-white text-sm font-medium rounded-lg transition-colors"
               >
-                Đăng ký
+                {t('landing.navRegister')}
               </Link>
             </>
           )}
@@ -156,7 +160,7 @@ function HeroSection({ cfg, user }) {
           className="inline-block text-xs font-semibold tracking-widest uppercase text-amber-400 bg-amber-400/10 border border-amber-400/20 rounded-full px-4 py-1.5 mb-6"
           style={{ opacity: 1 }}
         >
-          Powered by LangGraph · CRAG · GPT-4.1
+          {t('landing.badge')}
         </div>
 
         <h1 className="text-4xl md:text-6xl lg:text-7xl font-extrabold leading-tight tracking-tight mb-6 text-white">
@@ -184,7 +188,7 @@ function HeroSection({ cfg, user }) {
 
         {/* Scroll hint */}
         <div className="mt-20 flex flex-col items-center gap-2 text-white/30 text-xs animate-bounce">
-          <span>Cuộn xuống để khám phá</span>
+          <span>{t('landing.scrollHint')}</span>
           <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
           </svg>
@@ -198,15 +202,16 @@ function HeroSection({ cfg, user }) {
 // Section 2 — Feature highlights
 // ---------------------------------------------------------------------------
 function FeaturesSection({ cfg }) {
+  const { t } = useTranslation()
   return (
     <section className="py-24 bg-white">
       <div className="content-container">
         <FadeUp className="text-center mb-14">
           <h2 className="text-3xl md:text-4xl font-bold text-gray-900 mb-4">
-            Tất cả những gì bạn cần
+            {t('landing.featuresTitle')}
           </h2>
           <p className="text-gray-500 text-lg max-w-xl mx-auto">
-            Một hệ thống duy nhất từ chủ đề đến giáo trình xuất bản.
+            {t('landing.featuresSubtitle')}
           </p>
         </FadeUp>
 
@@ -233,16 +238,18 @@ function FeaturesSection({ cfg }) {
 // ---------------------------------------------------------------------------
 function PricingSection({ plans, plansLoading, user }) {
   const navigate = useNavigate()
+  const { i18n, t } = useTranslation()
+  const locale = i18n.resolvedLanguage === 'en' ? 'en-US' : 'vi-VN'
 
   return (
     <section className="py-24 bg-gray-50">
       <div className="content-container">
         <FadeUp className="text-center mb-14">
           <h2 className="text-3xl md:text-4xl font-bold text-gray-900 mb-4">
-            Bảng Giá Đơn Giản
+            {t('landing.pricingTitle')}
           </h2>
           <p className="text-gray-500 text-lg">
-            Chọn gói phù hợp với nhu cầu của bạn.
+            {t('landing.pricingSubtitle')}
           </p>
         </FadeUp>
 
@@ -252,12 +259,12 @@ function PricingSection({ plans, plansLoading, user }) {
           </div>
         ) : plans.length === 0 ? (
           <div className="max-w-xl mx-auto rounded-2xl border border-gray-200 bg-white px-6 py-8 text-center text-gray-500">
-            Chưa có gói nạp tiền đang hoạt động.
+            {t('landing.noPlans')}
           </div>
         ) : (
           <div className="grid md:grid-cols-3 gap-6 items-start max-w-5xl mx-auto">
             {plans.map((plan, i) => {
-              const price = `${plan.price_vnd.toLocaleString('vi-VN')}₫`
+              const price = `${plan.price_vnd.toLocaleString(locale)}₫`
               return (
                 <FadeUp key={plan.id} delay={i * 100}>
                   <div
@@ -269,7 +276,7 @@ function PricingSection({ plans, plansLoading, user }) {
                   >
                     {plan.is_recommended && (
                       <div className="absolute -top-4 left-1/2 -translate-x-1/2 bg-amber-400 text-gray-900 text-xs font-bold px-4 py-1 rounded-full uppercase tracking-wide shadow">
-                        Phổ biến nhất
+                        {t('landing.popular')}
                       </div>
                     )}
 
@@ -289,7 +296,7 @@ function PricingSection({ plans, plansLoading, user }) {
                         {price}
                       </div>
                       <div className={`text-sm mt-2 ${plan.is_recommended ? 'text-white/80' : 'text-gray-500'}`}>
-                        {plan.credits.toLocaleString('vi-VN')} credits
+                        {plan.credits.toLocaleString(locale)} credits
                       </div>
                     </div>
 
@@ -328,7 +335,7 @@ function PricingSection({ plans, plansLoading, user }) {
                           : 'bg-primary text-white hover:bg-blue-500 shadow-md'
                       }`}
                     >
-                      Mua ngay
+                      {t('landing.buyNow')}
                     </button>
                   </div>
                 </FadeUp>
@@ -367,6 +374,7 @@ function StatsSection({ cfg }) {
 // Section 5 — Testimonials
 // ---------------------------------------------------------------------------
 function TestimonialsSection({ cfg }) {
+  const { t } = useTranslation()
   if (!cfg.testimonials || cfg.testimonials.length === 0) return null
 
   return (
@@ -374,7 +382,7 @@ function TestimonialsSection({ cfg }) {
       <div className="content-container">
         <FadeUp className="text-center mb-14">
           <h2 className="text-3xl md:text-4xl font-bold text-gray-900 mb-4">
-            Người dùng nói gì?
+            {t('landing.testimonialsTitle')}
           </h2>
         </FadeUp>
 
@@ -415,6 +423,7 @@ function TestimonialsSection({ cfg }) {
 // Section 6 — Partner logos
 // ---------------------------------------------------------------------------
 function PartnersSection({ cfg }) {
+  const { t } = useTranslation()
   if (!cfg.partner_logos || cfg.partner_logos.length === 0) return null
 
   return (
@@ -422,7 +431,7 @@ function PartnersSection({ cfg }) {
       <div className="content-container">
         <FadeUp>
           <p className="text-center text-sm font-semibold text-gray-400 uppercase tracking-widest mb-8">
-            Được xây dựng trên nền tảng
+            {t('landing.partnersTitle')}
           </p>
           <div className="flex flex-wrap justify-center items-center gap-10 md:gap-16">
             {cfg.partner_logos.map((logo, i) => (
@@ -514,23 +523,31 @@ function FooterSection({ cfg }) {
 // ---------------------------------------------------------------------------
 export function LandingPage() {
   const { user, loading } = useAuth()
+  const { i18n } = useTranslation()
+  const language = i18n.resolvedLanguage || i18n.language || 'vi'
   // Lazy initializer: loadConfig() runs once synchronously before first render
-  const [config, setConfig] = useState(() => loadConfig())
+  const [config, setConfig] = useState(() => loadConfig(language))
   const [plans, setPlans] = useState([])
   const [plansLoading, setPlansLoading] = useState(true)
 
   // Re-load config when window regains focus so admin changes in another tab
   // take effect immediately — only registers/unregisters a listener, no sync setState
   useEffect(() => {
-    const onFocus = () => setConfig(loadConfig())
+    let cancelled = false
+    queueMicrotask(() => {
+      if (!cancelled) setConfig(loadConfig(language))
+    })
+    const onFocus = () => setConfig(loadConfig(language))
     window.addEventListener('focus', onFocus)
-    return () => window.removeEventListener('focus', onFocus)
-  }, [])
+    return () => {
+      cancelled = true
+      window.removeEventListener('focus', onFocus)
+    }
+  }, [language])
 
   // Fetch live plans from DB. Pricing never renders DEFAULT_CONFIG.plans.
   useEffect(() => {
     let cancelled = false
-    setPlansLoading(true)
 
     plansAPI.listActive()
       .then(r => {

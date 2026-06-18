@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { adminAPI } from '../../api/admin'
 import { Navbar } from '../../components/layout/Navbar'
 import { AdminNavigation } from '../../components/layout/AdminNavigation'
@@ -18,6 +19,7 @@ function Toggle({ checked, onChange }) {
 }
 
 function PlanForm({ initial, onSave, onCancel, saving }) {
+  const { t } = useTranslation()
   const [form, setForm] = useState(initial)
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
@@ -35,7 +37,7 @@ function PlanForm({ initial, onSave, onCancel, saving }) {
     <form onSubmit={handleSubmit} className="space-y-4">
       <div className="grid grid-cols-2 gap-4">
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Tên gói</label>
+          <label className="block text-xs font-medium text-gray-600 mb-1">{t('admin.plans.planName')}</label>
           <input
             className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
             value={form.name}
@@ -45,7 +47,7 @@ function PlanForm({ initial, onSave, onCancel, saving }) {
           />
         </div>
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Giá (VND)</label>
+          <label className="block text-xs font-medium text-gray-600 mb-1">{t('admin.plans.price')}</label>
           <input
             type="number"
             className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
@@ -56,7 +58,7 @@ function PlanForm({ initial, onSave, onCancel, saving }) {
           />
         </div>
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Credits</label>
+          <label className="block text-xs font-medium text-gray-600 mb-1">{t('admin.plans.credits')}</label>
           <input
             type="number"
             className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
@@ -67,7 +69,7 @@ function PlanForm({ initial, onSave, onCancel, saving }) {
           />
         </div>
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Thứ tự hiển thị</label>
+          <label className="block text-xs font-medium text-gray-600 mb-1">{t('admin.plans.displayOrder')}</label>
           <input
             type="number"
             className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
@@ -78,23 +80,23 @@ function PlanForm({ initial, onSave, onCancel, saving }) {
       </div>
 
       <div>
-        <label className="block text-xs font-medium text-gray-600 mb-1">Tính năng (mỗi dòng một tính năng)</label>
+        <label className="block text-xs font-medium text-gray-600 mb-1">{t('admin.plans.features')}</label>
         <textarea
           className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 h-28 resize-none"
           value={form.features}
           onChange={e => set('features', e.target.value)}
-          placeholder="5 giáo trình / tháng&#10;Tối đa 3 chương&#10;Xuất PDF"
+          placeholder={t('admin.plans.featuresPlaceholder')}
         />
       </div>
 
       <div className="flex gap-6">
         <label className="flex items-center gap-2 text-sm text-gray-700">
           <Toggle checked={!!form.is_recommended} onChange={v => set('is_recommended', v)} />
-          Phổ biến nhất
+          {t('admin.plans.recommended')}
         </label>
         <label className="flex items-center gap-2 text-sm text-gray-700">
           <Toggle checked={!!form.is_active} onChange={v => set('is_active', v)} />
-          Hiển thị
+          {t('app.visible')}
         </label>
       </div>
 
@@ -104,14 +106,14 @@ function PlanForm({ initial, onSave, onCancel, saving }) {
           disabled={saving}
           className="px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:bg-blue-500 disabled:opacity-60 transition-colors"
         >
-          {saving ? 'Đang lưu...' : 'Lưu'}
+          {saving ? t('admin.plans.saving') : t('app.save')}
         </button>
         <button
           type="button"
           onClick={onCancel}
           className="px-4 py-2 border border-gray-200 text-gray-600 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors"
         >
-          Hủy
+          {t('app.cancel')}
         </button>
       </div>
     </form>
@@ -119,6 +121,7 @@ function PlanForm({ initial, onSave, onCancel, saving }) {
 }
 
 export function AdminPlansPage() {
+  const { t, i18n } = useTranslation()
   const [plans, setPlans] = useState([])
   const [bankConfig, setBankConfig] = useState({ bank_name: '', bank_id: '', account_number: '', account_holder: '' })
   const [loading, setLoading] = useState(true)
@@ -127,6 +130,7 @@ export function AdminPlansPage() {
   const [bankSaving, setBankSaving] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
+  const locale = i18n.language === 'vi' ? 'vi-VN' : 'en-US'
 
   const flash = (msg, isError = false) => {
     if (isError) setError(msg)
@@ -151,28 +155,28 @@ export function AdminPlansPage() {
     try {
       if (editing === 'new') {
         await adminAPI.createPlan(data)
-        flash('Đã tạo gói mới')
+        flash(t('admin.plans.createSuccess'))
       } else {
         await adminAPI.updatePlan(editing, data)
-        flash('Đã cập nhật gói')
+        flash(t('admin.plans.updateSuccess'))
       }
       setEditing(null)
       fetchAll()
     } catch (e) {
-      flash(e.response?.data?.detail || 'Lỗi khi lưu', true)
+      flash(e.response?.data?.detail || t('admin.plans.saveError'), true)
     } finally {
       setSaving(false)
     }
   }
 
   const deletePlan = async (id) => {
-    if (!window.confirm('Vô hiệu hóa gói này?')) return
+    if (!window.confirm(t('admin.plans.disableConfirm'))) return
     try {
       await adminAPI.deletePlan(id)
-      flash('Đã vô hiệu hóa gói')
+      flash(t('admin.plans.disabled'))
       fetchAll()
     } catch (e) {
-      flash(e.response?.data?.detail || 'Lỗi', true)
+      flash(e.response?.data?.detail || t('app.error'), true)
     }
   }
 
@@ -181,9 +185,9 @@ export function AdminPlansPage() {
     setBankSaving(true)
     try {
       await adminAPI.updateBankConfig(bankConfig)
-      flash('Đã cập nhật thông tin ngân hàng')
+      flash(t('admin.plans.bankUpdated'))
     } catch (e) {
-      flash(e.response?.data?.detail || 'Lỗi', true)
+      flash(e.response?.data?.detail || t('app.error'), true)
     } finally {
       setBankSaving(false)
     }
@@ -198,8 +202,8 @@ export function AdminPlansPage() {
         {/* Header */}
         <div className="flex items-center justify-between mb-8">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">Gói & Ngân hàng</h1>
-            <p className="text-sm text-gray-500 mt-1">Quản lý gói nạp tiền và thông tin thanh toán</p>
+            <h1 className="text-2xl font-bold text-gray-900">{t('admin.plans.title')}</h1>
+            <p className="text-sm text-gray-500 mt-1">{t('admin.plans.subtitle')}</p>
           </div>
         </div>
 
@@ -215,13 +219,13 @@ export function AdminPlansPage() {
 
       {/* Bank config card */}
       <div className="bg-white rounded-xl border border-gray-200 p-6">
-        <h2 className="text-base font-semibold text-gray-800 mb-4">Thông tin ngân hàng</h2>
+        <h2 className="text-base font-semibold text-gray-800 mb-4">{t('admin.plans.bankInfo')}</h2>
         <form onSubmit={saveBankConfig} className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {[
-            ['bank_name', 'Tên ngân hàng', 'Vietcombank'],
-            ['bank_id', 'Bank ID (VietQR)', 'vietcombank'],
-            ['account_number', 'Số tài khoản', '9782832044'],
-            ['account_holder', 'Chủ tài khoản', 'Nguyễn Văn A'],
+            ['bank_name', t('admin.plans.bankName'), 'Vietcombank'],
+            ['bank_id', t('admin.plans.bankId'), 'vietcombank'],
+            ['account_number', t('admin.plans.accountNumber'), '9782832044'],
+            ['account_holder', t('admin.plans.accountHolder'), 'Nguyen Van A'],
           ].map(([key, label, placeholder]) => (
             <div key={key}>
               <label className="block text-xs font-medium text-gray-600 mb-1">{label}</label>
@@ -239,7 +243,7 @@ export function AdminPlansPage() {
               disabled={bankSaving}
               className="px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:bg-blue-500 disabled:opacity-60 transition-colors"
             >
-              {bankSaving ? 'Đang lưu...' : 'Cập nhật thông tin ngân hàng'}
+              {bankSaving ? t('admin.plans.saving') : t('admin.plans.updateBank')}
             </button>
           </div>
         </form>
@@ -248,20 +252,20 @@ export function AdminPlansPage() {
       {/* Plans list */}
       <div className="bg-white rounded-xl border border-gray-200 p-6">
         <div className="flex items-center justify-between mb-5">
-          <h2 className="text-base font-semibold text-gray-800">Quản lý gói</h2>
+          <h2 className="text-base font-semibold text-gray-800">{t('admin.plans.managePlans')}</h2>
           {editing !== 'new' && (
             <button
               onClick={() => setEditing('new')}
               className="px-3 py-1.5 bg-primary text-white rounded-lg text-sm font-medium hover:bg-blue-500 transition-colors"
             >
-              + Thêm gói
+              + {t('admin.plans.addPlan')}
             </button>
           )}
         </div>
 
         {editing === 'new' && (
           <div className="mb-6 p-4 bg-gray-50 rounded-xl border border-gray-100">
-            <h3 className="text-sm font-semibold text-gray-700 mb-4">Thêm gói mới</h3>
+            <h3 className="text-sm font-semibold text-gray-700 mb-4">{t('admin.plans.addNewPlan')}</h3>
             <PlanForm initial={EMPTY_PLAN} onSave={savePlan} onCancel={() => setEditing(null)} saving={saving} />
           </div>
         )}
@@ -284,14 +288,14 @@ export function AdminPlansPage() {
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-semibold text-gray-900">{plan.name}</span>
                       {plan.is_recommended && (
-                        <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">Phổ biến</span>
+                        <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">{t('admin.plans.popular')}</span>
                       )}
                       {!plan.is_active && (
-                        <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">Ẩn</span>
+                        <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">{t('app.hidden')}</span>
                       )}
                     </div>
                     <p className="text-sm text-gray-500 mt-0.5">
-                      {plan.price_vnd.toLocaleString('vi-VN')}₫ · {plan.credits} credits · sort: {plan.sort_order}
+                      {plan.price_vnd.toLocaleString(locale)}₫ · {plan.credits} credits · {t('admin.plans.sort')}: {plan.sort_order}
                     </p>
                   </div>
                   <div className="flex gap-2 flex-shrink-0">
@@ -299,13 +303,13 @@ export function AdminPlansPage() {
                       onClick={() => setEditing(plan.id)}
                       className="px-3 py-1.5 text-xs border border-gray-200 text-gray-600 rounded-lg hover:bg-gray-50 transition-colors"
                     >
-                      Sửa
+                      {t('app.edit')}
                     </button>
                     <button
                       onClick={() => deletePlan(plan.id)}
                       className="px-3 py-1.5 text-xs border border-red-200 text-red-500 rounded-lg hover:bg-red-50 transition-colors"
                     >
-                      Xóa
+                      {t('app.delete')}
                     </button>
                   </div>
                 </div>
@@ -314,7 +318,7 @@ export function AdminPlansPage() {
           ))}
 
           {plans.length === 0 && !editing && (
-            <p className="text-sm text-gray-400 text-center py-6">Chưa có gói nào. Nhấn "+ Thêm gói" để bắt đầu.</p>
+            <p className="text-sm text-gray-400 text-center py-6">{t('admin.plans.empty')}</p>
           )}
         </div>
       </div>

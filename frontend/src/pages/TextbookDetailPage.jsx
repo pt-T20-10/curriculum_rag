@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { Navbar } from '../components/layout/Navbar'
 
 export function TextbookDetailPage() {
   const { id } = useParams()
   const navigate = useNavigate()
+  const { t } = useTranslation()
   const [textbook, setTextbook] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -42,7 +44,7 @@ export function TextbookDetailPage() {
         setTextbook(data)
       } catch (err) {
         console.error('Load textbook error:', err)
-        setError('Không thể tải thông tin giáo trình')
+        setError(t('textbook.loadError'))
       } finally {
         setLoading(false)
       }
@@ -51,7 +53,7 @@ export function TextbookDetailPage() {
     if (id) {
       loadTextbook()
     }
-  }, [id])
+  }, [id, t])
 
   if (loading) {
     return (
@@ -63,7 +65,7 @@ export function TextbookDetailPage() {
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
             </svg>
-            <p className="text-gray-600">Đang tải...</p>
+            <p className="text-gray-600">{t('app.loading')}</p>
           </div>
         </div>
       </div>
@@ -77,12 +79,12 @@ export function TextbookDetailPage() {
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center">
             <div className="text-6xl mb-4">❌</div>
-            <p className="text-gray-600 mb-4">{error || 'Không tìm thấy giáo trình'}</p>
+            <p className="text-gray-600 mb-4">{error || t('textbook.detail.notFound')}</p>
             <button
               onClick={() => navigate('/dashboard')}
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
             >
-              ← Về Dashboard
+              ← {t('textbook.detail.backDashboard')}
             </button>
           </div>
         </div>
@@ -130,8 +132,8 @@ export function TextbookDetailPage() {
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center max-w-md">
             <div className="text-6xl mb-4">📄</div>
-            <p className="text-gray-600 mb-2">PDF chưa sẵn sàng</p>
-            <p className="text-sm text-gray-500 mb-4">Giáo trình đang được xử lý...</p>
+            <p className="text-gray-600 mb-2">{t('textbook.detail.pdfNotReady')}</p>
+            <p className="text-sm text-gray-500 mb-4">{t('textbook.detail.processing')}</p>
             
             {/* ⭐ DEBUG INFO */}
             <div className="mt-4 p-4 bg-gray-100 rounded-lg text-left text-xs">
@@ -146,7 +148,7 @@ export function TextbookDetailPage() {
               onClick={() => navigate('/dashboard')}
               className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
             >
-              ← Về Dashboard
+              ← {t('textbook.detail.backDashboard')}
             </button>
           </div>
         </div>
@@ -172,7 +174,7 @@ export function TextbookDetailPage() {
             </button>
             <div>
               <h1 className="text-xl font-bold text-gray-900">{textbook.title}</h1>
-              <p className="text-sm text-gray-500">{textbook.num_chapters} chương</p>
+              <p className="text-sm text-gray-500">{t('textbook.detail.chapters', { count: textbook.num_chapters })}</p>
             </div>
           </div>
           
@@ -191,7 +193,7 @@ export function TextbookDetailPage() {
                   <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z" />
                   <path d="M14 2v6h6M10 18v-5h4v5M10 13h4" fill="white" />
                 </svg>
-                Tải Word
+                {t('textbook.detail.downloadWord')}
               </button>
             )}
             {pdfUrl && (
@@ -208,7 +210,7 @@ export function TextbookDetailPage() {
                   <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z" />
                   <path d="M14 2v6h6M9 13h6M9 17h6M9 9h1" fill="white" />
                 </svg>
-                Tải PDF
+                {t('textbook.detail.downloadPdf')}
               </button>
             )}
           </div>

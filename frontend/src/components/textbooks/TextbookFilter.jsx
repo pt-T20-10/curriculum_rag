@@ -1,18 +1,21 @@
+import { useTranslation } from 'react-i18next'
+
 export function TextbookFilter({ filters, onFilterChange }) {
+  const { t } = useTranslation()
   const contentTypes = [
-    { value: '', label: 'Tất cả loại' },
-    { value: 'scholarly', label: '📚 Học thuật' },
-    { value: 'technical', label: '🔧 Kỹ thuật' },
-    { value: 'practical', label: '💼 Thực tiễn' },
-    { value: 'lifestyle', label: '🌱 Đời sống' },
+    { value: '', label: t('textbook.filter.allTypesShort') },
+    { value: 'scholarly', label: `📚 ${t('textbook.contentType.scholarly')}` },
+    { value: 'technical', label: `🔧 ${t('textbook.contentType.technical')}` },
+    { value: 'practical', label: `💼 ${t('textbook.contentType.practical')}` },
+    { value: 'lifestyle', label: `🌱 ${t('textbook.contentType.lifestyle')}` },
   ]
 
   const statuses = [
-    { value: '', label: 'Tất cả trạng thái' },
-    { value: 'pending', label: 'Đang chờ' },
-    { value: 'generating', label: 'Đang tạo' },
-    { value: 'completed', label: 'Hoàn thành' },
-    { value: 'failed', label: 'Thất bại' },
+    { value: '', label: t('textbook.filter.allStatuses') },
+    { value: 'pending', label: t('textbook.status.pending') },
+    { value: 'generating', label: t('textbook.status.generating') },
+    { value: 'completed', label: t('textbook.status.completed') },
+    { value: 'failed', label: t('textbook.status.failed') },
   ]
 
   return (
@@ -21,7 +24,7 @@ export function TextbookFilter({ filters, onFilterChange }) {
         {/* Content Type Filter */}
         <div className="flex-1">
           <label className="block text-sm font-medium text-gray-700 mb-2">
-            Loại nội dung
+            {t('textbook.filter.contentType')}
           </label>
           <select
             value={filters.content_type || ''}
@@ -39,7 +42,7 @@ export function TextbookFilter({ filters, onFilterChange }) {
         {/* Status Filter */}
         <div className="flex-1">
           <label className="block text-sm font-medium text-gray-700 mb-2">
-            Trạng thái
+            {t('textbook.filter.status')}
           </label>
           <select
             value={filters.status || ''}
@@ -61,7 +64,7 @@ export function TextbookFilter({ filters, onFilterChange }) {
               onClick={() => onFilterChange('clear')}
               className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900 border border-gray-300 rounded-lg hover:bg-gray-50"
             >
-              Xóa bộ lọc
+              {t('textbook.filter.clear')}
             </button>
           </div>
         )}

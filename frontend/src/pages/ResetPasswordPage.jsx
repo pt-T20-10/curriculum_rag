@@ -1,11 +1,15 @@
 import { useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { authAPI } from '../api/auth'
 import { Input } from '../components/common/Input'
 import { Button } from '../components/common/Button'
+import { LanguageSwitcher } from '../components/common/LanguageSwitcher'
+import { errorMessage, errorMessages, i18nError, mapPasswordError } from '../utils/formErrors'
 
 export function ResetPasswordPage() {
   const navigate = useNavigate()
+  const { t } = useTranslation()
   const [searchParams] = useSearchParams()
   const prefillEmail = searchParams.get('email') || ''
 
@@ -18,6 +22,8 @@ export function ResetPasswordPage() {
   const [errors, setErrors] = useState({})
   const [loading, setLoading] = useState(false)
   const [apiError, setApiError] = useState('')
+  const visibleErrors = errorMessages(errors, t)
+  const visibleApiError = errorMessage(apiError, t)
 
   const handleChange = (e) => {
     const { name, value } = e.target
@@ -29,18 +35,18 @@ export function ResetPasswordPage() {
   const validate = () => {
     const newErrors = {}
 
-    if (!formData.email) newErrors.email = 'Email là bắt buộc'
-    else if (!/\S+@\S+\.\S+/.test(formData.email)) newErrors.email = 'Email không hợp lệ'
+    if (!formData.email) newErrors.email = i18nError('auth.validation.emailRequired')
+    else if (!/\S+@\S+\.\S+/.test(formData.email)) newErrors.email = i18nError('auth.validation.emailInvalid')
 
-    if (!formData.code) newErrors.code = 'Mã xác nhận là bắt buộc'
-    else if (!/^\d{6}$/.test(formData.code)) newErrors.code = 'Mã phải gồm đúng 6 chữ số'
+    if (!formData.code) newErrors.code = i18nError('auth.validation.codeRequired')
+    else if (!/^\d{6}$/.test(formData.code)) newErrors.code = i18nError('auth.validation.codeInvalid')
 
-    if (!formData.new_password) newErrors.new_password = 'Mật khẩu mới là bắt buộc'
-    else if (formData.new_password.length < 8) newErrors.new_password = 'Mật khẩu phải có ít nhất 8 ký tự'
+    if (!formData.new_password) newErrors.new_password = i18nError('auth.validation.newPasswordRequired')
+    else if (formData.new_password.length < 8) newErrors.new_password = i18nError('auth.validation.passwordMin')
 
-    if (!formData.confirm_password) newErrors.confirm_password = 'Vui lòng xác nhận mật khẩu'
+    if (!formData.confirm_password) newErrors.confirm_password = i18nError('auth.validation.confirmRequired')
     else if (formData.new_password !== formData.confirm_password)
-      newErrors.confirm_password = 'Mật khẩu xác nhận không khớp'
+      newErrors.confirm_password = i18nError('auth.validation.confirmMismatch')
 
     setErrors(newErrors)
     return Object.keys(newErrors).length === 0
@@ -55,14 +61,11 @@ export function ResetPasswordPage() {
     try {
       await authAPI.resetPassword(formData.email, formData.code, formData.new_password)
       navigate('/login', {
-        state: { successMessage: 'Mật khẩu đã được đặt lại. Vui lòng đăng nhập.' },
+        state: { successKey: 'auth.reset.success' },
         replace: true,
       })
     } catch (err) {
-      setApiError(
-        err.response?.data?.detail ||
-        'Đã xảy ra lỗi. Vui lòng thử lại.'
-      )
+      setApiError(mapPasswordError(err.response?.data?.detail, 'auth.validation.generic'))
     } finally {
       setLoading(false)
     }
@@ -71,29 +74,32 @@ export function ResetPasswordPage() {
   return (
     <div className="min-h-screen flex items-center justify-center p-4">
       <div className="bg-white rounded-lg shadow-lg p-8 w-full max-w-md">
-        <h1 className="text-2xl font-bold text-center text-gray-800 mb-2">Đặt lại mật khẩu</h1>
+        <div className="flex justify-end mb-4">
+          <LanguageSwitcher compact />
+        </div>
+        <h1 className="text-2xl font-bold text-center text-gray-800 mb-2">{t('auth.reset.title')}</h1>
         <p className="text-center text-gray-500 mb-6 text-sm">
-          Nhập mã 6 số đã gửi về email và mật khẩu mới của bạn.
+          {t('auth.reset.subtitle')}
         </p>
 
         <form onSubmit={handleSubmit}>
           <Input
-            label="Email"
+            label={t('auth.fields.email')}
             type="email"
             name="email"
             value={formData.email}
             onChange={handleChange}
-            error={errors.email}
+            error={visibleErrors.email}
             placeholder="email@cuaban.com"
           />
 
           <Input
-            label="Mã xác nhận (6 chữ số)"
+            label={t('auth.fields.code')}
             type="text"
             name="code"
             value={formData.code}
             onChange={handleChange}
-            error={errors.code}
+            error={visibleErrors.code}
             placeholder="123456"
             maxLength={6}
             inputMode="numeric"
@@ -101,44 +107,44 @@ export function ResetPasswordPage() {
           />
 
           <Input
-            label="Mật khẩu mới"
+            label={t('auth.fields.newPassword')}
             type="password"
             name="new_password"
             value={formData.new_password}
             onChange={handleChange}
-            error={errors.new_password}
-            placeholder="Tối thiểu 8 ký tự"
+            error={visibleErrors.new_password}
+            placeholder={t('auth.placeholders.password')}
           />
 
           <Input
-            label="Xác nhận mật khẩu mới"
+            label={t('auth.fields.confirmNewPassword')}
             type="password"
             name="confirm_password"
             value={formData.confirm_password}
             onChange={handleChange}
-            error={errors.confirm_password}
-            placeholder="Nhập lại mật khẩu mới"
+            error={visibleErrors.confirm_password}
+            placeholder={t('auth.placeholders.confirmNewPassword')}
           />
 
-          {apiError && (
+          {visibleApiError && (
             <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
-              <p className="text-sm text-red-600">{apiError}</p>
+              <p className="text-sm text-red-600">{visibleApiError}</p>
             </div>
           )}
 
           <Button type="submit" className="w-full" loading={loading}>
-            Đặt lại mật khẩu
+            {t('auth.reset.button')}
           </Button>
         </form>
 
         <p className="mt-4 text-center text-sm text-gray-600">
-          Chưa có mã?{' '}
+          {t('auth.reset.resendPrompt')}{' '}
           <Link to="/forgot-password" className="text-primary hover:underline font-medium">
-            Gửi lại
+            {t('auth.reset.resend')}
           </Link>
           {' · '}
           <Link to="/login" className="text-primary hover:underline font-medium">
-            Đăng nhập
+            {t('auth.forgot.backToLogin')}
           </Link>
         </p>
       </div>

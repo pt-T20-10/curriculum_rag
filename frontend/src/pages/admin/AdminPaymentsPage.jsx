@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { adminAPI } from '../../api/admin'
 import { Navbar } from '../../components/layout/Navbar'
 import { AdminNavigation } from '../../components/layout/AdminNavigation'
@@ -8,17 +9,16 @@ const STATUS_STYLE = {
   confirmed: 'bg-green-100 text-green-700 border-green-200',
   rejected: 'bg-red-100 text-red-700 border-red-200',
 }
-const STATUS_LABEL = { pending: 'Chờ xác nhận', confirmed: 'Đã xác nhận', rejected: 'Từ chối' }
-
 function RejectModal({ onConfirm, onCancel }) {
+  const { t } = useTranslation()
   const [reason, setReason] = useState('')
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-5">
-        <h3 className="text-base font-semibold text-gray-800 mb-3">Từ chối giao dịch</h3>
+        <h3 className="text-base font-semibold text-gray-800 mb-3">{t('admin.payments.rejectTitle')}</h3>
         <textarea
           className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 h-24 resize-none mb-4"
-          placeholder="Lý do từ chối (tùy chọn)..."
+          placeholder={t('admin.payments.rejectPlaceholder')}
           value={reason}
           onChange={e => setReason(e.target.value)}
         />
@@ -27,13 +27,13 @@ function RejectModal({ onConfirm, onCancel }) {
             onClick={() => onConfirm(reason)}
             className="flex-1 py-2 bg-red-500 text-white rounded-lg text-sm font-medium hover:bg-red-600 transition-colors"
           >
-            Xác nhận từ chối
+            {t('admin.payments.rejectConfirm')}
           </button>
           <button
             onClick={onCancel}
             className="flex-1 py-2 border border-gray-200 text-gray-600 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors"
           >
-            Hủy
+            {t('app.cancel')}
           </button>
         </div>
       </div>
@@ -42,6 +42,8 @@ function RejectModal({ onConfirm, onCancel }) {
 }
 
 export function AdminPaymentsPage() {
+  const { i18n, t } = useTranslation()
+  const locale = i18n.resolvedLanguage === 'en' ? 'en-US' : 'vi-VN'
   const [transactions, setTransactions] = useState([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -59,7 +61,8 @@ export function AdminPaymentsPage() {
     setTimeout(() => { setError(''); setSuccess('') }, 3000)
   }
 
-  const fetchTransactions = async () => {
+  const fetchTransactions = useCallback(async () => {
+    await Promise.resolve()
     setLoading(true)
     try {
       const params = { page, page_size: PAGE_SIZE }
@@ -70,19 +73,22 @@ export function AdminPaymentsPage() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [page, statusFilter])
 
-  useEffect(() => { fetchTransactions() }, [page, statusFilter])
+  useEffect(() => {
+    const timer = setTimeout(() => { fetchTransactions() }, 0)
+    return () => clearTimeout(timer)
+  }, [fetchTransactions])
 
   const handleConfirm = async (txnId) => {
-    if (!window.confirm('Xác nhận giao dịch này và cộng credits cho người dùng?')) return
+    if (!window.confirm(t('admin.payments.confirmPrompt'))) return
     setActionLoading(txnId)
     try {
       const r = await adminAPI.confirmTransaction(txnId)
-      flash(`Đã xác nhận! Số dư mới: ${r.data.new_balance} credits`)
+      flash(t('admin.payments.confirmed', { balance: r.data.new_balance }))
       fetchTransactions()
     } catch (e) {
-      flash(e.response?.data?.detail || 'Lỗi khi xác nhận', true)
+      flash(e.response?.data?.detail || t('admin.payments.confirmError'), true)
     } finally {
       setActionLoading(null)
     }
@@ -94,10 +100,10 @@ export function AdminPaymentsPage() {
     setActionLoading(txnId)
     try {
       await adminAPI.rejectTransaction(txnId, reason)
-      flash('Đã từ chối giao dịch')
+      flash(t('admin.payments.rejected'))
       fetchTransactions()
     } catch (e) {
-      flash(e.response?.data?.detail || 'Lỗi khi từ chối', true)
+      flash(e.response?.data?.detail || t('admin.payments.rejectError'), true)
     } finally {
       setActionLoading(null)
     }
@@ -114,8 +120,8 @@ export function AdminPaymentsPage() {
         {/* Header */}
         <div className="flex items-center justify-between mb-8">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">Xác nhận thanh toán</h1>
-            <p className="text-sm text-gray-500 mt-1">Duyệt giao dịch nạp tiền của người dùng</p>
+            <h1 className="text-2xl font-bold text-gray-900">{t('admin.payments.title')}</h1>
+            <p className="text-sm text-gray-500 mt-1">{t('admin.payments.subtitle')}</p>
           </div>
         </div>
 
@@ -125,7 +131,7 @@ export function AdminPaymentsPage() {
 
       {/* Filter */}
       <div className="flex items-center gap-3 flex-wrap">
-        <span className="text-sm font-medium text-gray-600">Lọc:</span>
+        <span className="text-sm font-medium text-gray-600">{t('admin.payments.filter')}</span>
         {['', 'pending', 'confirmed', 'rejected'].map((s) => (
           <button
             key={s}
@@ -136,10 +142,10 @@ export function AdminPaymentsPage() {
                 : 'border border-gray-200 text-gray-600 hover:bg-gray-50'
             }`}
           >
-            {s === '' ? 'Tất cả' : STATUS_LABEL[s]}
+            {s === '' ? t('app.all') : t(`topup.statuses.${s}`, s)}
           </button>
         ))}
-        <span className="ml-auto text-sm text-gray-400">{total} giao dịch</span>
+        <span className="ml-auto text-sm text-gray-400">{t('admin.payments.total', { count: total })}</span>
       </div>
 
       {/* Table */}
@@ -149,65 +155,65 @@ export function AdminPaymentsPage() {
             <div className="animate-spin rounded-full h-7 w-7 border-b-2 border-primary" />
           </div>
         ) : transactions.length === 0 ? (
-          <div className="text-center py-10 text-gray-400 text-sm">Không có giao dịch nào</div>
+          <div className="text-center py-10 text-gray-400 text-sm">{t('admin.payments.empty')}</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 border-b border-gray-100">
                 <tr>
-                  {['Ngày', 'Người dùng', 'Gói', 'Số tiền', 'Nội dung CK', 'Trạng thái', 'Thao tác'].map(h => (
+                  {[t('admin.payments.date'), t('admin.payments.user'), t('admin.payments.plan'), t('admin.payments.amount'), t('admin.payments.transferContent'), t('app.status'), t('app.actions')].map(h => (
                     <th key={h} className="text-left py-3 px-4 font-medium text-gray-500 whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {transactions.map((t) => (
-                  <tr key={t.id} className="border-b border-gray-50 hover:bg-gray-50">
+                {transactions.map((transaction) => (
+                  <tr key={transaction.id} className="border-b border-gray-50 hover:bg-gray-50">
                     <td className="py-3 px-4 text-gray-600 whitespace-nowrap">
-                      {new Date(t.created_at).toLocaleDateString('vi-VN')}
+                      {new Date(transaction.created_at).toLocaleDateString(locale)}
                     </td>
                     <td className="py-3 px-4">
-                      <div className="font-medium text-gray-800">{t.user_name || '—'}</div>
-                      <div className="text-xs text-gray-400">{t.user_email}</div>
+                      <div className="font-medium text-gray-800">{transaction.user_name || '—'}</div>
+                      <div className="text-xs text-gray-400">{transaction.user_email}</div>
                     </td>
-                    <td className="py-3 px-4 text-gray-800">{t.plan_name}</td>
+                    <td className="py-3 px-4 text-gray-800">{transaction.plan_name}</td>
                     <td className="py-3 px-4 text-gray-800 font-medium whitespace-nowrap">
-                      {t.amount_vnd.toLocaleString('vi-VN')}₫
+                      {transaction.amount_vnd.toLocaleString(locale)}₫
                     </td>
                     <td className="py-3 px-4 font-mono text-xs text-gray-600 whitespace-nowrap">
-                      {t.transfer_content}
+                      {transaction.transfer_content}
                     </td>
                     <td className="py-3 px-4">
-                      <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-medium border ${STATUS_STYLE[t.status] || ''}`}>
-                        {STATUS_LABEL[t.status] || t.status}
+                      <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-medium border ${STATUS_STYLE[transaction.status] || ''}`}>
+                        {t(`topup.statuses.${transaction.status}`, transaction.status)}
                       </span>
-                      {t.reject_reason && (
-                        <p className="text-xs text-red-500 mt-1 max-w-[140px] truncate" title={t.reject_reason}>
-                          {t.reject_reason}
+                      {transaction.reject_reason && (
+                        <p className="text-xs text-red-500 mt-1 max-w-[140px] truncate" title={transaction.reject_reason}>
+                          {transaction.reject_reason}
                         </p>
                       )}
                     </td>
                     <td className="py-3 px-4">
-                      {t.status === 'pending' ? (
+                      {transaction.status === 'pending' ? (
                         <div className="flex gap-2">
                           <button
-                            onClick={() => handleConfirm(t.id)}
-                            disabled={actionLoading === t.id}
+                            onClick={() => handleConfirm(transaction.id)}
+                            disabled={actionLoading === transaction.id}
                             className="px-3 py-1.5 text-xs bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:opacity-60 transition-colors"
                           >
-                            {actionLoading === t.id ? '...' : 'Xác nhận'}
+                            {actionLoading === transaction.id ? '...' : t('admin.payments.confirm')}
                           </button>
                           <button
-                            onClick={() => setRejectTarget(t.id)}
-                            disabled={actionLoading === t.id}
+                            onClick={() => setRejectTarget(transaction.id)}
+                            disabled={actionLoading === transaction.id}
                             className="px-3 py-1.5 text-xs border border-red-200 text-red-500 rounded-lg hover:bg-red-50 disabled:opacity-60 transition-colors"
                           >
-                            Từ chối
+                            {t('admin.payments.reject')}
                           </button>
                         </div>
                       ) : (
                         <span className="text-xs text-gray-400">
-                          {t.confirmed_at ? new Date(t.confirmed_at).toLocaleDateString('vi-VN') : '—'}
+                          {transaction.confirmed_at ? new Date(transaction.confirmed_at).toLocaleDateString(locale) : '—'}
                         </span>
                       )}
                     </td>
@@ -221,21 +227,21 @@ export function AdminPaymentsPage() {
         {/* Pagination */}
         {totalPages > 1 && (
           <div className="flex items-center justify-between px-4 py-3 border-t border-gray-100">
-            <span className="text-xs text-gray-400">Trang {page} / {totalPages}</span>
+            <span className="text-xs text-gray-400">{t('app.page', { page, totalPages })}</span>
             <div className="flex gap-2">
               <button
                 onClick={() => setPage(p => Math.max(1, p - 1))}
                 disabled={page === 1}
                 className="px-3 py-1.5 text-xs border border-gray-200 rounded-lg disabled:opacity-40 hover:bg-gray-50"
               >
-                Trước
+                {t('app.previous')}
               </button>
               <button
                 onClick={() => setPage(p => Math.min(totalPages, p + 1))}
                 disabled={page === totalPages}
                 className="px-3 py-1.5 text-xs border border-gray-200 rounded-lg disabled:opacity-40 hover:bg-gray-50"
               >
-                Sau
+                {t('app.next')}
               </button>
             </div>
           </div>

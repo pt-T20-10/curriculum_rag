@@ -1,9 +1,12 @@
 import { Link } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { useAuth } from '../../context/AuthContext'
 import { Button } from '../common/Button'
+import { LanguageSwitcher } from '../common/LanguageSwitcher'
 
 export function Navbar() {
   const { user, logout } = useAuth()
+  const { t } = useTranslation()
 
   return (
     <nav className="bg-white shadow-sm border-b border-gray-200">
@@ -12,7 +15,7 @@ export function Navbar() {
           {/* Logo */}
           <Link to="/dashboard" className="flex items-center">
             <h1 className="text-xl font-bold text-primary">
-              Hệ Thống Tạo Giáo Trình AI
+              {t('app.name')}
             </h1>
           </Link>
 
@@ -24,9 +27,11 @@ export function Navbar() {
                 to="/admin"
                 className="hidden sm:block text-sm font-medium text-blue-600 hover:text-blue-800 transition-colors"
               >
-                Admin
+                {t('app.admin')}
               </Link>
             )}
+
+            <LanguageSwitcher compact className="hidden sm:inline-flex" />
 
             {/* User info - clickable → dashboard */}
             <Link to="/dashboard" className="hidden sm:block text-sm text-gray-600 hover:text-primary transition-colors">
@@ -37,18 +42,18 @@ export function Navbar() {
             <Link
               to="/profile"
               className="hidden sm:block text-sm font-medium text-gray-600 hover:text-primary transition-colors"
-              title="Cài đặt tài khoản"
+              title={t('nav.settingsTitle')}
             >
-              Cài đặt
+              {t('nav.settings')}
             </Link>
 
             {/* Top-up link */}
             <Link
               to="/profile"
               className="hidden sm:block text-sm font-medium text-primary hover:text-blue-500 transition-colors"
-              title="Nạp credits"
+              title={t('nav.topupTitle')}
             >
-              Nạp tiền
+              {t('nav.topup')}
             </Link>
 
             {/* Credits badge */}
@@ -77,7 +82,7 @@ export function Navbar() {
               onClick={logout}
               className="text-sm"
             >
-              Đăng xuất
+              {t('nav.logout')}
             </Button>
           </div>
         </div>

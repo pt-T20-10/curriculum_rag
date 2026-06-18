@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { useAuth } from '../context/AuthContext'
 import { authAPI } from '../api/auth'
 import { PasswordInput } from '../components/common/PasswordInput'
@@ -7,24 +8,25 @@ import { Button } from '../components/common/Button'
 import { Navbar } from '../components/layout/Navbar'
 import { TopUpTab } from '../components/topup/TopUpTab'
 import { AdvancedSettings } from '../components/settings/AdvancedSettings'
+import { errorMessage, errorMessages, i18nError, mapPasswordError } from '../utils/formErrors'
 
 const EMPTY_FORM = { currentPassword: '', newPassword: '', confirmPassword: '' }
 
 function validateField(name, value, allData) {
   switch (name) {
     case 'currentPassword':
-      if (!value.trim()) return 'Mật khẩu hiện tại là bắt buộc'
+      if (!value.trim()) return i18nError('auth.validation.currentPasswordRequired')
       return ''
     case 'newPassword':
-      if (!value) return 'Mật khẩu mới là bắt buộc'
-      if (value.length < 8) return 'Mật khẩu phải có ít nhất 8 ký tự'
-      if (!/[A-Z]/.test(value)) return 'Mật khẩu phải có ít nhất 1 chữ hoa'
-      if (!/[0-9]/.test(value)) return 'Mật khẩu phải có ít nhất 1 chữ số'
+      if (!value) return i18nError('auth.validation.newPasswordRequired')
+      if (value.length < 8) return i18nError('auth.validation.passwordMin')
+      if (!/[A-Z]/.test(value)) return i18nError('auth.validation.passwordUpper')
+      if (!/[0-9]/.test(value)) return i18nError('auth.validation.passwordNumber')
       if (allData?.currentPassword && value === allData.currentPassword)
-        return 'Mật khẩu mới phải khác mật khẩu hiện tại'
+        return i18nError('auth.validation.passwordDifferent')
       return ''
     case 'confirmPassword':
-      if (value !== allData?.newPassword) return 'Mật khẩu xác nhận không khớp'
+      if (value !== allData?.newPassword) return i18nError('auth.validation.confirmMismatch')
       return ''
     default:
       return ''
@@ -32,6 +34,7 @@ function validateField(name, value, allData) {
 }
 
 function ChangePasswordTab() {
+  const { t } = useTranslation()
   const { user } = useAuth()
   const [formData, setFormData] = useState(EMPTY_FORM)
   const [errors, setErrors] = useState({})
@@ -39,6 +42,8 @@ function ChangePasswordTab() {
   const [loading, setLoading] = useState(false)
   const [successMessage, setSuccessMessage] = useState('')
   const [apiError, setApiError] = useState('')
+  const visibleErrors = errorMessages(errors, t)
+  const visibleApiError = errorMessage(apiError, t)
 
   const handleChange = (e) => {
     const { name, value } = e.target
@@ -85,14 +90,15 @@ function ChangePasswordTab() {
       setFormData(EMPTY_FORM)
       setErrors({})
       setTouched({})
-      setSuccessMessage('Mật khẩu đã được cập nhật thành công!')
+      setSuccessMessage('profile.password.success')
       setTimeout(() => setSuccessMessage(''), 2000)
     } catch (error) {
       const detail = error.response?.data?.detail
-      if (detail === 'Mật khẩu hiện tại không đúng') {
-        setErrors(prev => ({ ...prev, currentPassword: detail }))
+      const mappedError = mapPasswordError(detail, 'auth.validation.updatePasswordFailed')
+      if (mappedError.key === 'auth.validation.currentPasswordWrong') {
+        setErrors(prev => ({ ...prev, currentPassword: mappedError }))
       } else {
-        setApiError(detail || 'Không thể cập nhật mật khẩu. Vui lòng thử lại.')
+        setApiError(mappedError)
       }
     } finally {
       setLoading(false)
@@ -102,9 +108,9 @@ function ChangePasswordTab() {
   if (user?.auth_provider === 'google') {
     return (
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 max-w-md">
-        <h2 className="text-lg font-semibold text-gray-800 mb-5">Đổi mật khẩu</h2>
+        <h2 className="text-lg font-semibold text-gray-800 mb-5">{t('profile.password.title')}</h2>
         <p className="text-sm text-gray-500">
-          Tài khoản của bạn đăng nhập qua Google và không sử dụng mật khẩu.
+          {t('profile.password.googleAccount')}
         </p>
       </div>
     )
@@ -112,50 +118,50 @@ function ChangePasswordTab() {
 
   return (
     <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 max-w-md">
-      <h2 className="text-lg font-semibold text-gray-800 mb-5">Đổi mật khẩu</h2>
+      <h2 className="text-lg font-semibold text-gray-800 mb-5">{t('profile.password.title')}</h2>
       <form onSubmit={handleSubmit} noValidate>
         <PasswordInput
-          label="Mật khẩu hiện tại"
+          label={t('auth.fields.currentPassword')}
           name="currentPassword"
           value={formData.currentPassword}
           onChange={handleChange}
           onBlur={handleBlur}
-          error={errors.currentPassword}
-          placeholder="Nhập mật khẩu hiện tại"
+          error={visibleErrors.currentPassword}
+          placeholder={t('auth.placeholders.currentPassword')}
           autoComplete="current-password"
         />
         <PasswordInput
-          label="Mật khẩu mới"
+          label={t('auth.fields.newPassword')}
           name="newPassword"
           value={formData.newPassword}
           onChange={handleChange}
           onBlur={handleBlur}
-          error={errors.newPassword}
-          placeholder="Ít nhất 8 ký tự, 1 chữ hoa, 1 số"
+          error={visibleErrors.newPassword}
+          placeholder={t('auth.placeholders.newPassword')}
           autoComplete="new-password"
         />
         <PasswordInput
-          label="Xác nhận mật khẩu mới"
+          label={t('auth.fields.confirmNewPassword')}
           name="confirmPassword"
           value={formData.confirmPassword}
           onChange={handleChange}
           onBlur={handleBlur}
-          error={errors.confirmPassword}
-          placeholder="Nhập lại mật khẩu mới"
+          error={visibleErrors.confirmPassword}
+          placeholder={t('auth.placeholders.confirmNewPassword')}
           autoComplete="new-password"
         />
-        {apiError && (
+        {visibleApiError && (
           <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
-            <p className="text-sm text-red-600">{apiError}</p>
+            <p className="text-sm text-red-600">{visibleApiError}</p>
           </div>
         )}
         {successMessage && (
           <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg">
-            <p className="text-sm text-green-700">{successMessage}</p>
+            <p className="text-sm text-green-700">{t(successMessage)}</p>
           </div>
         )}
         <Button type="submit" className="w-full" loading={loading} disabled={!isFormValid}>
-          Cập nhật mật khẩu
+          {t('profile.password.submit')}
         </Button>
       </form>
     </div>
@@ -163,12 +169,13 @@ function ChangePasswordTab() {
 }
 
 const ALL_TABS = [
-  { key: 'topup', label: 'Credits & Nạp tiền' },
-  { key: 'password', label: 'Đổi mật khẩu' },
-  { key: 'advanced', label: 'Nâng cao', hideForAdmin: true },
+  { key: 'topup', labelKey: 'profile.tabs.topup' },
+  { key: 'password', labelKey: 'profile.tabs.password' },
+  { key: 'advanced', labelKey: 'profile.tabs.advanced', hideForAdmin: true },
 ]
 
 export function ProfilePage() {
+  const { t } = useTranslation()
   const { user } = useAuth()
   const isAdmin = user?.role === 'admin'
   const TABS = ALL_TABS.filter(t => !(t.hideForAdmin && isAdmin))
@@ -183,20 +190,20 @@ export function ProfilePage() {
         {/* Breadcrumb */}
         <div className="mb-6 flex items-center gap-2 text-sm text-gray-500">
           <Link to="/dashboard" className="hover:text-primary transition-colors">
-            Trang chủ
+            {t('profile.breadcrumbHome')}
           </Link>
           <span>/</span>
-          <span className="text-gray-700 font-medium">Cài đặt tài khoản</span>
+          <span className="text-gray-700 font-medium">{t('profile.title')}</span>
         </div>
 
         {/* Page header */}
         <div className="mb-6">
-          <h1 className="text-2xl font-bold text-gray-900">Cài đặt tài khoản</h1>
+          <h1 className="text-2xl font-bold text-gray-900">{t('profile.title')}</h1>
           <p className="text-gray-500 mt-1">{user?.email}</p>
           {isAdmin && (
             <p className="text-xs text-purple-600 mt-1">
-              Để chỉnh cấu hình hệ thống, vào{' '}
-              <Link to="/admin/config" className="underline hover:text-purple-700">Admin → Cấu hình hệ thống</Link>.
+              {t('profile.adminConfigHint')}{' '}
+              <Link to="/admin/config" className="underline hover:text-purple-700">{t('profile.adminConfigLink')}</Link>.
             </p>
           )}
         </div>
@@ -213,7 +220,7 @@ export function ProfilePage() {
                   : 'text-gray-500 hover:text-gray-700'
               }`}
             >
-              {tab.label}
+              {t(tab.labelKey)}
             </button>
           ))}
         </div>
@@ -224,7 +231,7 @@ export function ProfilePage() {
         {activeTab === 'advanced' && (
           <div>
             <p className="text-sm text-gray-500 mb-4">
-              Ghi đè tham số tạo nội dung cho tài khoản của bạn. Thay đổi áp dụng từ lần tạo giáo trình tiếp theo.
+              {t('profile.advancedIntro')}
             </p>
             <AdvancedSettings />
           </div>

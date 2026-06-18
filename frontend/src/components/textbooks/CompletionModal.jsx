@@ -1,4 +1,8 @@
+import { useTranslation } from 'react-i18next'
+
 export function CompletionModal({ isOpen, onClose, textbookData, onViewDashboard }) {
+  const { t } = useTranslation()
+
   if (!isOpen || !textbookData) return null
 
   const handleDownload = (fileType) => {
@@ -28,7 +32,7 @@ export function CompletionModal({ isOpen, onClose, textbookData, onViewDashboard
 
         {/* Title */}
         <h3 className="text-2xl font-bold text-gray-900 text-center mb-2">
-          🎉 Tạo giáo trình thành công!
+          🎉 {t('textbook.completion.title')}
         </h3>
 
         {/* Textbook Info */}
@@ -39,10 +43,10 @@ export function CompletionModal({ isOpen, onClose, textbookData, onViewDashboard
             </p>
             <div className="grid grid-cols-2 gap-2 mt-2 text-xs text-green-700">
               <div>
-                <span className="font-medium">Tổng chương:</span> {textbookData.total_chapters || 0}
+                <span className="font-medium">{t('textbook.completion.totalChapters')}</span> {textbookData.total_chapters || 0}
               </div>
               <div>
-                <span className="font-medium">Tổng mục:</span> {textbookData.total_subsections || 0}
+                <span className="font-medium">{t('textbook.completion.totalSubsections')}</span> {textbookData.total_subsections || 0}
               </div>
             </div>
           </div>
@@ -51,7 +55,7 @@ export function CompletionModal({ isOpen, onClose, textbookData, onViewDashboard
         {/* Download Options */}
         <div className="mb-6 space-y-3">
           <p className="text-sm font-medium text-gray-700 text-center mb-3">
-            💾 Tải xuống giáo trình
+            💾 {t('textbook.completion.downloadTitle')}
           </p>
           
           <div className="grid grid-cols-2 gap-3">
@@ -66,7 +70,7 @@ export function CompletionModal({ isOpen, onClose, textbookData, onViewDashboard
                   <path d="M14 2v6h6M9 13h6M9 17h6M9 9h1" fill="white" />
                 </svg>
                 <span className="text-sm font-medium text-red-900">PDF</span>
-                <span className="text-xs text-red-700">Định dạng chuẩn</span>
+                <span className="text-xs text-red-700">{t('textbook.completion.pdfFormat')}</span>
               </button>
             )}
 
@@ -81,14 +85,14 @@ export function CompletionModal({ isOpen, onClose, textbookData, onViewDashboard
                   <path d="M14 2v6h6M10 18v-5h4v5M10 13h4" fill="white" />
                 </svg>
                 <span className="text-sm font-medium text-blue-900">Word</span>
-                <span className="text-xs text-blue-700">Có thể chỉnh sửa</span>
+                <span className="text-xs text-blue-700">{t('textbook.completion.wordFormat')}</span>
               </button>
             )}
           </div>
 
           {!textbookData.pdf_path && !textbookData.docx_path && (
             <p className="text-sm text-gray-500 text-center">
-              Đang xử lý file, vui lòng đợi...
+              {t('textbook.completion.filesProcessing')}
             </p>
           )}
         </div>
@@ -99,20 +103,20 @@ export function CompletionModal({ isOpen, onClose, textbookData, onViewDashboard
             onClick={onViewDashboard}
             className="w-full px-4 py-3 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors"
           >
-            📊 Về Dashboard
+            📊 {t('textbook.completion.viewDashboard')}
           </button>
           <button
             onClick={onClose}
             className="w-full px-4 py-2 bg-gray-100 text-gray-700 font-medium rounded-lg hover:bg-gray-200 transition-colors"
           >
-            Đóng
+            {t('app.close')}
           </button>
         </div>
 
         {/* Tips */}
         <div className="mt-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
           <p className="text-xs text-yellow-800">
-            💡 <span className="font-medium">Lưu ý:</span> Vui lòng kiểm tra và hiệu chỉnh nội dung trước khi sử dụng chính thức.
+            💡 <span className="font-medium">{t('textbook.completion.noteTitle')}</span> {t('textbook.completion.noteText')}
           </p>
         </div>
       </div>

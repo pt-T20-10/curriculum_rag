@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { Navbar } from '../../components/layout/Navbar'
 import { AdminNavigation } from '../../components/layout/AdminNavigation'
-import { loadConfig, saveConfig, DEFAULT_CONFIG } from '../../utils/landingConfig'
+import { loadConfig, saveConfig, DEFAULT_CONFIGS } from '../../utils/landingConfig'
 
 // ---------------------------------------------------------------------------
 // Tiny reusable field components
@@ -76,49 +77,50 @@ function SectionCard({ title, icon, children, defaultOpen = false }) {
 // ---------------------------------------------------------------------------
 
 function HeroEditor({ hero, onChange }) {
+  const { t } = useTranslation()
   const set = (key, val) => onChange({ ...hero, [key]: val })
   return (
     <>
-      <Field label="Tiêu đề chính (Headline)">
-        <TextInput value={hero.headline} onChange={v => set('headline', v)} placeholder="Tạo Giáo Trình AI Hoàn Chỉnh" />
+      <Field label={t('landingAdmin.fields.headline')}>
+        <TextInput value={hero.headline} onChange={v => set('headline', v)} placeholder={t('landingAdmin.placeholders.headline')} />
       </Field>
-      <Field label="Mô tả (Subheadline)">
+      <Field label={t('landingAdmin.fields.subheadline')}>
         <TextArea value={hero.subheadline} onChange={v => set('subheadline', v)} rows={2} />
       </Field>
       <div className="grid grid-cols-2 gap-4">
-        <Field label="Nút CTA chính — nhãn">
-          <TextInput value={hero.cta_primary_label} onChange={v => set('cta_primary_label', v)} placeholder="Bắt đầu miễn phí" />
+        <Field label={t('landingAdmin.fields.primaryCtaLabel')}>
+          <TextInput value={hero.cta_primary_label} onChange={v => set('cta_primary_label', v)} placeholder={t('landingAdmin.placeholders.primaryCta')} />
         </Field>
-        <Field label="Nút CTA chính — URL">
+        <Field label={t('landingAdmin.fields.primaryCtaUrl')}>
           <TextInput value={hero.cta_primary_url} onChange={v => set('cta_primary_url', v)} placeholder="/register" />
         </Field>
-        <Field label="Nút CTA phụ — nhãn">
-          <TextInput value={hero.cta_secondary_label} onChange={v => set('cta_secondary_label', v)} placeholder="Đăng nhập" />
+        <Field label={t('landingAdmin.fields.secondaryCtaLabel')}>
+          <TextInput value={hero.cta_secondary_label} onChange={v => set('cta_secondary_label', v)} placeholder={t('landingAdmin.placeholders.secondaryCta')} />
         </Field>
-        <Field label="Nút CTA phụ — URL">
+        <Field label={t('landingAdmin.fields.secondaryCtaUrl')}>
           <TextInput value={hero.cta_secondary_url} onChange={v => set('cta_secondary_url', v)} placeholder="/login" />
         </Field>
       </div>
-      <Field label="Loại nền">
+      <Field label={t('landingAdmin.fields.backgroundType')}>
         <div className="flex gap-3">
-          {['gradient', 'image'].map(t => (
+          {['gradient', 'image'].map(type => (
             <button
-              key={t}
+              key={type}
               type="button"
-              onClick={() => set('bg_type', t)}
+              onClick={() => set('bg_type', type)}
               className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
-                hero.bg_type === t
+                hero.bg_type === type
                   ? 'bg-primary text-white border-primary'
                   : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
               }`}
             >
-              {t === 'gradient' ? '🎨 Gradient' : '🖼 Ảnh'}
+              {type === 'gradient' ? `🎨 ${t('landingAdmin.fields.gradient')}` : `🖼 ${t('landingAdmin.fields.image')}`}
             </button>
           ))}
         </div>
       </Field>
       {hero.bg_type === 'image' && (
-        <Field label="URL ảnh nền" hint="Ảnh từ Unsplash hoặc URL công khai khác">
+        <Field label={t('landingAdmin.fields.imageUrl')} hint={t('landingAdmin.fields.imageHint')}>
           <TextInput value={hero.bg_image_url} onChange={v => set('bg_image_url', v)} placeholder="https://images.unsplash.com/..." />
         </Field>
       )}
@@ -127,6 +129,7 @@ function HeroEditor({ hero, onChange }) {
 }
 
 function FeaturesEditor({ features, onChange }) {
+  const { t } = useTranslation()
   const setFeature = (i, key, val) => {
     const next = features.map((f, idx) => (idx === i ? { ...f, [key]: val } : f))
     onChange(next)
@@ -135,18 +138,18 @@ function FeaturesEditor({ features, onChange }) {
     <div className="space-y-6">
       {features.map((f, i) => (
         <div key={i} className="p-4 bg-gray-50 rounded-xl border border-gray-200">
-          <p className="text-xs font-bold text-gray-400 uppercase mb-3">Tính năng {i + 1}</p>
+          <p className="text-xs font-bold text-gray-400 uppercase mb-3">{t('landingAdmin.fields.feature', { number: i + 1 })}</p>
           <div className="grid grid-cols-4 gap-3">
-            <Field label="Icon (emoji)">
+            <Field label={t('landingAdmin.fields.icon')}>
               <TextInput value={f.icon} onChange={v => setFeature(i, 'icon', v)} placeholder="🤖" />
             </Field>
             <div className="col-span-3">
-              <Field label="Tiêu đề">
+              <Field label={t('landingAdmin.fields.title')}>
                 <TextInput value={f.title} onChange={v => setFeature(i, 'title', v)} />
               </Field>
             </div>
           </div>
-          <Field label="Mô tả">
+          <Field label={t('landingAdmin.fields.description')}>
             <TextArea value={f.description} onChange={v => setFeature(i, 'description', v)} rows={2} />
           </Field>
         </div>
@@ -156,6 +159,7 @@ function FeaturesEditor({ features, onChange }) {
 }
 
 function StatsEditor({ stats, onChange }) {
+  const { t } = useTranslation()
   const setStat = (i, key, val) =>
     onChange(stats.map((s, idx) => (idx === i ? { ...s, [key]: val } : s)))
   const addStat = () => onChange([...stats, { value: '', label: '' }])
@@ -166,13 +170,13 @@ function StatsEditor({ stats, onChange }) {
       {stats.map((s, i) => (
         <div key={i} className="flex gap-3 items-end">
           <div className="flex-1">
-            <Field label={i === 0 ? 'Giá trị' : undefined}>
+            <Field label={i === 0 ? t('landingAdmin.fields.value') : undefined}>
               <TextInput value={s.value} onChange={v => setStat(i, 'value', v)} placeholder="500+" />
             </Field>
           </div>
           <div className="flex-[2]">
-            <Field label={i === 0 ? 'Nhãn' : undefined}>
-              <TextInput value={s.label} onChange={v => setStat(i, 'label', v)} placeholder="Giáo trình đã tạo" />
+            <Field label={i === 0 ? t('landingAdmin.fields.label') : undefined}>
+              <TextInput value={s.label} onChange={v => setStat(i, 'label', v)} placeholder={t('landingAdmin.placeholders.statLabel')} />
             </Field>
           </div>
           {stats.length > 1 && (
@@ -181,7 +185,7 @@ function StatsEditor({ stats, onChange }) {
               onClick={() => removeStat(i)}
               className="mb-5 text-red-400 hover:text-red-600 transition-colors text-lg leading-none"
             >
-              ×
+              &times;
             </button>
           )}
         </div>
@@ -192,7 +196,7 @@ function StatsEditor({ stats, onChange }) {
           onClick={addStat}
           className="text-sm text-primary hover:underline"
         >
-          + Thêm thống kê
+          + {t('landingAdmin.fields.addStat')}
         </button>
       )}
     </div>
@@ -200,6 +204,7 @@ function StatsEditor({ stats, onChange }) {
 }
 
 function TestimonialsEditor({ testimonials, onChange }) {
+  const { t } = useTranslation()
   const set = (i, key, val) =>
     onChange(testimonials.map((t, idx) => (idx === i ? { ...t, [key]: val } : t)))
   const add = () =>
@@ -208,31 +213,31 @@ function TestimonialsEditor({ testimonials, onChange }) {
 
   return (
     <div className="space-y-4">
-      {testimonials.map((t, i) => (
+      {testimonials.map((testimonial, i) => (
         <div key={i} className="p-4 bg-gray-50 rounded-xl border border-gray-200">
           <div className="flex items-center justify-between mb-3">
-            <p className="text-xs font-bold text-gray-400 uppercase">Đánh giá {i + 1}</p>
+            <p className="text-xs font-bold text-gray-400 uppercase">{t('landingAdmin.fields.testimonial', { number: i + 1 })}</p>
             <button
               type="button"
               onClick={() => remove(i)}
               className="text-xs text-red-500 hover:text-red-700"
             >
-              Xóa
+              {t('app.delete')}
             </button>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Tên">
-              <TextInput value={t.name} onChange={v => set(i, 'name', v)} />
+            <Field label={t('landingAdmin.fields.name')}>
+              <TextInput value={testimonial.name} onChange={v => set(i, 'name', v)} />
             </Field>
-            <Field label="Vai trò">
-              <TextInput value={t.role} onChange={v => set(i, 'role', v)} placeholder="Giảng viên" />
+            <Field label={t('landingAdmin.fields.role')}>
+              <TextInput value={testimonial.role} onChange={v => set(i, 'role', v)} placeholder={t('landingAdmin.placeholders.role')} />
             </Field>
           </div>
-          <Field label="URL ảnh đại diện" hint="Để trống để dùng avatar chữ tắt">
-            <TextInput value={t.avatar} onChange={v => set(i, 'avatar', v)} placeholder="https://..." />
+          <Field label={t('landingAdmin.fields.avatarUrl')} hint={t('landingAdmin.fields.avatarHint')}>
+            <TextInput value={testimonial.avatar} onChange={v => set(i, 'avatar', v)} placeholder="https://..." />
           </Field>
-          <Field label="Nội dung đánh giá">
-            <TextArea value={t.quote} onChange={v => set(i, 'quote', v)} rows={3} />
+          <Field label={t('landingAdmin.fields.quote')}>
+            <TextArea value={testimonial.quote} onChange={v => set(i, 'quote', v)} rows={3} />
           </Field>
         </div>
       ))}
@@ -242,7 +247,7 @@ function TestimonialsEditor({ testimonials, onChange }) {
           onClick={add}
           className="w-full py-3 border-2 border-dashed border-gray-300 rounded-xl text-sm text-gray-500 hover:border-primary hover:text-primary transition-colors font-medium"
         >
-          + Thêm đánh giá
+          + {t('landingAdmin.fields.addTestimonial')}
         </button>
       )}
     </div>
@@ -250,6 +255,7 @@ function TestimonialsEditor({ testimonials, onChange }) {
 }
 
 function PartnersEditor({ logos, onChange }) {
+  const { t } = useTranslation()
   const set = (i, key, val) =>
     onChange(logos.map((l, idx) => (idx === i ? { ...l, [key]: val } : l)))
   const add = () => onChange([...logos, { name: '', url: '' }])
@@ -260,12 +266,12 @@ function PartnersEditor({ logos, onChange }) {
       {logos.map((l, i) => (
         <div key={i} className="flex gap-3 items-end">
           <div className="w-32">
-            <Field label={i === 0 ? 'Tên' : undefined}>
+            <Field label={i === 0 ? t('landingAdmin.fields.logoName') : undefined}>
               <TextInput value={l.name} onChange={v => set(i, 'name', v)} placeholder="OpenAI" />
             </Field>
           </div>
           <div className="flex-1">
-            <Field label={i === 0 ? 'URL ảnh logo' : undefined}>
+            <Field label={i === 0 ? t('landingAdmin.fields.logoUrl') : undefined}>
               <TextInput value={l.url} onChange={v => set(i, 'url', v)} placeholder="https://..." />
             </Field>
           </div>
@@ -274,7 +280,7 @@ function PartnersEditor({ logos, onChange }) {
             onClick={() => remove(i)}
             className="mb-5 text-red-400 hover:text-red-600 text-lg leading-none"
           >
-            ×
+            &times;
           </button>
         </div>
       ))}
@@ -284,7 +290,7 @@ function PartnersEditor({ logos, onChange }) {
           onClick={add}
           className="text-sm text-primary hover:underline"
         >
-          + Thêm logo
+          + {t('landingAdmin.fields.addLogo')}
         </button>
       )}
     </div>
@@ -292,21 +298,22 @@ function PartnersEditor({ logos, onChange }) {
 }
 
 function CtaBannerEditor({ banner, onChange }) {
+  const { t } = useTranslation()
   const set = (key, val) => onChange({ ...banner, [key]: val })
   return (
     <>
-      <Field label="Tiêu đề banner">
+      <Field label={t('landingAdmin.fields.bannerTitle')}>
         <TextInput value={banner.headline} onChange={v => set('headline', v)} />
       </Field>
       <div className="grid grid-cols-2 gap-3">
-        <Field label="Nhãn nút">
+        <Field label={t('landingAdmin.fields.buttonLabel')}>
           <TextInput value={banner.button_label} onChange={v => set('button_label', v)} />
         </Field>
-        <Field label="URL nút">
+        <Field label={t('landingAdmin.fields.buttonUrl')}>
           <TextInput value={banner.button_url} onChange={v => set('button_url', v)} placeholder="/register" />
         </Field>
       </div>
-      <Field label="Màu nền" hint="Hex color (#rrggbb)">
+      <Field label={t('landingAdmin.fields.backgroundColor')} hint={t('landingAdmin.fields.colorHint')}>
         <div className="flex items-center gap-3">
           <input
             type="color"
@@ -327,6 +334,7 @@ function CtaBannerEditor({ banner, onChange }) {
 }
 
 function FooterEditor({ footer, onChange }) {
+  const { t } = useTranslation()
   const set = (key, val) => onChange({ ...footer, [key]: val })
   const setLink = (i, key, val) =>
     onChange({
@@ -340,17 +348,17 @@ function FooterEditor({ footer, onChange }) {
 
   return (
     <>
-      <Field label="Copyright">
+      <Field label={t('landingAdmin.fields.copyright')}>
         <TextInput value={footer.copyright} onChange={v => set('copyright', v)} />
       </Field>
-      <Field label="Liên kết">
+      <Field label={t('landingAdmin.fields.links')}>
         <div className="space-y-2">
           {(footer.links || []).map((link, i) => (
             <div key={i} className="flex gap-2 items-center">
               <TextInput
                 value={link.label}
                 onChange={v => setLink(i, 'label', v)}
-                placeholder="Nhãn"
+                placeholder={t('landingAdmin.fields.label')}
                 className="flex-1"
               />
               <TextInput
@@ -364,7 +372,7 @@ function FooterEditor({ footer, onChange }) {
                 onClick={() => removeLink(i)}
                 className="text-red-400 hover:text-red-600 text-lg leading-none px-1"
               >
-                ×
+                &times;
               </button>
             </div>
           ))}
@@ -374,7 +382,7 @@ function FooterEditor({ footer, onChange }) {
               onClick={addLink}
               className="text-sm text-primary hover:underline mt-1"
             >
-              + Thêm liên kết
+              + {t('landingAdmin.fields.addLink')}
             </button>
           )}
         </div>
@@ -387,12 +395,17 @@ function FooterEditor({ footer, onChange }) {
 // Page
 // ---------------------------------------------------------------------------
 export function AdminLandingPage() {
-  const [config, setConfig] = useState(null)
+  const { i18n, t } = useTranslation()
+  const initialLanguage = DEFAULT_CONFIGS[i18n.resolvedLanguage] ? i18n.resolvedLanguage : 'vi'
+  const [editingLanguage, setEditingLanguage] = useState(initialLanguage)
+  const [config, setConfig] = useState(() => loadConfig(initialLanguage))
   const [saved, setSaved] = useState(false)
 
-  useEffect(() => {
-    setConfig(loadConfig())
-  }, [])
+  const handleLanguageChange = language => {
+    setEditingLanguage(language)
+    setConfig(loadConfig(language))
+    setSaved(false)
+  }
 
   const set = useCallback((section, val) => {
     setConfig(prev => ({ ...prev, [section]: val }))
@@ -400,15 +413,16 @@ export function AdminLandingPage() {
   }, [])
 
   const handleSave = () => {
-    saveConfig(config)
+    saveConfig(editingLanguage, config)
     setSaved(true)
     setTimeout(() => setSaved(false), 2500)
   }
 
   const handleReset = () => {
-    if (window.confirm('Khôi phục tất cả cài đặt về mặc định?')) {
-      setConfig(DEFAULT_CONFIG)
-      saveConfig(DEFAULT_CONFIG)
+    if (window.confirm(t('landingAdmin.resetConfirm'))) {
+      const defaultConfig = DEFAULT_CONFIGS[editingLanguage] || DEFAULT_CONFIGS.vi
+      setConfig(defaultConfig)
+      saveConfig(editingLanguage, defaultConfig)
       setSaved(true)
       setTimeout(() => setSaved(false), 2500)
     }
@@ -437,15 +451,35 @@ export function AdminLandingPage() {
           <div>
             <div className="flex items-center gap-2 mb-1">
               <Link to="/admin" className="text-sm text-gray-400 hover:text-gray-600 transition-colors">
-                Admin
+                {t('app.admin')}
               </Link>
               <span className="text-gray-300">/</span>
-              <span className="text-sm font-medium text-gray-700">Landing Page</span>
+              <span className="text-sm font-medium text-gray-700">{t('landingAdmin.breadcrumb')}</span>
             </div>
-            <h1 className="text-2xl font-bold text-gray-800">Tùy chỉnh Landing Page</h1>
+            <h1 className="text-2xl font-bold text-gray-800">{t('landingAdmin.title')}</h1>
             <p className="text-xs text-gray-400 mt-0.5">
-              Thay đổi được lưu vào trình duyệt và có hiệu lực ngay lập tức.
+              {t('landingAdmin.subtitle')}
             </p>
+          </div>
+        </div>
+
+        <div className="mb-6 flex items-center justify-between rounded-xl border border-gray-200 bg-white px-5 py-3 shadow-sm">
+          <span className="text-sm font-semibold text-gray-700">{t('landingAdmin.editingLanguage')}</span>
+          <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-1">
+            {['vi', 'en'].map(language => (
+              <button
+                key={language}
+                type="button"
+                onClick={() => handleLanguageChange(language)}
+                className={`rounded-md px-4 py-1.5 text-sm font-semibold transition-colors ${
+                  editingLanguage === language
+                    ? 'bg-primary text-white shadow-sm'
+                    : 'text-gray-600 hover:bg-white hover:text-gray-900'
+                }`}
+              >
+                {t(`language.short${language === 'vi' ? 'Vi' : 'En'}`)}
+              </button>
+            ))}
           </div>
         </div>
 
@@ -460,7 +494,7 @@ export function AdminLandingPage() {
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
               </svg>
-              Xem trước trang
+              {t('landingAdmin.preview')}
             </button>
             <span className="text-gray-200">|</span>
             <button
@@ -468,7 +502,7 @@ export function AdminLandingPage() {
               onClick={handleReset}
               className="text-sm text-gray-400 hover:text-red-500 transition-colors"
             >
-              Khôi phục mặc định
+              {t('landingAdmin.resetDefault')}
             </button>
           </div>
 
@@ -486,54 +520,54 @@ export function AdminLandingPage() {
                 <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
                 </svg>
-                Đã lưu!
+                {t('landingAdmin.saved')}
               </>
             ) : (
               <>
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
                 </svg>
-                Lưu thay đổi
+                {t('landingAdmin.saveChanges')}
               </>
             )}
           </button>
         </div>
 
         {/* Section editors */}
-        <SectionCard title="Hero" icon="🚀" defaultOpen>
+        <SectionCard title={t('landingAdmin.sections.hero')} icon="🚀" defaultOpen>
           <HeroEditor hero={config.hero} onChange={v => set('hero', v)} />
         </SectionCard>
 
-        <SectionCard title="Tính năng nổi bật" icon="✨">
+        <SectionCard title={t('landingAdmin.sections.features')} icon="✨">
           <FeaturesEditor features={config.features} onChange={v => set('features', v)} />
         </SectionCard>
 
-        <SectionCard title="Thống kê" icon="📊">
+        <SectionCard title={t('landingAdmin.sections.stats')} icon="📊">
           <StatsEditor stats={config.stats} onChange={v => set('stats', v)} />
         </SectionCard>
 
-        <SectionCard title="Đánh giá người dùng" icon="💬">
+        <SectionCard title={t('landingAdmin.sections.testimonials')} icon="💬">
           <TestimonialsEditor
             testimonials={config.testimonials}
             onChange={v => set('testimonials', v)}
           />
         </SectionCard>
 
-        <SectionCard title="Logo đối tác" icon="🤝">
+        <SectionCard title={t('landingAdmin.sections.partners')} icon="🤝">
           <PartnersEditor
             logos={config.partner_logos}
             onChange={v => set('partner_logos', v)}
           />
         </SectionCard>
 
-        <SectionCard title="Banner CTA cuối trang" icon="🎯">
+        <SectionCard title={t('landingAdmin.sections.cta')} icon="🎯">
           <CtaBannerEditor
             banner={config.cta_banner}
             onChange={v => set('cta_banner', v)}
           />
         </SectionCard>
 
-        <SectionCard title="Footer" icon="🔗">
+        <SectionCard title={t('landingAdmin.sections.footer')} icon="🔗">
           <FooterEditor footer={config.footer} onChange={v => set('footer', v)} />
         </SectionCard>
 
@@ -548,7 +582,7 @@ export function AdminLandingPage() {
                 : 'bg-primary hover:bg-blue-600 text-white'
             }`}
           >
-            {saved ? '✓ Đã lưu!' : '💾 Lưu thay đổi'}
+            {saved ? `✓ ${t('landingAdmin.saved')}` : `💾 ${t('landingAdmin.saveChanges')}`}
           </button>
         </div>
       </div>

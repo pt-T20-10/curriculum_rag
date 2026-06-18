@@ -1,7 +1,9 @@
 import { useState, useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 import { ChapterItem } from './ChapterItem'
 
 export function ChapterList({ chapters, currentChapter, currentSubsection }) {
+  const { t } = useTranslation()
   // Track manually expanded chapters (user clicked to expand)
   const [manuallyExpanded, setManuallyExpanded] = useState([])
 
@@ -35,7 +37,7 @@ export function ChapterList({ chapters, currentChapter, currentSubsection }) {
     return (
       <div className="px-4 py-8 text-center text-gray-400 text-sm">
         <div className="text-4xl mb-2">📚</div>
-        <p>Chưa có danh sách chương</p>
+        <p>{t('textbook.contentSidebar.noChapters')}</p>
       </div>
     )
   }
@@ -45,7 +47,7 @@ export function ChapterList({ chapters, currentChapter, currentSubsection }) {
       {/* Title */}
       <h3 className="text-sm font-bold text-gray-800 flex items-center gap-2">
         <span>📚</span>
-        <span>Danh Sách Chương</span>
+        <span>{t('textbook.contentSidebar.chapterList')}</span>
       </h3>
 
       {/* Chapter List */}

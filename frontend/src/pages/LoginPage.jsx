@@ -1,16 +1,22 @@
 import { useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { useAuth } from '../context/AuthContext'
 import { Input } from '../components/common/Input'
 import { PasswordInput } from '../components/common/PasswordInput'
 import { Button } from '../components/common/Button'
 import { GoogleLoginButton } from '../components/common/GoogleLoginButton'
+import { LanguageSwitcher } from '../components/common/LanguageSwitcher'
+import { errorMessage, errorMessages, i18nError, mapLoginError } from '../utils/formErrors'
 
 export function LoginPage() {
   const navigate = useNavigate()
   const location = useLocation()
   const { login } = useAuth()
-  const successMessage = location.state?.successMessage || ''
+  const { t } = useTranslation()
+  const successMessage = location.state?.successKey
+    ? t(location.state.successKey)
+    : location.state?.successMessage || ''
 
   const [formData, setFormData] = useState({
     identifier: '',
@@ -22,6 +28,9 @@ export function LoginPage() {
   const [apiError, setApiError] = useState('')
   const [fieldErrors, setFieldErrors] = useState({})
   const [formRenderKey, setFormRenderKey] = useState(0)
+  const visibleErrors = errorMessages(errors, t)
+  const visibleFieldErrors = errorMessages(fieldErrors, t)
+  const visibleApiError = errorMessage(apiError, t)
 
   const handleChange = (e) => {
     const { name, value } = e.target
@@ -35,13 +44,13 @@ export function LoginPage() {
     const newErrors = {}
 
     if (!formData.identifier) {
-      newErrors.identifier = 'Tên đăng nhập là bắt buộc'
+      newErrors.identifier = i18nError('auth.login.identifierRequired')
     }
 
     if (!formData.password) {
-      newErrors.password = 'Mật khẩu là bắt buộc'
+      newErrors.password = i18nError('auth.validation.passwordRequired')
     } else if (formData.password.length < 6) {
-      newErrors.password = 'Mật khẩu phải có ít nhất 6 ký tự'
+      newErrors.password = i18nError('auth.login.passwordShort')
     }
 
     setErrors(newErrors)
@@ -73,24 +82,24 @@ export function LoginPage() {
         // Keep both fields so the user can correct only the identifier.
         setFormData({ identifier: savedIdentifier, password: savedPassword })
         setFormRenderKey(k => k + 1)
-        setFieldErrors({ identifier: detail || 'Không tìm thấy tài khoản với thông tin đăng nhập này' })
-      } else if (status === 401 || detail.includes('Mật khẩu')) {
+        setFieldErrors({ identifier: mapLoginError(detail, status) })
+      } else if (status === 401 || detail.includes('M\u1eadt kh\u1ea9u')) {
         // Wrong password: keep username/email, clear only password.
         setFormData({ identifier: savedIdentifier, password: '' })
         setFormRenderKey(k => k + 1)
-        setFieldErrors({ password: detail || 'Mật khẩu không đúng' })
+        setFieldErrors({ password: mapLoginError(detail, status) })
       } else if (status === 400) {
         setFormData({ identifier: savedIdentifier, password: savedPassword })
         setFormRenderKey(k => k + 1)
-        setApiError(detail || 'Yêu cầu không hợp lệ.')
+        setApiError(mapLoginError(detail, status))
       } else if (status === 403) {
         setFormData({ identifier: savedIdentifier, password: savedPassword })
         setFormRenderKey(k => k + 1)
-        setApiError(detail || 'Tài khoản đã bị khóa. Vui lòng liên hệ hỗ trợ.')
+        setApiError(mapLoginError(detail, status))
       } else {
         setFormData({ identifier: savedIdentifier, password: savedPassword })
         setFormRenderKey(k => k + 1)
-        setApiError(detail || 'Đăng nhập thất bại. Vui lòng kiểm tra lại thông tin.')
+        setApiError(mapLoginError(detail, status))
       }
     } finally {
       setLoading(false)
@@ -100,32 +109,35 @@ export function LoginPage() {
   return (
     <div className="min-h-screen flex items-center justify-center p-4">
       <div className="bg-white rounded-lg shadow-lg p-8 w-full max-w-md">
+        <div className="flex justify-end mb-4">
+          <LanguageSwitcher compact />
+        </div>
         <h1 className="text-3xl font-bold text-center text-primary mb-2">
-          Chào mừng trở lại
+          {t('auth.login.welcome')}
         </h1>
         <p className="text-center text-gray-600 mb-6">
-          Đăng nhập vào tài khoản Hệ Thống Tạo Giáo Trình AI
+          {t('auth.login.title')}
         </p>
 
         <form key={formRenderKey} onSubmit={handleSubmit}>
           <Input
-            label="Tên đăng nhập"
+            label={t('auth.login.identifier')}
             type="text"
             name="identifier"
             value={formData.identifier}
             onChange={handleChange}
-            error={errors.identifier || fieldErrors.identifier}
-            placeholder="Tên đăng nhập hoặc email của bạn"
+            error={visibleErrors.identifier || visibleFieldErrors.identifier}
+            placeholder={t('auth.login.identifierPlaceholder')}
             autoFocus
           />
 
           <PasswordInput
-            label="Mật khẩu"
+            label={t('auth.fields.password')}
             name="password"
             value={formData.password}
             onChange={handleChange}
-            error={errors.password || fieldErrors.password}
-            placeholder="Nhập mật khẩu của bạn"
+            error={visibleErrors.password || visibleFieldErrors.password}
+            placeholder={t('auth.placeholders.password')}
           />
 
           {/* Remember Me + Forgot password row */}
@@ -142,12 +154,12 @@ export function LoginPage() {
                 htmlFor="rememberMe"
                 className="text-sm text-gray-700 cursor-pointer select-none"
               >
-                Ghi nhớ đăng nhập
-                <span className="text-xs text-gray-400 ml-1">(30 ngày)</span>
+                {t('auth.login.remember')}
+                <span className="text-xs text-gray-400 ml-1">({t('auth.login.rememberDays')})</span>
               </label>
             </div>
             <Link to="/forgot-password" className="text-sm text-primary hover:underline">
-              Quên mật khẩu?
+              {t('auth.login.forgotPassword')}
             </Link>
           </div>
 
@@ -157,9 +169,9 @@ export function LoginPage() {
             </div>
           )}
 
-          {apiError && (
+          {visibleApiError && (
             <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
-              <p className="text-sm text-red-600">{apiError}</p>
+              <p className="text-sm text-red-600">{visibleApiError}</p>
             </div>
           )}
 
@@ -168,23 +180,23 @@ export function LoginPage() {
             className="w-full"
             loading={loading}
           >
-            Đăng nhập
+            {t('auth.login.button')}
           </Button>
         </form>
 
         <div className="mt-6">
           <div className="relative flex items-center gap-3 mb-4">
             <div className="flex-1 border-t border-gray-200" />
-            <span className="text-xs text-gray-400">hoặc</span>
+            <span className="text-xs text-gray-400">{t('auth.login.or')}</span>
             <div className="flex-1 border-t border-gray-200" />
           </div>
           <GoogleLoginButton />
         </div>
 
         <p className="mt-4 text-center text-sm text-gray-600">
-          Chưa có tài khoản?{' '}
+          {t('auth.login.registerPrompt')}{' '}
           <Link to="/register" className="text-primary hover:underline font-medium">
-            Đăng ký ngay
+            {t('auth.login.registerLink')}
           </Link>
         </p>
       </div>

@@ -1,4 +1,7 @@
+import { useTranslation } from 'react-i18next'
+
 export function WorkflowCard({ stage, status, message }) {
+  const { t } = useTranslation()
   const icons = {
     ingestion: '🔍',
     planner: '📋',
@@ -17,10 +20,10 @@ export function WorkflowCard({ stage, status, message }) {
     pending: 'bg-gray-100 text-gray-600',
   }
   
-  const badgeText = {
-    completed: '✓ Hoàn tất',
-    active: '⏳ Đang xử lý',
-    pending: '⏸️ Chờ xử lý',
+  const badgeIcons = {
+    completed: '✓',
+    active: '⏳',
+    pending: '⏸️',
   }
 
   return (
@@ -31,7 +34,7 @@ export function WorkflowCard({ stage, status, message }) {
           <span className="text-gray-600 text-sm">{message}</span>
         </div>
         <span className={`px-3 py-1 rounded-full text-xs font-semibold ${badgeClasses[status]}`}>
-          {badgeText[status]}
+          {badgeIcons[status]} {t(`textbook.workflow.${status}`, status)}
         </span>
       </div>
     </div>

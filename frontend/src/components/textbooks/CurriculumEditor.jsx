@@ -1,7 +1,9 @@
 import { useState } from 'react'
+import { Trans, useTranslation } from 'react-i18next'
 import { Button } from '../common/Button'
 
 export function CurriculumEditor({ curriculum, onConfirm, onReset }) {
+  const { t } = useTranslation()
   const [editedCurriculum, setEditedCurriculum] = useState(curriculum)
   const [deletedSubs, setDeletedSubs] = useState(new Set())
   const [deletedChapters, setDeletedChapters] = useState(new Set()) // ⭐ NEW
@@ -54,7 +56,7 @@ export function CurriculumEditor({ curriculum, onConfirm, onReset }) {
     }
     const currentCount = editedCurriculum.chapters[chapterIdx].subsections.length
     const newCount = updated[chapterIdx].length
-    updated[chapterIdx].push(`Mục ${chapterIdx + 1}.${currentCount + newCount + 1} (mới)`)
+    updated[chapterIdx].push(`${t('textbook.contentSidebar.subsections')} ${chapterIdx + 1}.${currentCount + newCount + 1}`)
     setNewSubs(updated)
   }
 
@@ -119,11 +121,10 @@ export function CurriculumEditor({ curriculum, onConfirm, onReset }) {
       {/* Header */}
       <div className="bg-blue-50 border-l-4 border-blue-500 p-4 rounded-lg">
         <h3 className="font-semibold text-blue-900 mb-1">
-          ✏️ Xem xét & Chỉnh sửa Cấu trúc Giáo Trình
+          ✏️ {t('textbook.curriculum.title')}
         </h3>
         <p className="text-sm text-blue-700">
-          Chỉnh sửa tiêu đề, xóa hoặc thêm mục trước khi tạo nội dung. 
-          Nhấn <strong>Xác nhận</strong> khi sẵn sàng.
+          <Trans i18nKey="textbook.curriculum.description" components={{ strong: <strong /> }} />
         </p>
       </div>
 
@@ -143,10 +144,10 @@ export function CurriculumEditor({ curriculum, onConfirm, onReset }) {
                   <span className="text-2xl">🗑️</span>
                   <div>
                     <p className="font-semibold text-red-800 line-through">
-                      Chương {chIdx + 1}: {chapter.title}
+                      {t('textbook.curriculum.chapter', { number: chIdx + 1 })}: {chapter.title}
                     </p>
                     <p className="text-xs text-red-600 mt-1">
-                      Chương này đã bị xóa và sẽ không được tạo nội dung
+                      {t('textbook.curriculum.deletedChapter')}
                     </p>
                   </div>
                 </div>
@@ -154,7 +155,7 @@ export function CurriculumEditor({ curriculum, onConfirm, onReset }) {
                   onClick={() => handleRestoreChapter(chIdx)}
                   className="px-4 py-2 text-sm bg-blue-500 text-white rounded-lg hover:bg-blue-600"
                 >
-                  ↩️ Khôi phục
+                  ↩️ {t('textbook.curriculum.restore')}
                 </button>
               </div>
             </div>
@@ -173,7 +174,7 @@ export function CurriculumEditor({ curriculum, onConfirm, onReset }) {
             <div className="mb-3 flex items-start gap-3">
               <div className="flex-1">
                 <label className="block text-sm font-medium text-blue-700 mb-2">
-                  📖 Chương {chIdx + 1}
+                  📖 {t('textbook.curriculum.chapter', { number: chIdx + 1 })}
                 </label>
                 <input
                   type="text"
@@ -187,10 +188,10 @@ export function CurriculumEditor({ curriculum, onConfirm, onReset }) {
               <button
                 onClick={() => handleDeleteChapter(chIdx)}
                 className="mt-6 px-3 py-2 text-red-600 hover:bg-red-50 border border-red-300 rounded-lg flex items-center gap-2"
-                title="Xóa toàn bộ chương này"
+                title={t('textbook.curriculum.deleteChapterTitle')}
               >
                 <span>🗑️</span>
-                <span className="text-sm">Xóa chương</span>
+                <span className="text-sm">{t('textbook.curriculum.deleteChapter')}</span>
               </button>
             </div>
 
@@ -198,7 +199,7 @@ export function CurriculumEditor({ curriculum, onConfirm, onReset }) {
             {totalVisible === 0 && (
               <div className="bg-yellow-50 border border-yellow-200 rounded p-2 mb-3">
                 <p className="text-xs text-yellow-700">
-                  ⚠️ Chương {chIdx + 1} không còn mục nào — sẽ bị bỏ qua khi tạo nội dung.
+                  ⚠️ {t('textbook.curriculum.emptyChapter', { number: chIdx + 1 })}
                 </p>
               </div>
             )}
@@ -227,7 +228,7 @@ export function CurriculumEditor({ curriculum, onConfirm, onReset }) {
                     <button
                       onClick={() => handleDeleteSub(chIdx, subIdx)}
                       className="px-3 py-2 text-red-600 hover:bg-red-50 rounded-lg"
-                      title="Xóa mục này"
+                      title={t('textbook.curriculum.deleteSubsectionTitle')}
                     >
                       🗑️
                     </button>
@@ -253,12 +254,12 @@ export function CurriculumEditor({ curriculum, onConfirm, onReset }) {
                         setNewSubs(updated)
                       }}
                       className="flex-1 px-3 py-2 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary bg-blue-50"
-                      placeholder="Nhập tiêu đề mục mới..."
+                      placeholder={t('textbook.curriculum.newSubsectionPlaceholder')}
                     />
                     <button
                       onClick={() => handleDeleteNewSub(chIdx, newIdx)}
                       className="px-3 py-2 text-red-600 hover:bg-red-50 rounded-lg"
-                      title="Xóa mục mới"
+                      title={t('textbook.curriculum.deleteNewSubsectionTitle')}
                     >
                       🗑️
                     </button>
@@ -272,7 +273,7 @@ export function CurriculumEditor({ curriculum, onConfirm, onReset }) {
               onClick={() => handleAddSub(chIdx)}
               className="mt-3 px-4 py-2 text-sm text-blue-600 hover:bg-blue-50 border border-blue-300 rounded-lg"
             >
-              ➕ Thêm mục
+              ➕ {t('textbook.curriculum.addSubsection')}
             </button>
           </div>
         )
@@ -284,13 +285,13 @@ export function CurriculumEditor({ curriculum, onConfirm, onReset }) {
           onClick={handleConfirm}
           className="flex-1"
         >
-          ✅ Xác nhận & Bắt đầu tạo nội dung
+          ✅ {t('textbook.curriculum.confirm')}
         </Button>
         <Button
           variant="secondary"
           onClick={handleReset}
         >
-          🔄 Đặt lại
+          🔄 {t('textbook.curriculum.reset')}
         </Button>
       </div>
     </div>

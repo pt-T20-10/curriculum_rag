@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
 import { adminAPI } from '../../api/admin'
 import { Navbar } from '../../components/layout/Navbar'
 import { AdminNavigation } from '../../components/layout/AdminNavigation'
@@ -18,29 +19,30 @@ function Badge({ children, color = 'gray' }) {
 }
 
 function LockModal({ user, onClose, onConfirm }) {
+  const { t } = useTranslation()
   const [reason, setReason] = useState('')
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
-        <h3 className="text-lg font-semibold text-gray-800 mb-2">Khoá tài khoản</h3>
+        <h3 className="text-lg font-semibold text-gray-800 mb-2">{t('admin.users.lockTitle')}</h3>
         <p className="text-sm text-gray-600 mb-4">
-          Khoá tài khoản <strong>{user.email}</strong>? Người dùng sẽ không thể đăng nhập.
+          {t('admin.users.lockConfirm', { email: user.email })}
         </p>
         <textarea
           className="w-full border border-gray-300 rounded-lg p-3 text-sm resize-none h-20 focus:outline-none focus:ring-2 focus:ring-primary/40"
-          placeholder="Lý do khoá (tuỳ chọn)..."
+          placeholder={t('admin.users.lockReason')}
           value={reason}
           onChange={e => setReason(e.target.value)}
         />
         <div className="flex gap-3 mt-4 justify-end">
           <button onClick={onClose} className="px-4 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50">
-            Huỷ
+            {t('app.cancel')}
           </button>
           <button
             onClick={() => onConfirm(reason)}
             className="px-4 py-2 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700"
           >
-            Khoá tài khoản
+            {t('admin.users.lockAccount')}
           </button>
         </div>
       </div>
@@ -49,6 +51,8 @@ function LockModal({ user, onClose, onConfirm }) {
 }
 
 export function AdminUsersPage() {
+  const { i18n, t } = useTranslation()
+  const locale = i18n.resolvedLanguage === 'en' ? 'en-US' : 'vi-VN'
   const [users, setUsers] = useState([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -62,6 +66,7 @@ export function AdminUsersPage() {
   const PAGE_SIZE = 20
 
   const load = useCallback(async () => {
+    await Promise.resolve()
     setLoading(true)
     setError(null)
     try {
@@ -72,13 +77,16 @@ export function AdminUsersPage() {
       setUsers(res.data.items)
       setTotal(res.data.total)
     } catch (err) {
-      setError(err.response?.data?.detail || 'Không thể tải dữ liệu')
+      setError(err.response?.data?.detail || t('admin.users.loadError'))
     } finally {
       setLoading(false)
     }
-  }, [page, search, lockedFilter])
+  }, [page, search, lockedFilter, t])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    const timer = setTimeout(() => { load() }, 0)
+    return () => clearTimeout(timer)
+  }, [load])
 
   const handleSearch = (e) => {
     e.preventDefault()
@@ -94,7 +102,7 @@ export function AdminUsersPage() {
       setLockTarget(null)
       load()
     } catch (err) {
-      setError(err.response?.data?.detail || 'Khoá thất bại')
+      setError(err.response?.data?.detail || t('admin.users.lockFailed'))
     } finally {
       setActionLoading(null)
     }
@@ -106,7 +114,7 @@ export function AdminUsersPage() {
       await adminAPI.unlockUser(userId)
       load()
     } catch (err) {
-      setError(err.response?.data?.detail || 'Mở khoá thất bại')
+      setError(err.response?.data?.detail || t('admin.users.unlockFailed'))
     } finally {
       setActionLoading(null)
     }
@@ -131,8 +139,8 @@ export function AdminUsersPage() {
 
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-2xl font-bold text-gray-800">Quản lý người dùng</h1>
-            <p className="text-sm text-gray-500 mt-0.5">Tổng: {total} người dùng</p>
+            <h1 className="text-2xl font-bold text-gray-800">{t('admin.users.title')}</h1>
+            <p className="text-sm text-gray-500 mt-0.5">{t('admin.users.total', { count: total })}</p>
           </div>
         </div>
 
@@ -140,7 +148,7 @@ export function AdminUsersPage() {
         <form onSubmit={handleSearch} className="flex flex-wrap gap-3 mb-6">
           <input
             type="text"
-            placeholder="Tìm email hoặc tên..."
+            placeholder={t('admin.users.searchPlaceholder')}
             value={search}
             onChange={e => setSearch(e.target.value)}
             className="border border-gray-300 rounded-lg px-3 py-2 text-sm w-72 focus:outline-none focus:ring-2 focus:ring-primary/40"
@@ -150,15 +158,15 @@ export function AdminUsersPage() {
             onChange={e => { setLockedFilter(e.target.value); setPage(1) }}
             className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
           >
-            <option value="">Tất cả trạng thái</option>
-            <option value="false">Bình thường</option>
-            <option value="true">Bị khoá</option>
+            <option value="">{t('admin.users.allStatuses')}</option>
+            <option value="false">{t('admin.users.normal')}</option>
+            <option value="true">{t('admin.users.locked')}</option>
           </select>
           <button
             type="submit"
             className="px-4 py-2 bg-primary text-white rounded-lg text-sm hover:bg-primary/90"
           >
-            Tìm kiếm
+            {t('app.search')}
           </button>
         </form>
 
@@ -172,13 +180,13 @@ export function AdminUsersPage() {
           <table className="w-full text-sm">
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
-                <th className="text-left px-4 py-3 text-gray-600 font-medium">Người dùng</th>
-                <th className="text-left px-4 py-3 text-gray-600 font-medium">Trạng thái</th>
+                <th className="text-left px-4 py-3 text-gray-600 font-medium">{t('admin.users.user')}</th>
+                <th className="text-left px-4 py-3 text-gray-600 font-medium">{t('app.status')}</th>
                 <th className="text-left px-4 py-3 text-gray-600 font-medium">Credits</th>
-                <th className="text-left px-4 py-3 text-gray-600 font-medium">Giáo trình</th>
-                <th className="text-left px-4 py-3 text-gray-600 font-medium">Đăng ký qua</th>
-                <th className="text-left px-4 py-3 text-gray-600 font-medium">Ngày tạo</th>
-                <th className="text-right px-4 py-3 text-gray-600 font-medium">Thao tác</th>
+                <th className="text-left px-4 py-3 text-gray-600 font-medium">{t('nav.adminTextbooks')}</th>
+                <th className="text-left px-4 py-3 text-gray-600 font-medium">{t('admin.users.registeredVia')}</th>
+                <th className="text-left px-4 py-3 text-gray-600 font-medium">{t('app.createdAt')}</th>
+                <th className="text-right px-4 py-3 text-gray-600 font-medium">{t('app.actions')}</th>
               </tr>
             </thead>
             <tbody>
@@ -190,7 +198,7 @@ export function AdminUsersPage() {
                 </tr>
               ) : users.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="text-center py-12 text-gray-400">Không có người dùng</td>
+                  <td colSpan={7} className="text-center py-12 text-gray-400">{t('admin.users.noUsers')}</td>
                 </tr>
               ) : (
                 users.map(u => (
@@ -202,24 +210,24 @@ export function AdminUsersPage() {
                     <td className="px-4 py-3">
                       {u.is_locked ? (
                         <div>
-                          <Badge color="red">Bị khoá</Badge>
+                          <Badge color="red">{t('admin.users.locked')}</Badge>
                           {u.locked_at && (
                             <div className="text-xs text-gray-400 mt-0.5">
-                              {new Date(u.locked_at).toLocaleDateString('vi-VN')}
+                              {new Date(u.locked_at).toLocaleDateString(locale)}
                             </div>
                           )}
                         </div>
                       ) : u.is_active ? (
-                        <Badge color="green">Hoạt động</Badge>
+                        <Badge color="green">{t('app.active')}</Badge>
                       ) : (
-                        <Badge color="yellow">Vô hiệu</Badge>
+                        <Badge color="yellow">{t('app.inactive')}</Badge>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-gray-700">{u.credits.toLocaleString('vi-VN')}</td>
+                    <td className="px-4 py-3 text-gray-700">{u.credits.toLocaleString(locale)}</td>
                     <td className="px-4 py-3 text-gray-700">{u.textbook_count}</td>
                     <td className="px-4 py-3 text-gray-500 text-xs capitalize">{u.auth_provider}</td>
                     <td className="px-4 py-3 text-gray-500 text-xs">
-                      {new Date(u.created_at).toLocaleDateString('vi-VN')}
+                      {new Date(u.created_at).toLocaleDateString(locale)}
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex justify-end">
@@ -229,7 +237,7 @@ export function AdminUsersPage() {
                             disabled={actionLoading === u.id}
                             className="px-3 py-1 text-xs bg-green-50 text-green-700 border border-green-200 rounded hover:bg-green-100 disabled:opacity-50"
                           >
-                            {actionLoading === u.id ? '...' : 'Mở khoá'}
+                            {actionLoading === u.id ? '...' : t('admin.users.unlock')}
                           </button>
                         ) : (
                           <button
@@ -237,7 +245,7 @@ export function AdminUsersPage() {
                             disabled={actionLoading === u.id}
                             className="px-3 py-1 text-xs bg-red-50 text-red-700 border border-red-200 rounded hover:bg-red-100 disabled:opacity-50"
                           >
-                            {actionLoading === u.id ? '...' : 'Khoá'}
+                            {actionLoading === u.id ? '...' : t('admin.users.lock')}
                           </button>
                         )}
                       </div>
@@ -252,7 +260,7 @@ export function AdminUsersPage() {
         {totalPages > 1 && (
           <div className="flex items-center justify-between mt-4">
             <p className="text-sm text-gray-500">
-              Trang {page} / {totalPages} ({total} người dùng)
+              {t('admin.users.pageInfo', { page, totalPages, total })}
             </p>
             <div className="flex gap-2">
               <button
@@ -260,14 +268,14 @@ export function AdminUsersPage() {
                 disabled={page === 1}
                 className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-40"
               >
-                ← Trước
+                ← {t('app.previous')}
               </button>
               <button
                 onClick={() => setPage(p => Math.min(totalPages, p + 1))}
                 disabled={page === totalPages}
                 className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-40"
               >
-                Sau →
+                {t('app.next')} →
               </button>
             </div>
           </div>

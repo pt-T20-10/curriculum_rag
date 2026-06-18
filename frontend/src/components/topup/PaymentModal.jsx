@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
+import { Trans, useTranslation } from 'react-i18next'
 import { plansAPI } from '../../api/plans'
 import { transactionsAPI } from '../../api/transactions'
 
 function CopyButton({ text }) {
+  const { t } = useTranslation()
   const [copied, setCopied] = useState(false)
   const copy = () => {
     navigator.clipboard.writeText(text).then(() => {
@@ -15,12 +17,14 @@ function CopyButton({ text }) {
       onClick={copy}
       className="ml-2 px-2 py-0.5 text-xs bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded transition-colors flex-shrink-0"
     >
-      {copied ? 'Đã sao chép!' : 'Sao chép'}
+      {copied ? t('app.copied') : t('app.copy')}
     </button>
   )
 }
 
 export function PaymentModal({ plan, onClose, onSuccess }) {
+  const { i18n, t } = useTranslation()
+  const locale = i18n.resolvedLanguage === 'en' ? 'en-US' : 'vi-VN'
   const [step, setStep] = useState('info')   // 'info' | 'qr' | 'done'
   const [bank, setBank] = useState(null)
   const [txnData, setTxnData] = useState(null)
@@ -47,7 +51,7 @@ export function PaymentModal({ plan, onClose, onSuccess }) {
       setTxnData(r.data)
       setStep('qr')
     } catch {
-      setError('Không thể khởi tạo giao dịch. Vui lòng thử lại.')
+      setError(t('topup.initError'))
       creatingRef.current = false   // allow retry on failure
     } finally {
       setLoading(false)
@@ -70,8 +74,8 @@ export function PaymentModal({ plan, onClose, onSuccess }) {
         {/* Header */}
         <div className="flex items-center justify-between p-5 border-b border-gray-100">
           <div>
-            <h2 className="text-lg font-bold text-gray-900">Thanh toán</h2>
-            <p className="text-sm text-gray-500">{plan.name} — {plan.price_vnd.toLocaleString('vi-VN')}₫</p>
+            <h2 className="text-lg font-bold text-gray-900">{t('topup.payment')}</h2>
+            <p className="text-sm text-gray-500">{plan.name} — {plan.price_vnd.toLocaleString(locale)}₫</p>
           </div>
           <button onClick={onClose} className="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100">
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -91,16 +95,16 @@ export function PaymentModal({ plan, onClose, onSuccess }) {
               {/* Plan summary */}
               <div className="bg-gray-50 rounded-xl border border-gray-200 p-4 mb-5 space-y-3">
                 <div className="flex justify-between text-sm">
-                  <span className="text-gray-500">Gói</span>
+                  <span className="text-gray-500">{t('topup.plan')}</span>
                   <span className="font-semibold text-gray-900">{plan.name}</span>
                 </div>
                 <div className="flex justify-between text-sm">
-                  <span className="text-gray-500">Credits nhận được</span>
-                  <span className="font-semibold text-primary">{plan.credits.toLocaleString('vi-VN')} credits</span>
+                  <span className="text-gray-500">{t('topup.creditsReceived')}</span>
+                  <span className="font-semibold text-primary">{plan.credits.toLocaleString(locale)} credits</span>
                 </div>
                 <div className="border-t border-gray-200 pt-3 flex justify-between text-sm">
-                  <span className="text-gray-500">Số tiền thanh toán</span>
-                  <span className="font-bold text-gray-900 text-base">{plan.price_vnd.toLocaleString('vi-VN')}₫</span>
+                  <span className="text-gray-500">{t('topup.amount')}</span>
+                  <span className="font-bold text-gray-900 text-base">{plan.price_vnd.toLocaleString(locale)}₫</span>
                 </div>
               </div>
 
@@ -123,7 +127,7 @@ export function PaymentModal({ plan, onClose, onSuccess }) {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
                 <p className="text-xs text-blue-700">
-                  Nhấn <strong>Tiếp tục thanh toán</strong> để xem mã QR và thông tin chuyển khoản. Giao dịch sẽ được tạo sau bước này.
+                  <Trans i18nKey="topup.continuePaymentHint" components={{ strong: <strong /> }} />
                 </p>
               </div>
 
@@ -133,8 +137,8 @@ export function PaymentModal({ plan, onClose, onSuccess }) {
                 className="w-full py-3 bg-primary text-white rounded-xl font-semibold text-sm hover:bg-blue-500 disabled:opacity-60 transition-colors flex items-center justify-center gap-2"
               >
                 {loading
-                  ? <><span className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" /> Đang chuẩn bị...</>
-                  : 'Tiếp tục thanh toán →'}
+                  ? <><span className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" /> {t('topup.preparing')}</>
+                  : `${t('topup.continuePayment')} →`}
               </button>
             </>
           )}
@@ -156,16 +160,16 @@ export function PaymentModal({ plan, onClose, onSuccess }) {
 
               {/* Bank details */}
               <div className="space-y-3 mb-5">
-                <InfoRow label="Ngân hàng" value={bank?.bank_name} />
+                <InfoRow label={t('topup.bank')} value={bank?.bank_name} />
                 <InfoRow
-                  label="Số tài khoản"
+                  label={t('topup.accountNumber')}
                   value={bank?.account_number}
                   action={<CopyButton text={bank?.account_number || ''} />}
                 />
-                <InfoRow label="Chủ tài khoản" value={bank?.account_holder} />
-                <InfoRow label="Số tiền" value={txnData.amount_vnd.toLocaleString('vi-VN') + '₫'} highlight />
+                <InfoRow label={t('topup.accountHolder')} value={bank?.account_holder} />
+                <InfoRow label={t('topup.transferAmount')} value={txnData.amount_vnd.toLocaleString(locale) + '₫'} highlight />
                 <InfoRow
-                  label="Nội dung CK"
+                  label={t('topup.transferContent')}
                   value={txnData.transfer_content}
                   action={<CopyButton text={txnData.transfer_content} />}
                   mono
@@ -178,7 +182,7 @@ export function PaymentModal({ plan, onClose, onSuccess }) {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
                 </svg>
                 <p className="text-xs text-amber-700">
-                  <strong>Lưu ý quan trọng:</strong> Nội dung chuyển khoản phải khớp chính xác, nếu không giao dịch sẽ không được xác nhận.
+                  <strong>{t('topup.importantNote')}</strong> {t('topup.noteText')}
                 </p>
               </div>
 
@@ -186,7 +190,7 @@ export function PaymentModal({ plan, onClose, onSuccess }) {
                 onClick={handleConfirm}
                 className="w-full py-3 bg-primary text-white rounded-xl font-semibold text-sm hover:bg-blue-500 transition-colors"
               >
-                Tôi đã chuyển khoản
+                {t('topup.transferred')}
               </button>
             </>
           )}
@@ -199,15 +203,15 @@ export function PaymentModal({ plan, onClose, onSuccess }) {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                 </svg>
               </div>
-              <h3 className="text-lg font-bold text-gray-900 mb-2">Yêu cầu đã được ghi nhận!</h3>
+              <h3 className="text-lg font-bold text-gray-900 mb-2">{t('topup.requestRecorded')}</h3>
               <p className="text-sm text-gray-500 mb-6">
-                Thanh toán của bạn đang được kiểm duyệt. Credits sẽ được cộng trong vòng 24 giờ.
+                {t('topup.reviewText')}
               </p>
               <button
                 onClick={onClose}
                 className="px-6 py-2.5 bg-primary text-white rounded-xl font-semibold text-sm hover:bg-blue-500 transition-colors"
               >
-                Đóng
+                {t('app.close')}
               </button>
             </div>
           )}

@@ -1,4 +1,10 @@
+import { useTranslation } from 'react-i18next'
+import { translateProgressText } from '../../utils/progressText'
+
 export function ProgressBar({ value, statusText }) {
+  const { t } = useTranslation()
+  const displayStatus = translateProgressText(statusText, t)
+
   return (
     <div className="mb-6">
       <div className="w-full bg-gray-200 rounded-full h-2.5">
@@ -7,9 +13,9 @@ export function ProgressBar({ value, statusText }) {
           style={{ width: `${Math.min(value * 100, 100)}%` }}
         />
       </div>
-      {statusText && (
+      {displayStatus && (
         <p className="text-sm text-gray-600 mt-2" 
-           dangerouslySetInnerHTML={{ __html: statusText }} 
+           dangerouslySetInnerHTML={{ __html: displayStatus }} 
         />
       )}
     </div>

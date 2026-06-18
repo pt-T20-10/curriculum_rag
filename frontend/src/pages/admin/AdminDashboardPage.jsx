@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
 import { adminAPI } from '../../api/admin'
 import { Navbar } from '../../components/layout/Navbar'
 import { AdminNavigation } from '../../components/layout/AdminNavigation'
@@ -23,10 +24,12 @@ function StatCard({ label, value, sub, color = 'text-gray-900', icon }) {
 // SVG bar chart
 // ---------------------------------------------------------------------------
 function BarChart({ data, xKey, yKey, color = '#3b82f6', height = 180, formatY = v => v, formatX = v => v }) {
+  const { t } = useTranslation()
+
   if (!data || data.length === 0) {
     return (
       <div className="flex items-center justify-center" style={{ height }}>
-        <p className="text-sm text-gray-400">Không có dữ liệu</p>
+        <p className="text-sm text-gray-400">{t('admin.dashboard.noData')}</p>
       </div>
     )
   }
@@ -83,8 +86,10 @@ function BarChart({ data, xKey, yKey, color = '#3b82f6', height = 180, formatY =
 // Horizontal rank list — top users / top content types
 // ---------------------------------------------------------------------------
 function HorizontalRankList({ items, labelKey, valueKey, valueLabel, barColor = 'bg-primary', formatValue = v => v }) {
+  const { t } = useTranslation()
+
   if (!items || items.length === 0) {
-    return <p className="text-sm text-gray-400 text-center py-6">Không có dữ liệu</p>
+    return <p className="text-sm text-gray-400 text-center py-6">{t('admin.dashboard.noData')}</p>
   }
   const maxVal = Math.max(...items.map(r => r[valueKey]), 1)
   return (
@@ -118,10 +123,11 @@ function HorizontalRankList({ items, labelKey, valueKey, valueLabel, barColor = 
 // Date range selector — quick presets + custom date inputs
 // ---------------------------------------------------------------------------
 function DateRangeSelector({ dateFrom, dateTo, onChangeDateFrom, onChangeDateTo, onApplyPreset }) {
+  const { t } = useTranslation()
   const presets = [
-    { label: '7 ngày', days: 7 },
-    { label: '30 ngày', days: 30 },
-    { label: '90 ngày', days: 90 },
+    { label: t('admin.dashboard.days7'), days: 7 },
+    { label: t('admin.dashboard.days30'), days: 30 },
+    { label: t('admin.dashboard.days90'), days: 90 },
   ]
   const toIso = d => d.toISOString().slice(0, 10)
   const applyPreset = days => {
@@ -171,24 +177,13 @@ const fmtVND = v => {
   if (v >= 1_000) return `${(v / 1_000).toFixed(0)}K`
   return String(v)
 }
-const fmtDate = iso => {
-  const [, m, d] = iso.split('-')
-  return `${parseInt(d)}/${parseInt(m)}`
-}
 const toIso = d => d.toISOString().slice(0, 10)
-
-const CONTENT_TYPE_LABEL = {
-  technical: 'Kỹ thuật',
-  academic: 'Học thuật',
-  general: 'Tổng hợp',
-  professional: 'Chuyên nghiệp',
-  simplified: 'Đơn giản hóa',
-}
 
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 export function AdminDashboardPage() {
+  const { t, i18n } = useTranslation()
   const [stats, setStats] = useState(null)
   const [trends, setTrends] = useState([])
   const [paymentTrends, setPaymentTrends] = useState([])
@@ -204,15 +199,18 @@ export function AdminDashboardPage() {
     const d = new Date(); d.setDate(d.getDate() - 29); return toIso(d)
   })
   const [dateTo, setDateTo] = useState(() => toIso(new Date()))
+  const locale = i18n.language === 'vi' ? 'vi-VN' : 'en-US'
+  const formatShortDate = iso => new Date(`${iso}T00:00:00`).toLocaleDateString(locale, { day: 'numeric', month: 'numeric' })
 
   useEffect(() => {
     adminAPI.getOverview()
       .then(r => setStats(r.data))
-      .catch(e => setError(e.response?.data?.detail || 'Không thể tải dữ liệu'))
+      .catch(e => setError(e.response?.data?.detail || t('admin.dashboard.loadError')))
       .finally(() => setLoading(false))
-  }, [])
+  }, [t])
 
   const loadCharts = useCallback(async () => {
+    await Promise.resolve()
     setChartsLoading(true)
     try {
       const params = { date_from: dateFrom, date_to: dateTo }
@@ -235,7 +233,10 @@ export function AdminDashboardPage() {
     }
   }, [dateFrom, dateTo])
 
-  useEffect(() => { loadCharts() }, [loadCharts])
+  useEffect(() => {
+    const timer = setTimeout(() => { loadCharts() }, 0)
+    return () => clearTimeout(timer)
+  }, [loadCharts])
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
@@ -248,7 +249,7 @@ export function AdminDashboardPage() {
         <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
           <div>
             <h1 className="text-2xl font-bold text-gray-800">Admin Dashboard</h1>
-            <p className="text-xs text-gray-400 mt-0.5">Tổng quan hệ thống</p>
+            <p className="text-xs text-gray-400 mt-0.5">{t('admin.dashboard.subtitle')}</p>
           </div>
         </div>
 
@@ -264,21 +265,21 @@ export function AdminDashboardPage() {
           <>
             {/* ── Stats grid ── */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
-              <StatCard label="Tổng người dùng" value={stats?.total_users} sub={`${stats?.active_users} đang hoạt động`} icon="👥" />
-              <StatCard label="Tổng giáo trình" value={stats?.total_textbooks} sub={`${stats?.completed_textbooks} hoàn thành · ${stats?.failed_textbooks} thất bại`} icon="📚" />
-              <StatCard label="Giáo trình tháng này" value={stats?.textbooks_this_month} color="text-blue-600" icon="📅" />
-              <StatCard label="Thanh toán chờ xử lý" value={stats?.pending_payments} color={stats?.pending_payments > 0 ? 'text-yellow-600' : 'text-gray-900'} icon="⏳" />
+              <StatCard label={t('admin.dashboard.totalUsers')} value={stats?.total_users} sub={t('admin.dashboard.activeUsers', { count: stats?.active_users || 0 })} icon="👥" />
+              <StatCard label={t('admin.dashboard.totalTextbooks')} value={stats?.total_textbooks} sub={t('admin.dashboard.textbookOutcome', { completed: stats?.completed_textbooks || 0, failed: stats?.failed_textbooks || 0 })} icon="📚" />
+              <StatCard label={t('admin.dashboard.textbooksThisMonth')} value={stats?.textbooks_this_month} color="text-blue-600" icon="📅" />
+              <StatCard label={t('admin.dashboard.pendingPayments')} value={stats?.pending_payments} color={stats?.pending_payments > 0 ? 'text-yellow-600' : 'text-gray-900'} icon="⏳" />
             </div>
 
             <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
-              <StatCard label="Tổng doanh thu" value={`${(stats?.total_revenue || 0).toLocaleString('vi-VN')} ₫`} color="text-green-600" icon="💰" />
-              <StatCard label="Doanh thu tháng này" value={`${(stats?.revenue_this_month || 0).toLocaleString('vi-VN')} ₫`} color="text-green-600" icon="📈" />
-              <StatCard label="Tổng credits đã bán" value={(stats?.total_credits_sold || 0).toLocaleString('vi-VN')} icon="🪙" />
+              <StatCard label={t('admin.dashboard.totalRevenue')} value={`${(stats?.total_revenue || 0).toLocaleString(locale)} ₫`} color="text-green-600" icon="💰" />
+              <StatCard label={t('admin.dashboard.revenueThisMonth')} value={`${(stats?.revenue_this_month || 0).toLocaleString(locale)} ₫`} color="text-green-600" icon="📈" />
+              <StatCard label={t('admin.dashboard.creditsSold')} value={(stats?.total_credits_sold || 0).toLocaleString(locale)} icon="🪙" />
             </div>
 
             {/* ── Date range filter ── */}
             <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
-              <h2 className="text-base font-semibold text-gray-700">Biểu đồ theo thời gian</h2>
+              <h2 className="text-base font-semibold text-gray-700">{t('admin.dashboard.timeCharts')}</h2>
               <DateRangeSelector
                 dateFrom={dateFrom}
                 dateTo={dateTo}
@@ -297,33 +298,33 @@ export function AdminDashboardPage() {
                 {/* ── Time series charts ── */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
                   <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-                    <p className="text-sm font-semibold text-gray-700 mb-3">Giáo trình tạo theo ngày</p>
-                    <BarChart data={trends} xKey="date" yKey="count" color="#3b82f6" height={180} formatX={fmtDate} />
+                    <p className="text-sm font-semibold text-gray-700 mb-3">{t('admin.dashboard.textbooksByDay')}</p>
+                    <BarChart data={trends} xKey="date" yKey="count" color="#3b82f6" height={180} formatX={formatShortDate} />
                   </div>
                   <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-                    <p className="text-sm font-semibold text-gray-700 mb-3">Doanh thu giao dịch (₫)</p>
-                    <BarChart data={paymentTrends} xKey="date" yKey="revenue" color="#10b981" height={180} formatY={fmtVND} formatX={fmtDate} />
+                    <p className="text-sm font-semibold text-gray-700 mb-3">{t('admin.dashboard.transactionRevenue')}</p>
+                    <BarChart data={paymentTrends} xKey="date" yKey="revenue" color="#10b981" height={180} formatY={fmtVND} formatX={formatShortDate} />
                   </div>
                 </div>
 
                 {/* ── Ranking section ── */}
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                   <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-                    <p className="text-sm font-semibold text-gray-700 mb-4">Top loại nội dung</p>
+                    <p className="text-sm font-semibold text-gray-700 mb-4">{t('admin.dashboard.topContentTypes')}</p>
                     <HorizontalRankList
                       items={contentTypes.map(c => ({
                         ...c,
-                        label: CONTENT_TYPE_LABEL[c.content_type] || c.content_type,
+                        label: t(`textbook.contentType.${c.content_type}`, { defaultValue: c.content_type }),
                       }))}
                       labelKey="label"
                       valueKey="count"
-                      valueLabel="giáo trình"
+                      valueLabel={t('admin.dashboard.textbookUnit')}
                       barColor="bg-blue-500"
                     />
                   </div>
 
                   <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-                    <p className="text-sm font-semibold text-gray-700 mb-4">Top nạp tiền</p>
+                    <p className="text-sm font-semibold text-gray-700 mb-4">{t('admin.dashboard.topTopup')}</p>
                     <HorizontalRankList
                       items={topUsersTopup.map(u => ({
                         ...u,
@@ -338,7 +339,7 @@ export function AdminDashboardPage() {
                   </div>
 
                   <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-                    <p className="text-sm font-semibold text-gray-700 mb-4">Top tạo giáo trình</p>
+                    <p className="text-sm font-semibold text-gray-700 mb-4">{t('admin.dashboard.topTextbookCreators')}</p>
                     <HorizontalRankList
                       items={topUsersTextbooks.map(u => ({
                         ...u,
@@ -346,7 +347,7 @@ export function AdminDashboardPage() {
                       }))}
                       labelKey="label"
                       valueKey="textbook_count"
-                      valueLabel="giáo trình"
+                      valueLabel={t('admin.dashboard.textbookUnit')}
                       barColor="bg-purple-500"
                     />
                   </div>

@@ -1,9 +1,12 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { authAPI } from '../../api/auth'
 
-export function GoogleLoginButton({ label = 'Tiếp tục với Google', disabled = false }) {
+export function GoogleLoginButton({ label, disabled = false }) {
+  const { t } = useTranslation()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const buttonLabel = label || t('auth.google.continue')
 
   const handleClick = async () => {
     setLoading(true)
@@ -14,7 +17,7 @@ export function GoogleLoginButton({ label = 'Tiếp tục với Google', disable
       localStorage.setItem('google_oauth_state', state)
       window.location.href = auth_url
     } catch {
-      setError('Không thể kết nối với Google. Vui lòng thử lại.')
+      setError(t('auth.google.connectError'))
       setLoading(false)
     }
   }
@@ -57,7 +60,7 @@ export function GoogleLoginButton({ label = 'Tiếp tục với Google', disable
             />
           </svg>
         )}
-        {loading ? 'Đang chuyển hướng...' : label}
+        {loading ? t('auth.google.redirecting') : buttonLabel}
       </button>
       {error && (
         <p className="mt-2 text-xs text-red-600 text-center">{error}</p>

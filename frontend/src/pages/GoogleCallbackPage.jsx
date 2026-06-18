@@ -1,19 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { useAuth } from '../context/AuthContext'
-
-const ERROR_MESSAGES = {
-  google_auth_failed: 'Xác thực Google thất bại. Vui lòng thử lại.',
-  email_conflict: 'Email này đã được liên kết với tài khoản Google khác.',
-  account_disabled: 'Tài khoản của bạn đã bị vô hiệu hoá.',
-  invalid_state: 'Phiên đăng nhập không hợp lệ. Vui lòng thử lại.',
-  server_error: 'Lỗi máy chủ. Vui lòng thử lại sau.',
-}
 
 export function GoogleCallbackPage() {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const { loginWithToken } = useAuth()
+  const { t } = useTranslation()
   const [status, setStatus] = useState('loading') // 'loading' | 'error'
   const [errorMsg, setErrorMsg] = useState('')
 
@@ -25,13 +19,13 @@ export function GoogleCallbackPage() {
 
       // Handle backend-reported errors
       if (error) {
-        setErrorMsg(ERROR_MESSAGES[error] || 'Đăng nhập thất bại.')
+        setErrorMsg(t(`auth.google.errors.${error}`, t('auth.google.errors.default')))
         setStatus('error')
         return
       }
 
       if (!token) {
-        setErrorMsg('Không nhận được token xác thực.')
+        setErrorMsg(t('auth.google.errors.noToken'))
         setStatus('error')
         return
       }
@@ -39,7 +33,7 @@ export function GoogleCallbackPage() {
       // State verification (CSRF guard)
       const savedState = localStorage.getItem('google_oauth_state')
       if (savedState && state && savedState !== state) {
-        setErrorMsg(ERROR_MESSAGES.invalid_state)
+        setErrorMsg(t('auth.google.errors.invalid_state'))
         setStatus('error')
         return
       }
@@ -49,26 +43,26 @@ export function GoogleCallbackPage() {
         await loginWithToken(token)
         navigate('/dashboard', { replace: true })
       } catch {
-        setErrorMsg('Không thể tải thông tin tài khoản. Vui lòng thử lại.')
+        setErrorMsg(t('auth.google.errors.profile'))
         setStatus('error')
       }
     }
 
     handleCallback()
-  }, []) // run once on mount
+  }, [loginWithToken, navigate, searchParams, t])
 
   if (status === 'error') {
     return (
       <div className="min-h-screen flex items-center justify-center p-4">
         <div className="bg-white rounded-lg shadow-lg p-8 w-full max-w-sm text-center">
           <div className="text-4xl mb-4">❌</div>
-          <h2 className="text-lg font-semibold text-gray-800 mb-2">Đăng nhập thất bại</h2>
+          <h2 className="text-lg font-semibold text-gray-800 mb-2">{t('auth.google.failedTitle')}</h2>
           <p className="text-sm text-gray-600 mb-6">{errorMsg}</p>
           <button
             onClick={() => navigate('/login', { replace: true })}
             className="w-full px-4 py-2 bg-primary text-white rounded-lg text-sm hover:bg-primary/90 transition-colors"
           >
-            Quay lại trang đăng nhập
+            {t('auth.google.backToLogin')}
           </button>
         </div>
       </div>
@@ -79,7 +73,7 @@ export function GoogleCallbackPage() {
     <div className="min-h-screen flex items-center justify-center p-4">
       <div className="text-center">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4" />
-        <p className="text-gray-600 text-sm">Đang xác thực tài khoản Google...</p>
+        <p className="text-gray-600 text-sm">{t('auth.google.authenticating')}</p>
       </div>
     </div>
   )

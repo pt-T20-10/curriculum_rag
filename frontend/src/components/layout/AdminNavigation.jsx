@@ -1,16 +1,19 @@
 import { NavLink } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 
 const ADMIN_NAV_ITEMS = [
-  { to: '/admin', label: 'Dashboard', end: true },
-  { to: '/admin/users', label: 'Người dùng' },
-  { to: '/admin/textbooks', label: 'Giáo trình' },
-  { to: '/admin/landing', label: 'Landing Page' },
-  { to: '/admin/plans', label: 'Gói & Ngân hàng' },
-  { to: '/admin/payments', label: 'Thanh toán' },
-  { to: '/admin/config', label: 'Cấu hình' },
+  { to: '/admin', labelKey: 'app.dashboard', end: true },
+  { to: '/admin/users', labelKey: 'nav.adminUsers' },
+  { to: '/admin/textbooks', labelKey: 'nav.adminTextbooks' },
+  { to: '/admin/landing', labelKey: 'nav.adminLanding' },
+  { to: '/admin/plans', labelKey: 'nav.adminPlans' },
+  { to: '/admin/payments', labelKey: 'nav.adminPayments' },
+  { to: '/admin/config', labelKey: 'nav.adminConfig' },
 ]
 
 export function AdminNavigation({ className = '' }) {
+  const { t } = useTranslation()
+
   return (
     <div className={`w-full ${className}`}>
       <div className="mx-auto flex w-full max-w-7xl justify-center px-4 sm:px-6 lg:px-8">
@@ -32,7 +35,7 @@ export function AdminNavigation({ className = '' }) {
                   }`
                 }
               >
-                {item.label}
+                {t(item.labelKey)}
               </NavLink>
             ))}
           </nav>

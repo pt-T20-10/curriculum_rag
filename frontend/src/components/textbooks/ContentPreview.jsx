@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
@@ -8,6 +9,7 @@ import 'katex/dist/katex.min.css'
 const NEAR_BOTTOM_THRESHOLD = 120 // px — within this distance = "at bottom"
 
 export function ContentPreview({ content, currentChapter, currentSubsection, totalChapters, totalSubsections, isGenerating }) {
+  const { i18n, t } = useTranslation()
   const contentRef = useRef(null)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
   const isAtBottomRef = useRef(true) // tracks whether user is near bottom
@@ -35,26 +37,27 @@ export function ContentPreview({ content, currentChapter, currentSubsection, tot
   }
 
   const wordCount = content ? content.split(/\s+/).filter(Boolean).length : 0
+  const locale = i18n.resolvedLanguage === 'en' ? 'en-US' : 'vi-VN'
 
   if (!content) {
     return (
       <div className="h-full flex flex-col">
         <div className="border-b border-gray-200 px-6 py-4">
-          <h2 className="text-xl font-bold text-gray-800">📖 Nội Dung Giáo Trình</h2>
-          <p className="text-sm text-gray-500 mt-1">Nội dung sẽ hiển thị khi đang viết...</p>
+          <h2 className="text-xl font-bold text-gray-800">📖 {t('textbook.contentPreview.title')}</h2>
+          <p className="text-sm text-gray-500 mt-1">{t('textbook.contentPreview.pendingSubtitle')}</p>
         </div>
         <div className="flex-1 flex items-center justify-center px-6 py-12">
           <div className="text-center">
             <div className="text-6xl mb-4">📝</div>
-            <p className="text-gray-500">Nội dung giáo trình sẽ xuất hiện ở đây</p>
-            <p className="text-xs text-gray-400 mt-2">Bắt đầu tạo giáo trình để xem preview</p>
+            <p className="text-gray-500">{t('textbook.contentPreview.emptyText')}</p>
+            <p className="text-xs text-gray-400 mt-2">{t('textbook.contentPreview.emptyHint')}</p>
           </div>
         </div>
         <div className="border-t border-gray-200 px-6 py-3 bg-gray-50">
           <div className="flex justify-between text-sm text-gray-600">
-            <span>Chương: 0/{totalChapters || 0}</span>
-            <span>Mục: 0/{totalSubsections || 0}</span>
-            <span>0 từ</span>
+            <span>{t('textbook.contentPreview.chapterCounter', { current: 0, total: totalChapters || 0 })}</span>
+            <span>{t('textbook.contentPreview.subsectionCounter', { current: 0, total: totalSubsections || 0 })}</span>
+            <span>{t('textbook.contentPreview.wordCount', { count: 0 })}</span>
           </div>
         </div>
       </div>
@@ -65,8 +68,8 @@ export function ContentPreview({ content, currentChapter, currentSubsection, tot
     <div className="h-full flex flex-col bg-white">
       {/* Header */}
       <div className="border-b border-gray-200 px-6 py-4 flex-shrink-0">
-        <h2 className="text-xl font-bold text-gray-800">📖 Nội Dung Giáo Trình</h2>
-        <p className="text-sm text-gray-500 mt-1">Preview nội dung đang được tạo</p>
+        <h2 className="text-xl font-bold text-gray-800">📖 {t('textbook.contentPreview.title')}</h2>
+        <p className="text-sm text-gray-500 mt-1">{t('textbook.contentPreview.activeSubtitle')}</p>
       </div>
 
       {/* Content Area — relative so the scroll button can be positioned inside */}
@@ -163,7 +166,7 @@ export function ContentPreview({ content, currentChapter, currentSubsection, tot
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
               </svg>
-              <span className="text-sm font-medium">Đang viết tiếp...</span>
+              <span className="text-sm font-medium">{t('textbook.contentPreview.writingMore')}</span>
             </div>
           )}
         </div>
@@ -177,7 +180,7 @@ export function ContentPreview({ content, currentChapter, currentSubsection, tot
             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
             </svg>
-            Cuộn xuống
+            {t('textbook.contentPreview.scrollDown')}
           </button>
         )}
       </div>
@@ -185,9 +188,9 @@ export function ContentPreview({ content, currentChapter, currentSubsection, tot
       {/* Footer */}
       <div className="border-t border-gray-200 px-6 py-3 bg-gray-50 flex-shrink-0">
         <div className="flex justify-between text-sm text-gray-600">
-          <span>Chương: {(currentChapter || 0) + 1}/{totalChapters || 0}</span>
-          <span>Mục: {(currentSubsection || 0) + 1}/{totalSubsections || 0}</span>
-          <span>{wordCount.toLocaleString()} từ</span>
+          <span>{t('textbook.contentPreview.chapterCounter', { current: (currentChapter || 0) + 1, total: totalChapters || 0 })}</span>
+          <span>{t('textbook.contentPreview.subsectionCounter', { current: (currentSubsection || 0) + 1, total: totalSubsections || 0 })}</span>
+          <span>{t('textbook.contentPreview.wordCount', { count: wordCount.toLocaleString(locale) })}</span>
         </div>
       </div>
     </div>

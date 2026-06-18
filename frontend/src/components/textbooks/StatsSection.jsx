@@ -1,4 +1,7 @@
+import { useTranslation } from 'react-i18next'
+
 export function StatsSection({ progressData }) {
+  const { t } = useTranslation()
   const {
     current_chapter = 0,
     total_chapters = 0,
@@ -18,13 +21,13 @@ export function StatsSection({ progressData }) {
       {/* Stats Grid */}
       <div className="grid grid-cols-2 gap-3">
         <div className="bg-gray-50 rounded-lg p-3 text-center">
-          <div className="text-xs text-gray-500 mb-1">Chương</div>
+          <div className="text-xs text-gray-500 mb-1">{t('textbook.contentSidebar.chapters')}</div>
           <div className="text-lg font-bold text-gray-800">
             {current_chapter} / {actualTotalChapters}
           </div>
         </div>
         <div className="bg-gray-50 rounded-lg p-3 text-center">
-          <div className="text-xs text-gray-500 mb-1">Mục</div>
+          <div className="text-xs text-gray-500 mb-1">{t('textbook.contentSidebar.subsections')}</div>
           <div className="text-lg font-bold text-gray-800">
             {current_subsection} / {actualTotalSubsections}
           </div>

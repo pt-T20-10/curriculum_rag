@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 
 interface ThreeColumnLayoutProps {
   leftSidebar: React.ReactNode;
@@ -19,6 +20,7 @@ const ThreeColumnLayout: React.FC<ThreeColumnLayoutProps> = ({
   onToggleLeft,
   onToggleRight,
 }) => {
+  const { t } = useTranslation();
   const [rightWidth, setRightWidth] = useState(450);
   const [isResizing, setIsResizing] = useState(false);
   const resizeRef = useRef<HTMLDivElement>(null);
@@ -72,7 +74,7 @@ const ThreeColumnLayout: React.FC<ThreeColumnLayoutProps> = ({
                   w-7 h-7 flex items-center justify-center
                   hover:bg-gray-200 shadow-sm
                 "
-                title="Ẩn thanh bên trái"
+                title={t('layout.hideLeft')}
               >
                 <svg className="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
@@ -97,7 +99,7 @@ const ThreeColumnLayout: React.FC<ThreeColumnLayoutProps> = ({
             bg-gray-100 border border-gray-300 border-l-0 rounded-r
             px-1.5 py-3 hover:bg-gray-200 shadow-sm
           "
-          title="Hiện thanh bên trái"
+          title={t('layout.showLeft')}
         >
           <svg className="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
@@ -136,7 +138,7 @@ const ThreeColumnLayout: React.FC<ThreeColumnLayoutProps> = ({
                 hover:bg-blue-500 transition-colors z-10
                 ${isResizing ? 'bg-blue-500' : 'bg-transparent'}
               `}
-              title="Kéo để thay đổi kích thước"
+              title={t('layout.resize')}
             />
 
             <div className="h-full flex flex-col" style={{ width: `${rightWidth}px` }}>
@@ -149,7 +151,7 @@ const ThreeColumnLayout: React.FC<ThreeColumnLayoutProps> = ({
                     w-7 h-7 flex items-center justify-center
                     hover:bg-gray-200 shadow-sm
                   "
-                  title="Ẩn thanh bên phải"
+                  title={t('layout.hideRight')}
                 >
                   <svg className="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
@@ -175,7 +177,7 @@ const ThreeColumnLayout: React.FC<ThreeColumnLayoutProps> = ({
             bg-gray-100 border border-gray-300 border-r-0 rounded-l
             px-1.5 py-3 hover:bg-gray-200 shadow-sm
           "
-          title="Hiện thanh bên phải"
+          title={t('layout.showRight')}
         >
           <svg className="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />

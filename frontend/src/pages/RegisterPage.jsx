@@ -1,16 +1,20 @@
 import { useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { useAuth } from '../context/AuthContext'
 import { Input } from '../components/common/Input'
 import { PasswordInput } from '../components/common/PasswordInput'
 import { Button } from '../components/common/Button'
 import { GoogleLoginButton } from '../components/common/GoogleLoginButton'
+import { LanguageSwitcher } from '../components/common/LanguageSwitcher'
+import { errorMessage, errorMessages, i18nError, mapRegisterError } from '../utils/formErrors'
 
 const USERNAME_REGEX = /^[a-zA-Z0-9_.-]+$/
 
 export function RegisterPage() {
   const navigate = useNavigate()
   const { register } = useAuth()
+  const { t } = useTranslation()
 
   const [formData, setFormData] = useState({
     fullName: '',
@@ -23,6 +27,9 @@ export function RegisterPage() {
   const [loading, setLoading] = useState(false)
   const [apiError, setApiError] = useState('')
   const [fieldErrors, setFieldErrors] = useState({})
+  const visibleErrors = errorMessages(errors, t)
+  const visibleFieldErrors = errorMessages(fieldErrors, t)
+  const visibleApiError = errorMessage(apiError, t)
 
   const handleChange = (e) => {
     const { name, value } = e.target
@@ -36,34 +43,34 @@ export function RegisterPage() {
     const newErrors = {}
 
     if (!formData.fullName.trim()) {
-      newErrors.fullName = 'Họ tên là bắt buộc'
+      newErrors.fullName = i18nError('auth.validation.fullNameRequired')
     }
 
     if (formData.username) {
       const u = formData.username.trim()
       if (u.length < 3) {
-        newErrors.username = 'Tên đăng nhập phải có ít nhất 3 ký tự'
+        newErrors.username = i18nError('auth.validation.usernameMin')
       } else if (u.length > 50) {
-        newErrors.username = 'Tên đăng nhập tối đa 50 ký tự'
+        newErrors.username = i18nError('auth.validation.usernameMax')
       } else if (!USERNAME_REGEX.test(u)) {
-        newErrors.username = 'Chỉ được dùng chữ cái, số, dấu _ . -'
+        newErrors.username = i18nError('auth.validation.usernameChars')
       }
     }
 
     if (!formData.email) {
-      newErrors.email = 'Email là bắt buộc'
+      newErrors.email = i18nError('auth.validation.emailRequired')
     } else if (!/\S+@\S+\.\S+/.test(formData.email)) {
-      newErrors.email = 'Email không hợp lệ'
+      newErrors.email = i18nError('auth.validation.emailInvalid')
     }
 
     if (!formData.password) {
-      newErrors.password = 'Mật khẩu là bắt buộc'
+      newErrors.password = i18nError('auth.validation.passwordRequired')
     } else if (formData.password.length < 8) {
-      newErrors.password = 'Mật khẩu phải có ít nhất 8 ký tự'
+      newErrors.password = i18nError('auth.validation.passwordMin')
     }
 
     if (formData.password !== formData.confirmPassword) {
-      newErrors.confirmPassword = 'Mật khẩu xác nhận không khớp'
+      newErrors.confirmPassword = i18nError('auth.validation.confirmMismatch')
     }
 
     setErrors(newErrors)
@@ -90,17 +97,17 @@ export function RegisterPage() {
       const detail = error.response?.data?.detail || ''
       const status = error.response?.status
 
-      if (status === 400 && detail.includes('Tên đăng nhập')) {
-        setFieldErrors({ username: detail })
+      if (status === 400 && detail.includes('T\u00ean \u0111\u0103ng nh\u1eadp')) {
+        setFieldErrors({ username: mapRegisterError(detail) })
       } else if (status === 400 && (detail.includes('Email') || detail.includes('email'))) {
-        setFieldErrors({ email: detail })
+        setFieldErrors({ email: mapRegisterError(detail) })
       } else if (status === 422) {
         // Pydantic validation error — extract first message
         const msgs = error.response?.data?.detail
         const first = Array.isArray(msgs) ? msgs[0]?.msg : detail
-        setApiError(first || 'Dữ liệu không hợp lệ.')
+        setApiError(first ? mapRegisterError(first) : i18nError('auth.validation.invalidData'))
       } else {
-        setApiError(detail || 'Đăng ký thất bại. Vui lòng thử lại.')
+        setApiError(mapRegisterError(detail))
       }
     } finally {
       setLoading(false)
@@ -110,66 +117,69 @@ export function RegisterPage() {
   return (
     <div className="min-h-screen flex items-center justify-center p-4">
       <div className="bg-white rounded-lg shadow-lg p-8 w-full max-w-md">
+        <div className="flex justify-end mb-4">
+          <LanguageSwitcher compact />
+        </div>
         <h1 className="text-3xl font-bold text-center text-primary mb-2">
-          Tạo tài khoản
+          {t('auth.register.title')}
         </h1>
         <p className="text-center text-gray-600 mb-6">
-          Bắt đầu tạo giáo trình bằng AI
+          {t('auth.register.subtitle')}
         </p>
 
         <form onSubmit={handleSubmit}>
           <Input
-            label="Họ và tên"
+            label={t('auth.fields.fullName')}
             type="text"
             name="fullName"
             value={formData.fullName}
             onChange={handleChange}
-            error={errors.fullName}
-            placeholder="Nguyễn Văn A"
+            error={visibleErrors.fullName}
+            placeholder={t('auth.placeholders.fullName')}
             autoFocus
           />
 
           <Input
-            label={<>Tên đăng nhập <span className="text-gray-400 font-normal">(tùy chọn)</span></>}
+            label={<>{t('auth.fields.username')} <span className="text-gray-400 font-normal">({t('auth.fields.usernameOptional')})</span></>}
             type="text"
             name="username"
             value={formData.username}
             onChange={handleChange}
-            error={errors.username || fieldErrors.username}
-            placeholder="Dùng để đăng nhập thay cho email"
+            error={visibleErrors.username || visibleFieldErrors.username}
+            placeholder={t('auth.placeholders.username')}
           />
 
           <Input
-            label="Email"
+            label={t('auth.fields.email')}
             type="email"
             name="email"
             value={formData.email}
             onChange={handleChange}
-            error={errors.email || fieldErrors.email}
+            error={visibleErrors.email || visibleFieldErrors.email}
             placeholder="email@cuaban.com"
           />
 
           <PasswordInput
-            label="Mật khẩu"
+            label={t('auth.fields.password')}
             name="password"
             value={formData.password}
             onChange={handleChange}
-            error={errors.password}
-            placeholder="Ít nhất 8 ký tự"
+            error={visibleErrors.password}
+            placeholder={t('auth.placeholders.password')}
           />
 
           <PasswordInput
-            label="Xác nhận mật khẩu"
+            label={t('auth.fields.confirmPassword')}
             name="confirmPassword"
             value={formData.confirmPassword}
             onChange={handleChange}
-            error={errors.confirmPassword}
-            placeholder="Nhập lại mật khẩu"
+            error={visibleErrors.confirmPassword}
+            placeholder={t('auth.placeholders.confirmPassword')}
           />
 
-          {apiError && (
+          {visibleApiError && (
             <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
-              <p className="text-sm text-red-600">{apiError}</p>
+              <p className="text-sm text-red-600">{visibleApiError}</p>
             </div>
           )}
 
@@ -178,23 +188,23 @@ export function RegisterPage() {
             className="w-full"
             loading={loading}
           >
-            Đăng ký
+            {t('auth.register.button')}
           </Button>
         </form>
 
         <div className="mt-6">
           <div className="relative flex items-center gap-3 mb-4">
             <div className="flex-1 border-t border-gray-200" />
-            <span className="text-xs text-gray-400">hoặc đăng ký nhanh</span>
+            <span className="text-xs text-gray-400">{t('auth.register.quick')}</span>
             <div className="flex-1 border-t border-gray-200" />
           </div>
-          <GoogleLoginButton label="Đăng ký với Google" />
+          <GoogleLoginButton label={t('auth.register.google')} />
         </div>
 
         <p className="mt-4 text-center text-sm text-gray-600">
-          Đã có tài khoản?{' '}
+          {t('auth.register.loginPrompt')}{' '}
           <Link to="/login" className="text-primary hover:underline font-medium">
-            Đăng nhập tại đây
+            {t('auth.register.loginLink')}
           </Link>
         </p>
       </div>

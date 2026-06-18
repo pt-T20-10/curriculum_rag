@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import ThreeColumnLayout from '../components/ThreeColumnLayout'
 import { useAuth } from '../context/AuthContext'
 import { textbooksAPI } from '../api/textbooks'
@@ -14,11 +15,13 @@ import { ContentSidebar } from '../components/textbooks/ContentSidebar'
 import { ContentPreview } from '../components/textbooks/ContentPreview'
 import { StopWarningModal } from '../components/textbooks/StopWarningModal'
 import { CompletionModal } from '../components/textbooks/CompletionModal'
+import { CONTENT_LEVEL } from '../constants/textbookOptions'
 
 export function CreateTextbookPage() {
   const navigate = useNavigate()
   const { textbookId: urlTextbookId } = useParams()
   const { user } = useAuth()
+  const { t } = useTranslation()
 
   const [textbookId, setTextbookId] = useState(urlTextbookId || null)
   const [phase, setPhase] = useState('idle')
@@ -59,7 +62,7 @@ export function CreateTextbookPage() {
             setSubmittedConfig({
               topic: data.topic || '',
               num_chapters: data.num_chapters || 3,
-              content_level: data.content_level || 'Trung Bình',
+              content_level: data.content_level || CONTENT_LEVEL.MEDIUM,
               max_subsections_per_chapter: data.max_subsections_per_chapter || 5,
               enable_images: data.enable_images !== undefined ? data.enable_images : true
             })
@@ -71,13 +74,13 @@ export function CreateTextbookPage() {
           }
         } catch (err) {
           console.error('Load textbook error:', err)
-          setError({ message: 'Không thể tải thông tin giáo trình' })
+          setError({ message: t('textbook.loadError') })
         }
       }
 
       loadTextbook()
     }
-  }, [urlTextbookId])
+  }, [urlTextbookId, t])
 
   // Polling for progress
   useEffect(() => {
@@ -143,7 +146,7 @@ export function CreateTextbookPage() {
 
       if (errorDetail?.validation_failed) {
         setError({
-          message: errorDetail.reason || 'Chủ đề không hợp lệ',
+          message: errorDetail.reason || t('textbook.topicInvalid'),
           suggestions: errorDetail.suggestion
             ? errorDetail.suggestion.split('|').map(s => s.trim())
             : [],
@@ -152,7 +155,7 @@ export function CreateTextbookPage() {
         setError({
           message: typeof errorDetail === 'string'
             ? errorDetail
-            : (errorDetail?.message || 'Không thể tạo giáo trình'),
+            : (errorDetail?.message || t('textbook.genericCreateError')),
         })
       }
     }
@@ -191,13 +194,13 @@ export function CreateTextbookPage() {
       setPhase('generating')
     } catch (err) {
       console.error('Confirm curriculum error:', err)
-      setError({ message: 'Không thể xác nhận giáo trình' })
+      setError({ message: t('textbook.confirmError') })
     }
   }
 
   const handleViewDashboard = () => {
     navigate('/dashboard', {
-      state: { message: 'Tạo giáo trình thành công!' }
+      state: { message: t('dashboard.successCreated') }
     })
   }
 
@@ -255,7 +258,7 @@ export function CreateTextbookPage() {
               <ContentSidebar progressData={enhancedProgressData} />
             ) : (
               <div className="p-6 text-center text-gray-400">
-                <p className="text-sm">Sidebar sẽ hiển thị khi đang tạo nội dung</p>
+                <p className="text-sm">{t('textbook.sidebarWaiting')}</p>
               </div>
             )
           }
@@ -265,11 +268,11 @@ export function CreateTextbookPage() {
               {/* Title */}
               <div className="mb-6 text-center">
                 <h1 className="text-2xl font-bold text-gray-800">
-                  📚 Tạo Giáo Trình AI
+                  📚 {t('textbook.createTitle')}
                   {displayTopic && ` - ${displayTopic}`}
                 </h1>
                 <p className="text-sm text-gray-500 mt-1">
-                  Hệ thống AI — vui lòng kiểm tra lại kết quả trước khi sử dụng
+                  {t('textbook.createSubtitle')}
                 </p>
               </div>
 
@@ -283,7 +286,7 @@ export function CreateTextbookPage() {
                         variant="danger"
                         onClick={handleStopClick}
                       >
-                        ⛔ Dừng lại
+                        ⛔ {t('textbook.stop')}
                       </Button>
                     )}
                   </div>
@@ -314,7 +317,7 @@ export function CreateTextbookPage() {
                     <WorkflowCard
                       stage="planner"
                       status={progressData.planner_status}
-                      message="Lập dàn ý giáo trình"
+                      message={t('textbook.workflow.planner')}
                     />
                   )}
 
@@ -322,7 +325,7 @@ export function CreateTextbookPage() {
                     <WorkflowCard
                       stage="ingestion"
                       status={progressData.ingestion_status}
-                      message="Thu thập dữ liệu"
+                      message={t('textbook.workflow.ingestion')}
                     />
                   )}
 
@@ -340,7 +343,7 @@ export function CreateTextbookPage() {
                     <WorkflowCard
                       stage="publisher"
                       status={progressData.publisher_status}
-                      message="Xuất bản tài liệu"
+                      message={t('textbook.workflow.publisher')}
                     />
                   )}
                 </div>
@@ -360,7 +363,7 @@ export function CreateTextbookPage() {
               {/* Error */}
               {progressData?.error_message && (
                 <div className="bg-red-50 border border-red-200 rounded-lg p-4 mt-4">
-                  <p className="text-red-600 font-medium">❌ Lỗi</p>
+                  <p className="text-red-600 font-medium">❌ {t('app.error')}</p>
                   <p className="text-red-700 text-sm mt-1">{progressData.error_message}</p>
                 </div>
               )}
@@ -369,11 +372,11 @@ export function CreateTextbookPage() {
               {isIdle && (
                 <div className="mt-4 bg-blue-50 border border-blue-200 rounded-lg p-4">
                   <h3 className="text-sm font-semibold text-gray-900 mb-2">
-                    💡 Mẹo để có kết quả tốt hơn
+                    💡 {t('textbook.tipsTitle')}
                   </h3>
                   <ul className="text-xs text-gray-600 space-y-1">
-                    <li>• Hãy cụ thể với chủ đề (VD: "Python cho Data Science" thay vì "Lập trình")</li>
-                    <li>• Nhiều chương hơn = nội dung toàn diện hơn</li>
+                    <li>• {t('textbook.tipsSpecific')}</li>
+                    <li>• {t('textbook.tipsChapters')}</li>
                     
                   </ul>
                 </div>
