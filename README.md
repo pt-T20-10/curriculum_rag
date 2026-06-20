@@ -478,6 +478,43 @@ alembic upgrade head
 
 Migration `backend/alembic/versions/add_textbook_language.py` thêm cột `textbooks.language` và backfill textbook cũ thành `vi`. Nếu bỏ qua bước này, các API đọc textbook sẽ lỗi `Unknown column 'textbooks.language'`.
 
+### Standalone CLI
+
+CLI chạy toàn bộ pipeline mà không cần khởi động FastAPI, MySQL, Redis hay
+Celery. Validator vẫn kiểm tra và chuẩn hóa query trước khi planner chạy; cấu
+trúc được tự động chấp nhận và sản phẩm được lưu trong `backend/outputs`.
+
+CLI chỉ đọc API key và cấu hình mặc định từ `.env` ở project root. Tối thiểu
+cần `GROQ_API_KEY` cho Validator và `OPENAI_API_KEY` cho các agent/embedding.
+`SERPER_API_KEY` là tùy chọn khi bật hình ảnh. Pandoc và Typst phải có trong
+`PATH` để xuất đủ PDF và Word; Markdown luôn được giữ lại.
+
+Chạy từ project root:
+
+```powershell
+python backend/run_cli.py --query "Lập trình Python cơ bản" --chapters 3 --length medium --sections 5
+```
+
+Bật hình ảnh hoặc lấy kết quả JSON cho script khác:
+
+```powershell
+python backend/run_cli.py --query "Mạng máy tính cho sinh viên" --images
+python backend/run_cli.py --query "Machine Learning for beginners" --json
+```
+
+Các tùy chọn chính:
+
+- `--images/--no-images`: mặc định không dùng ảnh.
+- `--chapters`: `2–12`, mặc định `3`.
+- `--length`: `short`, `medium`, `long`, `very-long`; mặc định `medium`.
+- `--sections`: số mục tối đa mỗi chương, `2–8`, mặc định `5`.
+- `--json`: stdout chỉ chứa một JSON object; log và tiến trình đi qua stderr.
+
+CLI trả exit code `0` khi hoàn tất, `2` khi query/tham số không hợp lệ, `1`
+khi pipeline lỗi và `130` khi bị ngắt bằng bàn phím. Tóm tắt cuối cùng gồm số
+chương/mục, lượng từ/ký tự, số hình, thời gian chạy và đường dẫn từng artefact
+thực sự được tạo.
+
 ### First Login And API Keys
 
 Sau khi backend và frontend chạy, đăng nhập bằng tài khoản admin mặc định:

@@ -11,8 +11,10 @@ from __future__ import annotations
 import json
 import logging
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from threading import RLock
-from typing import Any
+from typing import Any, Iterator
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
@@ -27,6 +29,10 @@ _CACHE_TTL_SECONDS = 30
 _cache: dict[str, tuple[float, Any]] = {}
 _engine: Engine | None = None
 _lock = RLock()
+_database_lookup_enabled: ContextVar[bool] = ContextVar(
+    "runtime_config_database_lookup_enabled",
+    default=True,
+)
 
 
 class RuntimeConfigError(RuntimeError):
@@ -86,6 +92,24 @@ def invalidate_runtime_config_cache() -> None:
         logger.debug("Could not clear retriever runtime caches: %s", exc)
 
 
+@contextmanager
+def environment_only_runtime_config() -> Iterator[None]:
+    """Resolve runtime values from Settings/.env without touching MySQL.
+
+    The regular web and Celery paths retain DB-first configuration. Standalone
+    commands can use this context to avoid requiring application infrastructure.
+    """
+    token = _database_lookup_enabled.set(False)
+    with _lock:
+        _cache.clear()
+    try:
+        yield
+    finally:
+        _database_lookup_enabled.reset(token)
+        with _lock:
+            _cache.clear()
+
+
 def get_runtime_config(key: str, required: bool = False) -> Any:
     """
     Resolve a runtime config value using DB-first fallback semantics.
@@ -101,7 +125,7 @@ def get_runtime_config(key: str, required: bool = False) -> Any:
         if cached and now - cached[0] < _CACHE_TTL_SECONDS:
             value = cached[1]
         else:
-            db_value = _read_db_value(key)
+            db_value = _read_db_value(key) if _database_lookup_enabled.get() else None
             value = db_value if not _is_missing(db_value) else getattr(settings, key, None)
             _cache[key] = (now, value)
 
