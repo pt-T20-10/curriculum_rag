@@ -19,12 +19,16 @@ import { ForgotPasswordPage } from './pages/ForgotPasswordPage'
 import { ResetPasswordPage } from './pages/ResetPasswordPage'
 import { LandingPage } from './pages/LandingPage'
 import { ProfilePage } from './pages/ProfilePage'
+import { PublicInfoPage } from './pages/PublicInfoPage'
+import { SiteFooter } from './components/layout/SiteFooter'
 
 function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
-        <Routes>
+        <div className="min-h-full flex flex-col">
+          <div className="flex-1">
+            <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
           <Route path="/forgot-password" element={<ForgotPasswordPage />} />
@@ -142,7 +146,15 @@ function App() {
 
           {/* Public landing page — no auth guard */}
           <Route path="/" element={<LandingPage />} />
-        </Routes>
+          <Route path="/privacy-policy" element={<PublicInfoPage type="privacy" />} />
+          <Route path="/terms-of-service" element={<PublicInfoPage type="terms" />} />
+          <Route path="/data-deletion" element={<PublicInfoPage type="deletion" />} />
+          <Route path="/support" element={<PublicInfoPage type="support" />} />
+          <Route path="/contact" element={<PublicInfoPage type="contact" />} />
+            </Routes>
+          </div>
+          <SiteFooter />
+        </div>
       </BrowserRouter>
     </AuthProvider>
   )

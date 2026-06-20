@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
+import { FiTrash2 } from 'react-icons/fi'
 import { adminAPI } from '../../api/admin'
 import { Navbar } from '../../components/layout/Navbar'
 import { AdminNavigation } from '../../components/layout/AdminNavigation'
@@ -50,6 +51,61 @@ function LockModal({ user, onClose, onConfirm }) {
   )
 }
 
+function DeleteModal({ user, loading, onClose, onConfirm }) {
+  const { t } = useTranslation()
+  const [confirmation, setConfirmation] = useState('')
+  const confirmed = confirmation.trim() === user.email
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
+        <div className="flex items-start gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-red-100 text-red-700">
+            <FiTrash2 className="h-4 w-4" aria-hidden="true" />
+          </div>
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900">{t('admin.users.deleteTitle')}</h3>
+            <p className="mt-1 text-sm leading-6 text-gray-600">
+              {t('admin.users.deleteConfirm', { email: user.email })}
+            </p>
+          </div>
+        </div>
+
+        <label className="mt-5 block text-sm font-medium text-gray-800">
+          {t('admin.users.deleteTypeEmail')}
+          <input
+            type="email"
+            value={confirmation}
+            onChange={event => setConfirmation(event.target.value)}
+            autoComplete="off"
+            className="mt-1.5 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-blue-100"
+            placeholder={user.email}
+          />
+        </label>
+
+        <div className="mt-5 flex justify-end gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={loading}
+            className="rounded-lg border border-gray-300 px-4 py-2 text-sm hover:bg-gray-50 disabled:opacity-50"
+          >
+            {t('app.cancel')}
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={!confirmed || loading}
+            className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {loading ? '...' : t('admin.users.deleteAccount')}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function AdminUsersPage() {
   const { i18n, t } = useTranslation()
   const locale = i18n.resolvedLanguage === 'en' ? 'en-US' : 'vi-VN'
@@ -61,6 +117,7 @@ export function AdminUsersPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [lockTarget, setLockTarget] = useState(null)
+  const [deleteTarget, setDeleteTarget] = useState(null)
   const [actionLoading, setActionLoading] = useState(null)
 
   const PAGE_SIZE = 20
@@ -120,6 +177,21 @@ export function AdminUsersPage() {
     }
   }
 
+  const handleDelete = async () => {
+    if (!deleteTarget) return
+    setActionLoading(deleteTarget.id)
+    setError(null)
+    try {
+      await adminAPI.deleteUser(deleteTarget.id)
+      setDeleteTarget(null)
+      await load()
+    } catch (err) {
+      setError(err.response?.data?.detail || t('admin.users.deleteFailed'))
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
   return (
@@ -131,6 +203,14 @@ export function AdminUsersPage() {
           user={lockTarget}
           onClose={() => setLockTarget(null)}
           onConfirm={handleLock}
+        />
+      )}
+      {deleteTarget && (
+        <DeleteModal
+          user={deleteTarget}
+          loading={actionLoading === deleteTarget.id}
+          onClose={() => setDeleteTarget(null)}
+          onConfirm={handleDelete}
         />
       )}
 
@@ -230,7 +310,7 @@ export function AdminUsersPage() {
                       {new Date(u.created_at).toLocaleDateString(locale)}
                     </td>
                     <td className="px-4 py-3">
-                      <div className="flex justify-end">
+                      <div className="flex justify-end gap-2">
                         {u.is_locked ? (
                           <button
                             onClick={() => handleUnlock(u.id)}
@@ -248,6 +328,16 @@ export function AdminUsersPage() {
                             {actionLoading === u.id ? '...' : t('admin.users.lock')}
                           </button>
                         )}
+                        <button
+                          type="button"
+                          onClick={() => setDeleteTarget(u)}
+                          disabled={actionLoading === u.id}
+                          className="inline-flex items-center gap-1 rounded border border-red-200 bg-white px-2.5 py-1 text-xs text-red-700 hover:bg-red-50 disabled:opacity-50"
+                          title={t('admin.users.delete')}
+                        >
+                          <FiTrash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                          {t('admin.users.delete')}
+                        </button>
                       </div>
                     </td>
                   </tr>

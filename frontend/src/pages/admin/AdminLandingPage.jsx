@@ -333,64 +333,6 @@ function CtaBannerEditor({ banner, onChange }) {
   )
 }
 
-function FooterEditor({ footer, onChange }) {
-  const { t } = useTranslation()
-  const set = (key, val) => onChange({ ...footer, [key]: val })
-  const setLink = (i, key, val) =>
-    onChange({
-      ...footer,
-      links: footer.links.map((l, idx) => (idx === i ? { ...l, [key]: val } : l)),
-    })
-  const addLink = () =>
-    onChange({ ...footer, links: [...(footer.links || []), { label: '', url: '' }] })
-  const removeLink = i =>
-    onChange({ ...footer, links: footer.links.filter((_, idx) => idx !== i) })
-
-  return (
-    <>
-      <Field label={t('landingAdmin.fields.copyright')}>
-        <TextInput value={footer.copyright} onChange={v => set('copyright', v)} />
-      </Field>
-      <Field label={t('landingAdmin.fields.links')}>
-        <div className="space-y-2">
-          {(footer.links || []).map((link, i) => (
-            <div key={i} className="flex gap-2 items-center">
-              <TextInput
-                value={link.label}
-                onChange={v => setLink(i, 'label', v)}
-                placeholder={t('landingAdmin.fields.label')}
-                className="flex-1"
-              />
-              <TextInput
-                value={link.url}
-                onChange={v => setLink(i, 'url', v)}
-                placeholder="/login"
-                className="flex-1"
-              />
-              <button
-                type="button"
-                onClick={() => removeLink(i)}
-                className="text-red-400 hover:text-red-600 text-lg leading-none px-1"
-              >
-                &times;
-              </button>
-            </div>
-          ))}
-          {(footer.links || []).length < 5 && (
-            <button
-              type="button"
-              onClick={addLink}
-              className="text-sm text-primary hover:underline mt-1"
-            >
-              + {t('landingAdmin.fields.addLink')}
-            </button>
-          )}
-        </div>
-      </Field>
-    </>
-  )
-}
-
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
@@ -567,12 +509,8 @@ export function AdminLandingPage() {
           />
         </SectionCard>
 
-        <SectionCard title={t('landingAdmin.sections.footer')} icon="🔗">
-          <FooterEditor footer={config.footer} onChange={v => set('footer', v)} />
-        </SectionCard>
-
         {/* Sticky save at bottom */}
-        <div className="sticky bottom-6 flex justify-end mt-6">
+        <div className="sticky bottom-6 mt-6 flex justify-end">
           <button
             type="button"
             onClick={handleSave}

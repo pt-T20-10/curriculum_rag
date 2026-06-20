@@ -174,7 +174,7 @@ async def _require_admin_user(db: AsyncSession, user_id: int) -> User:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
     if user.role != UserRole.ADMIN.value:  # type: ignore
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
-    if user.is_locked:  # type: ignore
+    if user.is_deleted or user.is_locked:  # type: ignore
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is locked")
     return user
 

@@ -1,5 +1,6 @@
 const LEGACY_STORAGE_KEY = 'landing_page_config_v1'
 const STORAGE_KEY_PREFIX = 'landing_page_config_v2'
+export const LANDING_CONFIG_UPDATED_EVENT = 'landing-config-updated'
 
 const sharedAssets = {
   bg_image_url:
@@ -92,14 +93,6 @@ export const DEFAULT_CONFIGS = {
       bg_color: '#4F46E5',
     },
 
-    footer: {
-      copyright: `© ${new Date().getFullYear()} AI Textbook Generator. All rights reserved.`,
-      links: [
-        { label: 'Trang chủ', url: '/' },
-        { label: 'Đăng nhập', url: '/login' },
-        { label: 'Đăng ký', url: '/register' },
-      ],
-    },
   },
 
   en: {
@@ -169,14 +162,6 @@ export const DEFAULT_CONFIGS = {
       bg_color: '#4F46E5',
     },
 
-    footer: {
-      copyright: `© ${new Date().getFullYear()} AI Textbook Generator. All rights reserved.`,
-      links: [
-        { label: 'Home', url: '/' },
-        { label: 'Log in', url: '/login' },
-        { label: 'Register', url: '/register' },
-      ],
-    },
   },
 }
 
@@ -238,7 +223,24 @@ export function loadConfig(language = 'vi') {
   }
 }
 
+export function loadLegacySiteInfo(language = 'vi') {
+  const normalizedLanguage = DEFAULT_CONFIGS[language] ? language : 'vi'
+  try {
+    const raw = localStorage.getItem(storageKey(normalizedLanguage))
+      || (normalizedLanguage === 'vi' ? localStorage.getItem(LEGACY_STORAGE_KEY) : null)
+    if (!raw) return null
+    return JSON.parse(raw)?.site_info || null
+  } catch {
+    return null
+  }
+}
+
 export function saveConfig(language = 'vi', config) {
   const normalizedLanguage = DEFAULT_CONFIGS[language] ? language : 'vi'
   localStorage.setItem(storageKey(normalizedLanguage), JSON.stringify(config))
+  window.dispatchEvent(
+    new CustomEvent(LANDING_CONFIG_UPDATED_EVENT, {
+      detail: { language: normalizedLanguage },
+    }),
+  )
 }

@@ -494,31 +494,6 @@ function CtaBannerSection({ cfg, user }) {
 }
 
 // ---------------------------------------------------------------------------
-// Section 8 — Footer
-// ---------------------------------------------------------------------------
-function FooterSection({ cfg }) {
-  if (!cfg) return null
-  return (
-    <footer className="bg-gray-950 text-gray-500 py-10">
-      <div className="content-container flex flex-col md:flex-row items-center justify-between gap-4">
-        <p className="text-sm">{cfg.copyright}</p>
-        <nav className="flex gap-6">
-          {(cfg.links || []).map((link, i) => (
-            <Link
-              key={i}
-              to={link.url}
-              className="text-sm hover:text-gray-300 transition-colors"
-            >
-              {link.label}
-            </Link>
-          ))}
-        </nav>
-      </div>
-    </footer>
-  )
-}
-
-// ---------------------------------------------------------------------------
 // Page root
 // ---------------------------------------------------------------------------
 export function LandingPage() {
@@ -581,7 +556,6 @@ export function LandingPage() {
       <TestimonialsSection cfg={config} />
       <PartnersSection cfg={config} />
       <CtaBannerSection cfg={config} user={user} />
-      <FooterSection cfg={config.footer} />
     </div>
   )
 }

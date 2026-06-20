@@ -67,6 +67,7 @@ async def ensure_default_admin_user() -> bool:
                 credits=0,
                 role=UserRole.ADMIN.value,
                 is_locked=False,
+                is_deleted=False,
             )
         )
         await session.commit()

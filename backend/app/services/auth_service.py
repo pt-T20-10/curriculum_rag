@@ -19,6 +19,7 @@ async def register_user(db: AsyncSession, user_data: UserCreate) -> User:
         hashed_password=hash_password(user_data.password),
         full_name=user_data.full_name,
         auth_provider=AuthProvider.LOCAL.value,
+        is_deleted=False,
     )
     db.add(user)
     await db.commit()
@@ -27,7 +28,12 @@ async def register_user(db: AsyncSession, user_data: UserCreate) -> User:
 
 
 async def authenticate_user(db: AsyncSession, email: str, password: str) -> User:
-    result = await db.execute(select(User).where(User.email == email))
+    result = await db.execute(
+        select(User).where(
+            User.email == email,
+            User.is_deleted.is_(False),
+        )
+    )
     user = result.scalar_one_or_none()
     if not user or not user.hashed_password: #type: ignore
         raise HTTPException(
@@ -48,10 +54,14 @@ async def get_or_create_google_user(db: AsyncSession, google_info: dict) -> User
 
     result = await db.execute(select(User).where(User.google_id == google_id))
     user = result.scalar_one_or_none()
+    if user and user.is_deleted:
+        user = None
 
     if not user:
         result = await db.execute(select(User).where(User.email == email))
         user = result.scalar_one_or_none()
+        if user and user.is_deleted:
+            user = None
 
     if user:
         if not user.google_id: #type: ignore
@@ -66,6 +76,7 @@ async def get_or_create_google_user(db: AsyncSession, google_info: dict) -> User
         auth_provider=AuthProvider.GOOGLE.value,
         google_id=google_id,
         is_verified=True,
+        is_deleted=False,
     )
     db.add(user)
     await db.commit()

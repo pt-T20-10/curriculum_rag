@@ -18,6 +18,7 @@ React/Vite UI
 FastAPI backend
   |-- Auth: local login, Google OAuth, JWT, password reset
   |-- Textbooks: create planning draft, progress polling, edit/confirm curriculum, stop
+  |-- Support: public request form forwarded to the configured admin email
   |-- Plans/payments/admin/config APIs
   |
   |-- MySQL: users, textbooks, plans, transactions, config overrides

@@ -1,4 +1,5 @@
 import logging
+from html import escape
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -98,4 +99,184 @@ async def send_password_reset_email(to_email: str, otp_code: str) -> None:
         logger.info("Password reset email sent to %s", to_email)
     except Exception as exc:
         logger.error("Failed to send reset email to %s: %s", to_email, exc)
+        raise
+
+
+async def send_support_request_email(
+    to_email: str,
+    sender_name: str,
+    sender_email: str,
+    subject: str,
+    description: str,
+    ui_language: str,
+) -> bool:
+    """Send a support request to a server-selected recipient via SMTP."""
+    smtp_user = str(get_runtime_config("SMTP_USER", required=False) or "")
+    smtp_password = str(get_runtime_config("SMTP_PASSWORD", required=False) or "")
+    if not smtp_user or not smtp_password:
+        logger.error("SMTP is not configured; support request email was not sent")
+        return False
+
+    smtp_host = str(get_runtime_config("SMTP_HOST", required=False) or "smtp.gmail.com")
+    smtp_port = int(get_runtime_config("SMTP_PORT", required=False) or 587)
+    email_from = str(get_runtime_config("EMAIL_FROM", required=False) or smtp_user)
+
+    safe_name = escape(sender_name)
+    safe_email = escape(sender_email)
+    safe_subject = escape(subject)
+    safe_description = escape(description).replace("\n", "<br>")
+    language_label = "English" if ui_language == "en" else "Tiếng Việt"
+
+    plain_body = (
+        "New support request\n\n"
+        f"Name: {sender_name}\n"
+        f"Email: {sender_email}\n"
+        f"UI language: {language_label}\n"
+        f"Subject: {subject}\n\n"
+        f"Issue description:\n{description}\n"
+    )
+    html_body = f"""
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:24px;background:#f4f6f8;font-family:Arial,sans-serif;color:#1f2937">
+  <table width="100%" cellpadding="0" cellspacing="0">
+    <tr><td align="center">
+      <table width="640" cellpadding="0" cellspacing="0"
+             style="max-width:100%;background:#fff;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden">
+        <tr><td style="background:#2563eb;padding:22px 28px;color:#fff">
+          <h1 style="margin:0;font-size:20px">New support request</h1>
+        </td></tr>
+        <tr><td style="padding:26px 28px">
+          <table width="100%" cellpadding="6" cellspacing="0" style="font-size:14px">
+            <tr><td style="width:120px;color:#6b7280">Name</td><td><strong>{safe_name}</strong></td></tr>
+            <tr><td style="color:#6b7280">Email</td><td>{safe_email}</td></tr>
+            <tr><td style="color:#6b7280">UI language</td><td>{language_label}</td></tr>
+            <tr><td style="color:#6b7280">Subject</td><td>{safe_subject}</td></tr>
+          </table>
+          <div style="margin-top:22px;padding-top:20px;border-top:1px solid #e5e7eb">
+            <p style="margin:0 0 10px;color:#6b7280;font-size:13px;font-weight:700">ISSUE DESCRIPTION</p>
+            <p style="margin:0;font-size:14px;line-height:1.7;white-space:normal">{safe_description}</p>
+          </div>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
+"""
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"[Support] {subject}"
+    msg["From"] = email_from
+    msg["To"] = to_email
+    msg["Reply-To"] = sender_email
+    msg.attach(MIMEText(plain_body, "plain", "utf-8"))
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+    try:
+        await aiosmtplib.send(
+            msg,
+            hostname=smtp_host,
+            port=smtp_port,
+            username=smtp_user,
+            password=smtp_password,
+            start_tls=True,
+        )
+        logger.info("Support request email sent to configured recipient")
+        return True
+    except Exception as exc:
+        logger.error("Failed to send support request email: %s", exc)
+        raise
+
+
+async def send_account_deletion_request_email(
+    to_email: str,
+    account_email: str,
+    user_id: int | None,
+    reason: str,
+    notes: str,
+    ui_language: str,
+    authenticated: bool,
+) -> bool:
+    """Send an account deletion request to the configured privacy contact."""
+    smtp_user = str(get_runtime_config("SMTP_USER", required=False) or "")
+    smtp_password = str(get_runtime_config("SMTP_PASSWORD", required=False) or "")
+    if not smtp_user or not smtp_password:
+        logger.error("SMTP is not configured; account deletion request was not sent")
+        return False
+
+    smtp_host = str(get_runtime_config("SMTP_HOST", required=False) or "smtp.gmail.com")
+    smtp_port = int(get_runtime_config("SMTP_PORT", required=False) or 587)
+    email_from = str(get_runtime_config("EMAIL_FROM", required=False) or smtp_user)
+
+    safe_email = escape(account_email)
+    safe_reason = escape(reason)
+    safe_notes = escape(notes or "Not provided").replace("\n", "<br>")
+    user_id_text = str(user_id) if user_id is not None else "Not authenticated"
+    auth_text = "Authenticated account" if authenticated else "Public submission"
+    language_label = "English" if ui_language == "en" else "Tiếng Việt"
+
+    plain_body = (
+        "Account deletion request\n\n"
+        f"Account email: {account_email}\n"
+        f"User ID: {user_id_text}\n"
+        f"Identity source: {auth_text}\n"
+        f"UI language: {language_label}\n"
+        f"Reason: {reason}\n\n"
+        f"Additional notes:\n{notes or 'Not provided'}\n"
+    )
+    html_body = f"""
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:24px;background:#f4f6f8;font-family:Arial,sans-serif;color:#1f2937">
+  <table width="100%" cellpadding="0" cellspacing="0">
+    <tr><td align="center">
+      <table width="640" cellpadding="0" cellspacing="0"
+             style="max-width:100%;background:#fff;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden">
+        <tr><td style="background:#b91c1c;padding:22px 28px;color:#fff">
+          <h1 style="margin:0;font-size:20px">Account deletion request</h1>
+        </td></tr>
+        <tr><td style="padding:26px 28px">
+          <table width="100%" cellpadding="6" cellspacing="0" style="font-size:14px">
+            <tr><td style="width:130px;color:#6b7280">Account email</td><td><strong>{safe_email}</strong></td></tr>
+            <tr><td style="color:#6b7280">User ID</td><td>{user_id_text}</td></tr>
+            <tr><td style="color:#6b7280">Identity source</td><td>{auth_text}</td></tr>
+            <tr><td style="color:#6b7280">UI language</td><td>{language_label}</td></tr>
+            <tr><td style="color:#6b7280">Reason</td><td>{safe_reason}</td></tr>
+          </table>
+          <div style="margin-top:22px;padding-top:20px;border-top:1px solid #e5e7eb">
+            <p style="margin:0 0 10px;color:#6b7280;font-size:13px;font-weight:700">ADDITIONAL NOTES</p>
+            <p style="margin:0;font-size:14px;line-height:1.7">{safe_notes}</p>
+          </div>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
+"""
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"[Account deletion] {account_email}"
+    msg["From"] = email_from
+    msg["To"] = to_email
+    msg["Reply-To"] = account_email
+    msg.attach(MIMEText(plain_body, "plain", "utf-8"))
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+    try:
+        await aiosmtplib.send(
+            msg,
+            hostname=smtp_host,
+            port=smtp_port,
+            username=smtp_user,
+            password=smtp_password,
+            start_tls=True,
+        )
+        logger.info("Account deletion request sent to configured recipient")
+        return True
+    except Exception as exc:
+        logger.error("Failed to send account deletion request: %s", exc)
         raise

@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { FiEye, FiEyeOff } from 'react-icons/fi'
 import { Navbar } from '../../components/layout/Navbar'
 import { AdminNavigation } from '../../components/layout/AdminNavigation'
+import { SiteInfoSettings } from '../../components/admin/SiteInfoSettings'
 import { configAPI } from '../../api/config'
 import { translateConfigGroup, translateConfigParam } from '../../utils/configTranslations'
 
@@ -518,6 +519,8 @@ export function AdminSystemConfigPage() {
             </p>
           </div>
         </div>
+
+        <SiteInfoSettings />
 
         {loading && <Spinner />}
 

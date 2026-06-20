@@ -13,6 +13,7 @@ export const adminAPI = {
   listUsers: (params) => axios.get('/admin/users', { params }),
   lockUser: (userId, reason) => axios.post(`/admin/users/${userId}/lock`, { reason }),
   unlockUser: (userId) => axios.post(`/admin/users/${userId}/unlock`),
+  deleteUser: (userId) => axios.delete(`/admin/users/${userId}`),
   changeUserRole: (userId, role) => axios.put(`/admin/users/${userId}/role`, null, { params: { role } }),
 
   // Textbooks

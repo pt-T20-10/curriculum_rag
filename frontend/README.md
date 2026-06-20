@@ -11,6 +11,7 @@ Frontend React/Vite cho hệ thống AI Textbook Generator. Giao diện hỗ tr�
 - Theo dõi realtime phase, chapter, subsection, sub-stage và nội dung preview.
 - Stop/Reset planning draft mà không mất credit; credit chỉ dùng khi confirm curriculum.
 - Xem và tải PDF/DOCX sau khi hoàn tất.
+- Gửi yêu cầu hỗ trợ trực tiếp tới email Admin qua biểu mẫu công khai có validation và giới hạn tần suất.
 - User Advanced settings và Admin System Config theo registry từ backend.
 - Dashboard quản trị user, textbook, landing page VI/EN, plan, payment và system config.
 
@@ -79,6 +80,11 @@ Public/auth:
 | `/forgot-password` | Yêu cầu OTP reset password |
 | `/reset-password` | Xác nhận OTP và đặt mật khẩu mới |
 | `/auth/callback` | Google OAuth callback |
+| `/privacy-policy` | Chính sách quyền riêng tư và xử lý AI |
+| `/terms-of-service` | Điều khoản sử dụng |
+| `/data-deletion` | Quy trình yêu cầu xóa tài khoản và dữ liệu |
+| `/support` | Hướng dẫn và biểu mẫu gửi yêu cầu tới Admin |
+| `/contact` | Thông tin đơn vị vận hành và liên hệ |
 
 Authenticated user:
 
@@ -147,6 +153,9 @@ Landing page có config riêng theo ngôn ngữ trong `src/utils/landingConfig.j
 - Storage key: `landing_page_config_v2_<language>`
 - Config cũ `landing_page_config_v1` được migrate sang bản tiếng Việt khi cần
 - Admin reset chỉ tác động đến ngôn ngữ đang chỉnh
+- Landing config chỉ quản lý nội dung marketing; footer và thông tin liên hệ không còn lưu trong localStorage
+
+Thông tin website/liên hệ được lưu trong table `site_contact_config` và chỉnh tại Admin System Configuration. `SiteFooter` được đặt ở cấp ứng dụng, dùng các nhóm liên kết cố định và đọc tên dịch vụ, địa chỉ, email, điện thoại từ API theo ngôn ngữ hiện tại.
 
 ## Project Structure
 
@@ -173,5 +182,7 @@ src/
 - Access token được lưu với key `token` và gắn vào `Authorization: Bearer ...`.
 - Response `401` sẽ xóa token và chuyển về `/login`.
 - API prefix `/api/v1` được cấu hình trong Axios client.
+- `GET /api/v1/site-info?language=vi|en` cung cấp thông tin liên hệ public; Admin quản lý qua `GET/PUT /api/v1/admin/site-info`.
+- Form hỗ trợ gọi `POST /api/v1/support/requests`; backend ưu tiên email hỗ trợ trong `site_contact_config`, sau đó fallback về email của tài khoản Admin đang hoạt động.
 
 Xem [README gốc](../README.md) để cài backend, MySQL, Redis, Celery, Pandoc/Typst và chạy migration.

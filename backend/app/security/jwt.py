@@ -10,8 +10,12 @@ from typing import Optional
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.database import get_async_db
+from app.models.user import User
 
 # HTTPBearer security scheme for FastAPI
 security = HTTPBearer()
@@ -108,8 +112,9 @@ def decode_token(token: str) -> int:
         )
 
 
-def get_current_user_id(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+async def get_current_user_id(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    db: AsyncSession = Depends(get_async_db),
 ) -> int:
     """Extract user ID from JWT token."""
 
@@ -135,6 +140,18 @@ def get_current_user_id(
                 detail="Invalid token"
             )
 
+        result = await db.execute(
+            select(User.id).where(
+                User.id == user_id,
+                User.is_deleted.is_(False),
+            )
+        )
+        if result.scalar_one_or_none() is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Account is unavailable",
+            )
+
         return user_id
 
     except JWTError:
@@ -145,28 +162,11 @@ def get_current_user_id(
 
 
 async def require_admin(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    user_id: int = Depends(get_current_user_id),
 ):
     """
     Dependency that extracts user_id from JWT and returns it.
     Full admin check (role + is_locked) is done in the router using the DB session.
     Returns user_id — routers must call _check_admin(db, user_id) after.
     """
-    if not credentials:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    try:
-        payload = jwt.decode(
-            credentials.credentials,
-            settings.SECRET_KEY,
-            algorithms=[settings.ALGORITHM],
-        )
-        user_id = payload.get("sub")
-        if user_id is None:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-        return int(user_id)
-    except JWTError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    return user_id

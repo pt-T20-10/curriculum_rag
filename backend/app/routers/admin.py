@@ -27,13 +27,18 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 
 async def _get_admin_user(db: AsyncSession, user_id: int) -> User:
-    result = await db.execute(select(User).where(User.id == user_id))
+    result = await db.execute(
+        select(User).where(
+            User.id == user_id,
+            User.is_deleted.is_(False),
+        )
+    )
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
     if user.role != UserRole.ADMIN.value: #type: ignore
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
-    if user.is_locked: #type: ignore
+    if user.is_deleted or user.is_locked: #type: ignore
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is locked")
     return user
 
@@ -132,7 +137,11 @@ async def get_stats_overview(
 ):
     await _get_admin_user(db, admin_id)
 
-    total_users = (await db.execute(select(func.count(User.id)))).scalar_one()
+    total_users = (
+        await db.execute(
+            select(func.count(User.id)).where(User.is_deleted.is_(False))
+        )
+    ).scalar_one()
     total_textbooks = (await db.execute(select(func.count(Textbook.id)))).scalar_one()
 
     month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -143,7 +152,12 @@ async def get_stats_overview(
     ).scalar_one()
 
     active_users = (
-        await db.execute(select(func.count(User.id)).where(User.is_active == True))
+        await db.execute(
+            select(func.count(User.id)).where(
+                User.is_active == True,
+                User.is_deleted.is_(False),
+            )
+        )
     ).scalar_one()
 
     completed_textbooks = (
@@ -307,7 +321,11 @@ async def get_top_users_topup(
             func.sum(Transaction.credits).label("total_credits"),
             func.count(Transaction.id).label("txn_count"),
         )
-        .where(Transaction.status == TransactionStatus.CONFIRMED)
+        .join(User, User.id == Transaction.user_id)
+        .where(
+            Transaction.status == TransactionStatus.CONFIRMED,
+            User.is_deleted.is_(False),
+        )
         .group_by(Transaction.user_id)
         .order_by(func.sum(Transaction.amount_vnd).desc())
         .limit(limit)
@@ -317,7 +335,12 @@ async def get_top_users_topup(
     user_ids = [r.user_id for r in rows]
     user_map: dict[int, User] = {}
     if user_ids:
-        ur = await db.execute(select(User).where(User.id.in_(user_ids)))
+        ur = await db.execute(
+            select(User).where(
+                User.id.in_(user_ids),
+                User.is_deleted.is_(False),
+            )
+        )
         for u in ur.scalars().all():
             user_map[u.id] = u  # type: ignore
 
@@ -348,6 +371,8 @@ async def get_top_users_textbooks(
             Textbook.user_id,
             func.count(Textbook.id).label("textbook_count"),
         )
+        .join(User, User.id == Textbook.user_id)
+        .where(User.is_deleted.is_(False))
         .group_by(Textbook.user_id)
         .order_by(func.count(Textbook.id).desc())
         .limit(limit)
@@ -357,7 +382,12 @@ async def get_top_users_textbooks(
     user_ids = [r.user_id for r in rows]
     user_map: dict[int, User] = {}
     if user_ids:
-        ur = await db.execute(select(User).where(User.id.in_(user_ids)))
+        ur = await db.execute(
+            select(User).where(
+                User.id.in_(user_ids),
+                User.is_deleted.is_(False),
+            )
+        )
         for u in ur.scalars().all():
             user_map[u.id] = u  # type: ignore
 
@@ -388,7 +418,7 @@ async def list_users(
 ):
     await _get_admin_user(db, admin_id)
 
-    query = select(User)
+    query = select(User).where(User.is_deleted.is_(False))
     if search:
         like = f"%{search}%"
         query = query.where(
@@ -445,7 +475,12 @@ async def lock_user(
 ):
     admin = await _get_admin_user(db, admin_id)
 
-    result = await db.execute(select(User).where(User.id == user_id))
+    result = await db.execute(
+        select(User).where(
+            User.id == user_id,
+            User.is_deleted.is_(False),
+        )
+    )
     target = result.scalar_one_or_none()
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
@@ -470,7 +505,12 @@ async def unlock_user(
 ):
     await _get_admin_user(db, admin_id)
 
-    result = await db.execute(select(User).where(User.id == user_id))
+    result = await db.execute(
+        select(User).where(
+            User.id == user_id,
+            User.is_deleted.is_(False),
+        )
+    )
     target = result.scalar_one_or_none()
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
@@ -483,6 +523,47 @@ async def unlock_user(
     return {"message": f"User {target.email} unlocked successfully"}
 
 
+@router.delete("/users/{user_id}", status_code=200)
+async def soft_delete_user(
+    user_id: int,
+    admin_id: int = Depends(require_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
+    admin = await _get_admin_user(db, admin_id)
+    result = await db.execute(
+        select(User).where(
+            User.id == user_id,
+            User.is_deleted.is_(False),
+        )
+    )
+    target = result.scalar_one_or_none()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target.id == admin.id:  # type: ignore
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
+    if target.role == UserRole.ADMIN.value:  # type: ignore
+        raise HTTPException(status_code=400, detail="Cannot delete an admin account")
+
+    deleted_email = target.email
+    target.email = f"deleted-user-{target.id}@deleted.invalid"  # type: ignore
+    target.username = None  # type: ignore
+    target.google_id = None  # type: ignore
+    target.full_name = None  # type: ignore
+    target.avatar_url = None  # type: ignore
+    target.hashed_password = None  # type: ignore
+    target.password_reset_code = None  # type: ignore
+    target.password_reset_expires = None  # type: ignore
+    target.is_verified = False  # type: ignore
+    target.is_active = False  # type: ignore
+    target.is_locked = True  # type: ignore
+    target.is_deleted = True  # type: ignore
+    target.locked_at = datetime.utcnow()  # type: ignore
+    target.locked_by = admin_id  # type: ignore
+    await db.commit()
+
+    return {"message": f"User {deleted_email} deleted successfully"}
+
+
 @router.put("/users/{user_id}/role", status_code=200)
 async def change_user_role(
     user_id: int,
@@ -492,7 +573,12 @@ async def change_user_role(
 ):
     admin = await _get_admin_user(db, admin_id)
 
-    result = await db.execute(select(User).where(User.id == user_id))
+    result = await db.execute(
+        select(User).where(
+            User.id == user_id,
+            User.is_deleted.is_(False),
+        )
+    )
     target = result.scalar_one_or_none()
     if not target:
         raise HTTPException(status_code=404, detail="User not found")

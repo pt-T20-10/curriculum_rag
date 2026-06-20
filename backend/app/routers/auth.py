@@ -47,12 +47,16 @@ async def _get_or_create_google_user(db: AsyncSession, google_info: dict) -> Use
     result = await db.execute(select(User).where(User.google_id == google_id))
     user = result.scalar_one_or_none()
     if user:
+        if user.is_deleted:
+            raise ValueError("account_deleted")
         return user
 
     # 2. Match on email (link or reject)
     result = await db.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
     if user:
+        if user.is_deleted:
+            raise ValueError("account_deleted")
         if user.google_id and user.google_id != google_id: #type: ignore
             raise ValueError("Email is already linked to a different Google account")
         user.google_id = google_id  # type: ignore[assignment]
@@ -72,6 +76,7 @@ async def _get_or_create_google_user(db: AsyncSession, google_info: dict) -> Use
         is_verified=True,   # Google email is already verified
         role=UserRole.USER.value,
         is_locked=False,
+        is_deleted=False,
     )
     db.add(user)
     await db.commit()
@@ -108,6 +113,7 @@ async def register(
         is_active=True,
         is_verified=False,
         auth_provider="local",
+        is_deleted=False,
     )
 
     db.add(new_user)
@@ -137,7 +143,8 @@ async def login(credentials: UserLogin, db: AsyncSession = Depends(get_async_db)
     identifier = credentials.identifier.strip()
     result = await db.execute(
         select(User).where(
-            or_(User.email == identifier, User.username == identifier)
+            or_(User.email == identifier, User.username == identifier),
+            User.is_deleted.is_(False),
         )
     )
     user = result.scalar_one_or_none()
@@ -195,7 +202,12 @@ async def get_current_user(
     if not current_user_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    result = await db.execute(select(User).where(User.id == current_user_id))
+    result = await db.execute(
+        select(User).where(
+            User.id == current_user_id,
+            User.is_deleted.is_(False),
+        )
+    )
     user = result.scalar_one_or_none()
 
     if not user:
@@ -236,13 +248,14 @@ async def google_callback(
     try:
         user = await _get_or_create_google_user(db, google_info)
     except ValueError as exc:
+        error_code = "account_deleted" if str(exc) == "account_deleted" else "email_conflict"
         return RedirectResponse(
-            f"{frontend_cb}?error=email_conflict&state={state}"
+            f"{frontend_cb}?error={error_code}&state={state}"
         )
     except Exception:
         return RedirectResponse(f"{frontend_cb}?error=server_error&state={state}")
 
-    if not user.is_active or user.is_locked:  # type: ignore[truthy-bool]
+    if user.is_deleted or not user.is_active or user.is_locked:  # type: ignore[truthy-bool]
         return RedirectResponse(f"{frontend_cb}?error=account_disabled&state={state}")
 
     access_token = create_access_token(data={"sub": str(user.id)})
@@ -268,7 +281,12 @@ async def forgot_password(
     Generate and email a 6-digit OTP for password reset.
     Always returns the same response to prevent email enumeration.
     """
-    result = await db.execute(select(User).where(User.email == body.email))
+    result = await db.execute(
+        select(User).where(
+            User.email == body.email,
+            User.is_deleted.is_(False),
+        )
+    )
     user = result.scalar_one_or_none()
 
     if user and user.auth_provider == AuthProvider.LOCAL.value: #type: ignore
@@ -300,7 +318,12 @@ async def reset_password(
         detail="Mã xác nhận không hợp lệ hoặc đã hết hạn.",
     )
 
-    result = await db.execute(select(User).where(User.email == body.email))
+    result = await db.execute(
+        select(User).where(
+            User.email == body.email,
+            User.is_deleted.is_(False),
+        )
+    )
     user = result.scalar_one_or_none()
 
     if not user or not user.password_reset_code or not user.password_reset_expires: #type: ignore
@@ -335,7 +358,12 @@ async def change_password(
     if not current_user_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    result = await db.execute(select(User).where(User.id == current_user_id))
+    result = await db.execute(
+        select(User).where(
+            User.id == current_user_id,
+            User.is_deleted.is_(False),
+        )
+    )
     user = result.scalar_one_or_none()
 
     if not user:

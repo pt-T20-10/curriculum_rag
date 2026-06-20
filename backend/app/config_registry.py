@@ -108,7 +108,7 @@ PARAMETER_REGISTRY: Dict[str, ParameterDef] = {
     },
     "SMTP_HOST": {
         "label": "SMTP Host",
-        "description": "Máy chủ SMTP dùng để gửi email reset password.",
+        "description": "Máy chủ SMTP dùng để gửi email hệ thống.",
         "group": "api_keys",
         "type": "str",
         "default": "smtp.gmail.com",
@@ -118,7 +118,7 @@ PARAMETER_REGISTRY: Dict[str, ParameterDef] = {
     },
     "SMTP_PORT": {
         "label": "SMTP Port",
-        "description": "Cổng SMTP dùng để gửi email reset password.",
+        "description": "Cổng SMTP dùng để gửi email hệ thống.",
         "group": "api_keys",
         "type": "str",
         "default": "587",
