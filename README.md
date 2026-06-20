@@ -1,6 +1,6 @@
 # Curriculum RAG - AI Textbook Generator
 
-Hệ thống web tạo giáo trình tiếng Việt từ một chủ đề đầu vào. Sản phẩm hiện tại gồm frontend React, backend FastAPI, hàng đợi Celery/Redis, MySQL, và một workflow LangGraph nhiều tác nhân để lập dàn ý, cho người dùng duyệt curriculum, crawl dữ liệu song ngữ, sinh nội dung theo CRAG, kiểm duyệt, minh họa và xuất PDF/Word.
+Hệ thống web tạo giáo trình tiếng Việt hoặc tiếng Anh từ một chủ đề đầu vào. Sản phẩm hiện tại gồm frontend React song ngữ VI/EN, backend FastAPI, hàng đợi Celery/Redis, MySQL, và một workflow LangGraph nhiều tác nhân để nhận diện ngôn ngữ, lập dàn ý, cho người dùng duyệt curriculum, crawl dữ liệu song ngữ, sinh nội dung theo CRAG, kiểm duyệt, minh họa và xuất Markdown/PDF/Word.
 
 ![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)
 ![FastAPI](https://img.shields.io/badge/API-FastAPI-teal)
@@ -17,7 +17,7 @@ React/Vite UI
   v
 FastAPI backend
   |-- Auth: local login, Google OAuth, JWT, password reset
-  |-- Textbooks: create, progress polling, confirm curriculum, stop
+  |-- Textbooks: create planning draft, progress polling, edit/confirm curriculum, stop
   |-- Plans/payments/admin/config APIs
   |
   |-- MySQL: users, textbooks, plans, transactions, config overrides
@@ -42,6 +42,7 @@ planner -> END
 
 Output:
   - curriculum_json
+  - locked target language (vi/en)
   - progress phase = reviewing
   - user edits/confirms curriculum in the UI
 ```
@@ -69,28 +70,40 @@ generate_preface
 
 ## End-to-End Workflow
 
-1. Người dùng tạo textbook từ UI hoặc `POST /api/v1/textbooks`.
-2. Backend validate topic bằng `ValidatorAgent` trước khi trừ credit. Topic hợp lệ sẽ được tách thành `content_type`, `core_topic`, và `user_requirements`.
-3. Backend tạo record `textbooks`, trừ 1 credit, rồi đẩy Celery task `generate_textbook`.
+1. Người dùng tạo textbook từ UI hoặc `POST /api/v1/textbooks`; frontend gửi thêm `ui_language` (`vi` hoặc `en`).
+2. `ValidatorAgent` kiểm tra topic, suy luận ngôn ngữ input/ngôn ngữ được yêu cầu, khóa `target_language`, rồi tách topic thành `content_type`, `core_topic`, và `user_requirements`. Feedback validation luôn theo ngôn ngữ UI.
+3. Backend kiểm tra user còn ít nhất 1 credit, tạo planning draft với `credits_used=0`, rồi đẩy Celery task `generate_textbook`. Chưa trừ credit ở bước này.
 4. Phase 1 chỉ chạy planner. Planner sinh chapter titles và subsections từ LLM, không crawl web ở bước này.
-5. Frontend hiển thị curriculum để người dùng sửa/xóa/thêm chapter và subsection.
-6. Khi người dùng xác nhận, `POST /api/v1/textbooks/{id}/confirm-curriculum` đẩy task `continue_textbook_generation`.
+5. Frontend hiển thị curriculum để người dùng sửa/xóa/thêm chapter và subsection. Stop hoặc Reset trong planning/review sẽ revoke task, xóa draft khỏi database và không trừ credit.
+6. Khi người dùng xác nhận, `POST /api/v1/textbooks/{id}/confirm-curriculum` validate curriculum, trừ đúng 1 credit trong transaction, đồng bộ các progress counters và đẩy task `continue_textbook_generation`. Request xác nhận lặp lại không trừ credit lần hai.
 7. Phase 2 sinh tiêu đề thật và lời nói đầu, crawl dữ liệu, populate ChromaDB, rồi lặp qua từng subsection để sinh nội dung.
 8. Publisher ghép toàn bộ nội dung, chạy các pass sửa Markdown/math/heading, rồi export `.md`, `.pdf`, `.docx` vào `backend/outputs`.
+
+## Language Handling
+
+Hệ thống chỉ tạo giáo trình bằng tiếng Việt (`vi`) hoặc tiếng Anh (`en`). Ngôn ngữ UI quyết định ngôn ngữ của label, validation feedback và lỗi; ngôn ngữ giáo trình được suy luận riêng theo thứ tự ưu tiên:
+
+1. Yêu cầu ngôn ngữ rõ ràng trong query thắng, ví dụ `Lập trình Python cơ bản bằng tiếng Anh` hoặc `Python Programming Vietnamese Curriculum`.
+2. Nếu không có yêu cầu rõ ràng, dùng ngôn ngữ của query.
+3. Query quá ngắn hoặc mơ hồ mới fallback về `ui_language`.
+
+Query bằng ngôn ngữ khác VI/EN chỉ được chấp nhận khi nội dung yêu cầu rõ đầu ra bằng tiếng Việt hoặc tiếng Anh. Các trường hợp còn lại bị chặn trước planning và trả message theo ngôn ngữ UI. Kết quả nhận diện gồm `input_language`, `requested_language`, `target_language`, `language_source`; `target_language` được lưu ở `textbooks.language` và truyền xuyên suốt state/progress.
+
+`backend/app/services/textbook/language.py` định nghĩa language profile dùng chung cho Planner, Writer, Reviewer, Illustrator và Publisher. Profile kiểm soát academic tone, chapter/front-matter labels, caption và quy tắc định dạng tương ứng với từng ngôn ngữ. UI không có selector ngôn ngữ giáo trình riêng trong Advanced settings; query là nguồn quyết định chính.
 
 ## Core Agents
 
 | Agent / module | File | Vai trò hiện tại |
 |---|---|---|
-| Validator | `backend/app/services/textbook/validator.py` | Validate topic ở API layer bằng Groq `llama-3.3-70b-versatile`; phân loại `scholarly`, `technical`, `practical`, `lifestyle` |
-| Planner | `backend/app/services/textbook/planner.py` | Sinh curriculum bằng `LLM_MODEL_PREMIUM`; Phase 1 không crawl, không RAG |
-| Metadata | `generate_metadata_node` trong `planner.py` | Sau khi user confirm, sinh textbook title và `Lời nói đầu` từ curriculum đã duyệt |
+| Validator | `backend/app/services/textbook/validator.py` | Validate topic ở API layer bằng Groq `llama-3.3-70b-versatile`; nhận diện/yêu cầu ngôn ngữ và phân loại `scholarly`, `technical`, `practical`, `lifestyle` |
+| Planner | `backend/app/services/textbook/planner.py` | Sinh curriculum theo target language bằng `LLM_MODEL_PREMIUM`; Phase 1 không crawl, không RAG |
+| Metadata | `generate_metadata_node` trong `planner.py` | Sau khi user confirm, sinh textbook title và Preface/Lời nói đầu theo target language |
 | Ingester | `backend/app/services/textbook/ingester.py` | Xóa ChromaDB cũ, query expansion song ngữ, search, filter URL, crawl, chunk, embed, lưu Chroma |
 | QueryFormulator | `backend/app/services/textbook/query_formulator.py` | Tạo query retrieval cho subsection hiện tại, có enrichment theo user requirements |
 | RetrieverNode | `backend/app/services/textbook/retriever.py` | MMR search trên Chroma collection `dynamic_context`, lọc chunk nhiều tầng, log context |
 | ContextEvaluator | `backend/app/services/textbook/evaluator.py` | Dùng LLM có tool `retrieve_context_tool` để bổ sung context khi cần |
-| ContentWriter | `backend/app/services/textbook/writer.py` | Sinh nội dung tiếng Việt bằng `LLM_MODEL_PREMIUM`, enforce length/heading/continuity/image tags |
-| Reviewer | `backend/app/services/textbook/reviewer.py` | Hai pass review bằng cheap LLM: format/math pass, content-quality pass, JSON quality gate |
+| ContentWriter | `backend/app/services/textbook/writer.py` | Sinh nội dung VI/EN bằng `LLM_MODEL_PREMIUM`, enforce depth/length/paragraph flow/heading/continuity/image tags |
+| Reviewer | `backend/app/services/textbook/reviewer.py` | Hai pass review language-aware bằng cheap LLM: format/math pass, content-quality pass, JSON quality gate |
 | Illustrator | `backend/app/services/textbook/illustrator.py` | Resolve `[IMAGE: ...]` tags bằng GPT Image hoặc Serper Google Images |
 | Publisher | `backend/app/services/textbook/publisher.py` | Ghép nội dung, fix Markdown/math, tạo front matter Typst, export PDF và Word |
 | Workflow runner | `backend/app/services/textbook/workflow_runner.py` | Stream LangGraph events, update `progress_data` vào MySQL |
@@ -187,13 +200,13 @@ QueryFormulator -> RetrieverNode -> ContextEvaluator -> ContentWriter -> Reviewe
 
 `ContextEvaluator` dùng LLM có tool `retrieve_context_tool` để lấy thêm context tối đa `WRITER_RETRIEVAL_MAX_ROUNDS`. Nếu context vẫn mỏng, workflow ưu tiên fail-open để writer vẫn có thể tiếp tục, và reviewer có thể route lại về QueryFormulator nếu feedback được phân loại là `missing_context`.
 
-`ContentWriter` nhận context đã chuẩn bị sẵn, không tự gọi tool. Writer enforce:
+`ContentWriter` nhận context đã chuẩn bị sẵn, không tự gọi tool. Writer enforce theo target language:
 
-- heading chapter `# CHƯƠNG N: ...` chỉ ở subsection đầu mỗi chapter
+- heading chapter `# CHƯƠNG N: ...` hoặc `# CHAPTER N: ...` chỉ ở subsection đầu mỗi chapter
 - section heading `## X.Y Title`
 - subsection heading `### X.Y.Z Title`
 - blank lines quanh heading, paragraph, list, code, math block
-- continuity bằng `section_summaries`
+- continuity bằng `section_summaries` và paragraph flow phù hợp văn phong học thuật
 - image placeholders nếu `enable_images=True`
 
 Character target được tính từ `section_type` và `content_level`:
@@ -233,10 +246,10 @@ Routing sau review:
 
 ## Image Pipeline
 
-Writer tạo tag:
+Writer tạo tag với caption theo target language và mô tả hình bằng tiếng Anh để tối ưu search/generation:
 
 ```text
-> [IMAGE: Vietnamese title | English visual description]
+> [IMAGE: Localized title | English visual description]
 ```
 
 Illustrator xử lý từng tag:
@@ -251,7 +264,7 @@ route_image_request
 Ảnh được download/generate, validate bằng vision model, resize tối đa `800x500`, convert RGB PNG, lưu tạm trong `backend/outputs/images`, rồi thay bằng Pandoc figure:
 
 ```markdown
-![Hình X.Y.N: Caption](outputs/images/img_xxx.png){width=70%}
+![Localized figure label X.Y.N: Caption](outputs/images/img_xxx.png){width=70%}
 ```
 
 Nếu `enable_images=False` hoặc thiếu cả `SERPER_API_KEY` và `OPENAI_API_KEY`, Illustrator strip image tags để PDF không chứa placeholder hỏng. Publisher cleanup thư mục ảnh tạm sau export; PDF/DOCX là artefact chính, Markdown được giữ như source/audit.
@@ -261,7 +274,7 @@ Nếu `enable_images=False` hoặc thiếu cả `SERPER_API_KEY` và `OPENAI_API
 Publisher xử lý cuối workflow:
 
 1. Ghép `final_content` và `current_content`.
-2. Prepend `# Lời nói đầu` nếu có `preface_content`.
+2. Prepend `# Lời nói đầu` hoặc `# Preface` nếu có `preface_content`.
 3. Normalize line endings.
 4. Chạy fix passes:
    - `fix_unicode_math`
@@ -271,7 +284,7 @@ Publisher xử lý cuối workflow:
    - `fix_typst_deprecated_symbols`
    - `fix_chapter_pagebreaks`
    - `add_figure_numbers`
-5. Assemble Typst front matter: title page, mục lục, danh mục hình nếu bật ảnh, rồi body.
+5. Assemble Typst front matter theo target language: title page, mục lục/table of contents, danh mục hình/list of figures nếu bật ảnh, rồi body.
 6. Lưu Markdown.
 7. Export PDF bằng Pandoc + Typst.
 8. Export Word bằng Pandoc docx với page breaks và `reference.docx` auto-generated nếu chưa có.
@@ -462,6 +475,8 @@ cd backend
 alembic upgrade head
 ```
 
+Migration `backend/alembic/versions/add_textbook_language.py` thêm cột `textbooks.language` và backfill textbook cũ thành `vi`. Nếu bỏ qua bước này, các API đọc textbook sẽ lỗi `Unknown column 'textbooks.language'`.
+
 ### First Login And API Keys
 
 Sau khi backend và frontend chạy, đăng nhập bằng tài khoản admin mặc định:
@@ -514,12 +529,12 @@ Textbooks:
 
 | Method | Endpoint | Mô tả |
 |---|---|---|
-| `POST` | `/api/v1/textbooks` | Validate topic, trừ credit, tạo textbook, start planning task |
+| `POST` | `/api/v1/textbooks` | Validate topic/ngôn ngữ, kiểm tra credit, tạo planning draft với `credits_used=0` |
 | `GET` | `/api/v1/textbooks` | Danh sách textbook của user |
 | `GET` | `/api/v1/textbooks/{id}` | Chi tiết textbook |
 | `GET` | `/api/v1/textbooks/{id}/progress` | Poll progress, curriculum, file paths |
-| `POST` | `/api/v1/textbooks/{id}/confirm-curriculum` | Xác nhận curriculum và start generation task |
-| `POST` | `/api/v1/textbooks/{id}/stop` | Set Redis stop flag và revoke Celery task |
+| `POST` | `/api/v1/textbooks/{id}/confirm-curriculum` | Validate curriculum, trừ 1 credit idempotently và start generation task |
+| `POST` | `/api/v1/textbooks/{id}/stop` | Xóa draft chưa confirm hoặc dừng generation đã dùng credit |
 | `DELETE` | `/api/v1/textbooks/{id}` | Xóa textbook |
 
 Auth:
@@ -591,6 +606,7 @@ curriculum_rag/
 |   |   |   |-- textbook/
 |   |   |       |-- orchestrator.py
 |   |   |       |-- workflow_runner.py
+|   |   |       |-- language.py
 |   |   |       |-- validator.py
 |   |   |       |-- planner.py
 |   |   |       |-- ingester.py
@@ -609,11 +625,14 @@ curriculum_rag/
 |   |-- logs/                 # agents, prompts, RAG context
 |   |-- outputs/              # generated md/pdf/docx
 |-- frontend/
+|   |-- README.md
 |   |-- package.json
 |   |-- src/
 |       |-- App.jsx
 |       |-- api/
+|       |-- i18n/
 |       |-- pages/
+|       |-- utils/
 |       |-- components/
 |       |   |-- textbooks/
 |       |   |-- settings/
@@ -625,10 +644,12 @@ curriculum_rag/
 
 - ChromaDB là global theo process/path và ingestion xóa `backend/data/chroma_db` ở đầu mỗi generation run. Nên chạy một generation worker hoặc bổ sung isolation theo `textbook_id` nếu cần concurrent generation thật sự.
 - Celery stop dùng Redis key `textbook_stop:{id}` và task registry `task:{id}`. LangGraph node được bọc bởi `_with_stop_check`.
+- Planning/review draft có `credits_used=0`; Stop/Reset xóa record. Sau confirm, credit không được hoàn lại khi user dừng generation.
 - `backend/logs/prompts/*_prompts.log` lưu prompt theo agent để audit.
 - `backend/logs/rag_context.log` lưu full context chunk mà writer đã thấy.
 - Nếu `pypandoc`, Pandoc hoặc Typst không khả dụng, Publisher fallback giữ Markdown/artefact còn tạo được thay vì crash toàn bộ.
 - Frontend dùng `VITE_API_URL`, mặc định `http://localhost:8000`.
+- Frontend i18n lưu lựa chọn VI/EN bằng key `app_language`; xem `frontend/README.md` để biết quy ước thêm translation key.
 
 ## License
 
