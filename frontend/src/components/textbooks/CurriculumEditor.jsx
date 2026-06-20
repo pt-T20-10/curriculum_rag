@@ -2,12 +2,13 @@ import { useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 import { Button } from '../common/Button'
 
-export function CurriculumEditor({ curriculum, onConfirm, onReset }) {
+export function CurriculumEditor({ curriculum, onConfirm, onReset, confirming = false }) {
   const { t } = useTranslation()
   const [editedCurriculum, setEditedCurriculum] = useState(curriculum)
   const [deletedSubs, setDeletedSubs] = useState(new Set())
   const [deletedChapters, setDeletedChapters] = useState(new Set()) // ⭐ NEW
   const [newSubs, setNewSubs] = useState({}) // { chapterIdx: [titles...] }
+  const [validationError, setValidationError] = useState('')
 
   // Handle chapter title change
   const handleChapterChange = (chapterIdx, newTitle) => {
@@ -21,6 +22,27 @@ export function CurriculumEditor({ curriculum, onConfirm, onReset }) {
     const updated = { ...editedCurriculum }
     updated.chapters[chapterIdx].subsections[subIdx].title = newTitle
     setEditedCurriculum(updated)
+  }
+
+  const handleAddChapter = () => {
+    const chapterNumber = editedCurriculum.chapters.length + 1
+    const chapterTitle = t('textbook.curriculum.newChapterTitle', { number: chapterNumber })
+    const subsectionTitle = t('textbook.curriculum.newChapterSubsection', { number: chapterNumber })
+    setEditedCurriculum({
+      ...editedCurriculum,
+      chapters: [
+        ...editedCurriculum.chapters,
+        {
+          title: chapterTitle,
+          subsections: [{
+            title: subsectionTitle,
+            description: `Content about ${subsectionTitle}`,
+            search_query: subsectionTitle,
+            section_type: 'medium',
+          }],
+        },
+      ],
+    })
   }
 
   // ⭐ NEW - Delete entire chapter
@@ -67,52 +89,80 @@ export function CurriculumEditor({ curriculum, onConfirm, onReset }) {
         // ⭐ Skip deleted chapters
         if (deletedChapters.has(chIdx)) return null
 
+        const chapterTitle = chapter.title.trim()
+        if (!chapterTitle) return { invalid: true }
+
         // Filter out deleted subsections
         const activeSubs = chapter.subsections
           .map((sub, subIdx) => {
             if (deletedSubs.has(`${chIdx}-${subIdx}`)) return null
+            const title = sub.title.trim()
+            if (!title) return { invalid: true }
             return {
-              title: sub.title,
-              description: sub.description || `Content about ${sub.title}`,
-              search_query: sub.search_query || sub.title,
+              title,
+              description: sub.description?.trim() || `Content about ${title}`,
+              search_query: sub.search_query?.trim() || title,
               section_type: sub.section_type || 'medium',
             }
           })
           .filter(Boolean)
 
+        if (activeSubs.some(sub => sub.invalid)) return { invalid: true }
+
         // Add new subsections
         const newSubsForChapter = newSubs[chIdx] || []
-        const newSubObjects = newSubsForChapter.map(title => ({
-          title,
-          description: `Content about ${title}`,
-          search_query: title,
-          section_type: 'medium',
-        }))
+        const newSubObjects = newSubsForChapter.map(title => {
+          const cleanTitle = title.trim()
+          if (!cleanTitle) return { invalid: true }
+          return {
+            title: cleanTitle,
+            description: `Content about ${cleanTitle}`,
+            search_query: cleanTitle,
+            section_type: 'medium',
+          }
+        })
+
+        if (newSubObjects.some(sub => sub.invalid)) return { invalid: true }
 
         return {
-          title: chapter.title,
+          title: chapterTitle,
           subsections: [...activeSubs, ...newSubObjects],
         }
       })
       .filter(Boolean) // Remove nulls (deleted chapters and empty chapters)
+
+    if (finalChapters.some(ch => ch.invalid)) {
+      return { invalid: true }
+    }
+
+    const compactChapters = finalChapters
       .filter(ch => ch.subsections.length > 0) // Remove empty chapters
+
+    if (compactChapters.length === 0) {
+      return { invalid: true, empty: true }
+    }
 
     return {
       topic: editedCurriculum.topic,
-      chapters: finalChapters,
+      chapters: compactChapters,
     }
   }
 
   const handleConfirm = () => {
     const finalCurriculum = buildFinalCurriculum()
+    if (finalCurriculum.invalid) {
+      setValidationError(
+        finalCurriculum.empty
+          ? t('textbook.curriculum.emptyCurriculumError')
+          : t('textbook.curriculum.blankTitleError')
+      )
+      return
+    }
+    setValidationError('')
     onConfirm(finalCurriculum)
   }
 
   const handleReset = () => {
-    setEditedCurriculum(curriculum)
-    setDeletedSubs(new Set())
-    setDeletedChapters(new Set()) // ⭐ NEW
-    setNewSubs({})
     if (onReset) onReset()
   }
 
@@ -127,6 +177,12 @@ export function CurriculumEditor({ curriculum, onConfirm, onReset }) {
           <Trans i18nKey="textbook.curriculum.description" components={{ strong: <strong /> }} />
         </p>
       </div>
+
+      {validationError && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+          <p className="text-sm font-medium text-red-700">⚠️ {validationError}</p>
+        </div>
+      )}
 
       {/* Chapters */}
       {editedCurriculum.chapters.map((chapter, chIdx) => {
@@ -279,13 +335,21 @@ export function CurriculumEditor({ curriculum, onConfirm, onReset }) {
         )
       })}
 
+      <button
+        onClick={handleAddChapter}
+        className="w-full px-4 py-3 text-sm font-medium text-blue-700 hover:bg-blue-50 border border-blue-300 rounded-lg"
+      >
+        ➕ {t('textbook.curriculum.addChapter')}
+      </button>
+
       {/* Action buttons */}
       <div className="flex gap-3">
         <Button
           onClick={handleConfirm}
           className="flex-1"
+          disabled={confirming}
         >
-          ✅ {t('textbook.curriculum.confirm')}
+          ✅ {confirming ? t('textbook.curriculum.confirming') : t('textbook.curriculum.confirm')}
         </Button>
         <Button
           variant="secondary"

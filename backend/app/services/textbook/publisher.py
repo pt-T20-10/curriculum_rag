@@ -34,6 +34,7 @@ except ImportError:
 
 from app.schemas.curriculum import AgentState
 from app.config import settings
+from app.services.textbook.language import get_language_profile
 from app.utils.log_config import setup_logger
 
 BASE_DIR = settings.BASE_DIR
@@ -270,6 +271,142 @@ def fix_math_formatting(content: str) -> str:
     return content
 
 
+def _apply_outside_fenced_blocks(content: str, transform) -> str:
+    """Apply a text transform outside Markdown fenced code/raw blocks."""
+    fence_re = re.compile(r'(^```[^\n]*\n.*?^```[ \t]*$)', re.MULTILINE | re.DOTALL)
+    parts = fence_re.split(content)
+    for idx, part in enumerate(parts):
+        if not part:
+            continue
+        if part.lstrip().startswith("```"):
+            continue
+        parts[idx] = transform(part)
+    return "".join(parts)
+
+
+_PYTHON_INLINE_CODE_WORDS = {
+    "if", "elif", "else", "for", "while", "break", "continue", "return",
+    "import", "from", "class", "def", "and", "or", "not", "in", "is",
+    "True", "False", "None", "TypeError", "ValueError", "IndentationError",
+    "KeyError", "IndexError", "int", "float", "str", "bool", "list", "dict",
+    "tuple", "set",
+}
+
+_PYTHON_INLINE_CALLS = {
+    "type", "str", "int", "float", "bool", "input", "range", "len", "print",
+    "keys", "values", "items", "append", "insert", "remove",
+}
+
+
+def _looks_like_programming_inline(expr: str) -> bool:
+    expr = expr.strip().strip("`")
+    if not expr:
+        return False
+
+    # Preserve real LaTeX/math commands. Escaped underscores are allowed because
+    # LLMs often emit Python identifiers as math, e.g. $student\_scores$.
+    latexish = expr.replace(r"\_", "")
+    if "\\" in latexish:
+        return False
+
+    plain = expr.replace(r"\_", "_")
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", plain):
+        return plain in _PYTHON_INLINE_CODE_WORDS
+    if "-" in plain:
+        parts = plain.split("-")
+        if all(part in _PYTHON_INLINE_CODE_WORDS for part in parts):
+            return True
+
+    call_match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)\(\)", plain)
+    if call_match:
+        return call_match.group(1) in _PYTHON_INLINE_CALLS
+
+    if re.search(r"[A-Za-z_][A-Za-z0-9_]*_[A-Za-z0-9_]*", plain):
+        return True
+    if re.search(r"[A-Za-z_][A-Za-z0-9_]*\s*\[", plain):
+        return True
+    if re.search(r"['\"]", plain) and re.search(r"[A-Za-z_][A-Za-z0-9_]*", plain):
+        return True
+    if re.match(r"(del|return|import|from|class|def)\s+", plain):
+        return True
+    if re.search(r"[A-Za-z_][A-Za-z0-9_]*", plain) and re.search(
+        r"(\+=|-=|\*=|/=|//=|%=|\*\*|==|!=|<=|>=)", plain
+    ):
+        return True
+
+    return False
+
+
+def fix_programming_inline_code(content: str) -> str:
+    """
+    Convert common programming-code fragments that LLMs incorrectly wrap as
+    math into Markdown inline code, and repair mixed backtick/dollar spans.
+
+    This is intentionally conservative and runs outside fenced code blocks only.
+    """
+    def transform(text: str) -> str:
+        def fix_malformed_backtick(match: re.Match) -> str:
+            expr = match.group(1).strip()
+            if _looks_like_programming_inline(expr) or re.fullmatch(r'"[^"\n]+"', expr):
+                cleaned = expr.replace(r"\_", "_")
+                return f"`{cleaned}`"
+            return match.group(0)
+
+        text = re.sub(r'`("[^"\n]{1,80}")\$', fix_malformed_backtick, text)
+        text = re.sub(
+            r"`([A-Za-z_][A-Za-z0-9_]*(?:\(\)|\[[^\]\n]+\])?)\$",
+            fix_malformed_backtick,
+            text,
+        )
+
+        codeish_math_re = re.compile(
+            r"\$("
+            r"(?:[A-Za-z_][A-Za-z0-9_]*\\_[A-Za-z0-9_]*(?:\s*[+\-*/]\s*\d+)?)"
+            r"|(?:[A-Za-z_][A-Za-z0-9_]*\[[^$\n]+\](?:\s*=\s*[^$\n]+)?)"
+            r"|(?:(?:if|elif|else|for|while|break|continue|and|or|not)(?:-[A-Za-z]+)?)"
+            r"|(?:True|False|None|TypeError|ValueError|IndentationError|KeyError|IndexError)"
+            r"|(?:(?:type|str|int|float|bool|input|range|len|print|keys|values|items|append|insert|remove)\(\))"
+            r")\$"
+        )
+
+        def fix_targeted_math_code(match: re.Match) -> str:
+            cleaned = match.group(1).strip().replace(r"\_", "_")
+            return f"`{cleaned}`"
+
+        text = codeish_math_re.sub(fix_targeted_math_code, text)
+
+        def fix_math_code(match: re.Match) -> str:
+            expr = match.group(1).strip()
+            if _looks_like_programming_inline(expr):
+                cleaned = expr.replace(r"\_", "_")
+                return f"`{cleaned}`"
+            return match.group(0)
+
+        text = re.sub(r"(?<!\$)\$(?!\$)([^$\n]{1,120}?)(?<!\$)\$(?!\$)", fix_math_code, text)
+
+        # Separate inline code from adjacent prose: `x`returns -> `x` returns.
+        # The lookahead after the opening backtick avoids treating a closing
+        # backtick as a new span.
+        text = re.sub(r"(`(?=[A-Za-z_\"'])[^`\n]+`)(?=[A-Za-z])", r"\1 ", text)
+        text = re.sub(r"(?<=[A-Za-z0-9)])(`(?=[A-Za-z_\"'])[^`\n]+`)", r" \1", text)
+
+        # Add a space after safe inline math spans when prose is glued to them.
+        text = re.sub(r"(^|[\s(\[,;:])(\$[^$\n]+\$)(?=[A-Za-z])", r"\1\2 ", text)
+        text = re.sub(r"(?<=[A-Za-z])(\$(?=[0-9\\+\-*/{#;])[^$\n]+\$)", r" \1", text)
+        return text
+
+    return _apply_outside_fenced_blocks(content, transform)
+
+
+def normalize_english_dashes(content: str) -> str:
+    """Avoid em/en dashes in English output; Typst line breaking handles ASCII better."""
+    def transform(text: str) -> str:
+        text = re.sub(r"\s*[—–]\s*", " - ", text)
+        return re.sub(r" {2,}", " ", text)
+
+    return _apply_outside_fenced_blocks(content, transform)
+
+
 def fix_typst_deprecated_symbols(content: str) -> str:
     """
     Replace deprecated Typst math symbol names with their current equivalents.
@@ -311,7 +448,7 @@ def fix_markdown_headings(content: str) -> str:
     return content
 
 
-def fix_chapter_pagebreaks(content: str) -> str:
+def fix_chapter_pagebreaks(content: str, language: str = "vi") -> str:
     """
     Insert a Typst #pagebreak() immediately before each `# CHƯƠNG N` heading.
 
@@ -325,14 +462,19 @@ def fix_chapter_pagebreaks(content: str) -> str:
     #pagebreak() call, assembled in publish_curriculum().
     """
     pb = "```{=typst}\n#pagebreak()\n```" + "\n\n"
+    profile = get_language_profile(language)
 
     def insert_break(m: re.Match) -> str:
         return m.group(1) + pb + m.group(2)
 
-    return re.sub(r'(\n\n)(# CHƯƠNG )', insert_break, content)
+    return re.sub(
+        rf'(\n\n)(# {re.escape(profile.chapter_label)} )',
+        insert_break,
+        content,
+    )
 
 
-def add_figure_numbers(content: str) -> str:
+def add_figure_numbers(content: str, language: str = "vi") -> str:
     """
     Prefix image captions with section-scoped figure numbers.
 
@@ -348,6 +490,7 @@ def add_figure_numbers(content: str) -> str:
     result: list[str] = []
     current_section   = ""
     section_img_count: dict[str, int] = {}
+    profile = get_language_profile(language)
 
     for line in lines:
         m2 = re.match(r'^## (\d+\.\d+)', line)
@@ -369,12 +512,12 @@ def add_figure_numbers(content: str) -> str:
             path    = img_match.group(4)
             attrs   = img_match.group(6) or ""
 
-            if not re.match(r'^Hình \d[\d.]*:', caption):
+            if not re.match(rf'^{re.escape(profile.figure_label)} \d[\d.]*:', caption):
                 section_img_count[current_section] = (
                     section_img_count.get(current_section, 0) + 1
                 )
                 n       = section_img_count[current_section]
-                caption = f"Hình {current_section}.{n}: {caption}"
+                caption = f"{profile.figure_label} {current_section}.{n}: {caption}"
                 line    = f"![{caption}]({path}){attrs}"
 
         result.append(line)
@@ -382,7 +525,12 @@ def add_figure_numbers(content: str) -> str:
     return '\n'.join(result)
 
 
-def _prepare_word_md(md_content: str, title: str, enable_images: bool = True) -> str:
+def _prepare_word_md(
+    md_content: str,
+    title: str,
+    enable_images: bool = True,
+    language: str = "vi",
+) -> str:
     """
     Transform MD content for Word (.docx) output.
 
@@ -405,6 +553,7 @@ def _prepare_word_md(md_content: str, title: str, enable_images: bool = True) ->
         9. Prepend YAML with title:
     """
     content = md_content
+    profile = get_language_profile(language)
 
     # Step 1 — Strip YAML front matter
     content = re.sub(r'^---.*?---\n\n?', '', content, flags=re.DOTALL)
@@ -421,20 +570,23 @@ def _prepare_word_md(md_content: str, title: str, enable_images: bool = True) ->
     content = re.sub(r'```\{=typst\}.*?```', '', content, flags=re.DOTALL)
 
     # Step 4 — Extract figure list from captions already in MD.
-    # Captions format: "Hình X.Y.Z: Caption text" — already set by add_figure_numbers()
+    # Captions format: "Figure/Hình X.Y.Z: Caption text" — set by add_figure_numbers()
     # No leading _WORD_PAGEBREAK — Step 5 manages page separation around this block.
     figure_list_md = ""
     if enable_images:
-        captions = re.findall(r'!\[(Hình [\d.]+:[^\]]+)\]', content)
+        captions = re.findall(
+            rf'!\[({re.escape(profile.figure_label)} [\d.]+:[^\]]+)\]',
+            content,
+        )
         if captions:
             items = "\n".join(f"- {cap}" for cap in captions)
-            figure_list_md = "# Danh mục hình\n\n" + items
+            figure_list_md = f"# {profile.figure_list_label}\n\n" + items
     # Step 5 — Insert figure list before # Lời nói đầu.
     # Desired Word page order: TOC → Danh mục hình → Lời nói đầu → Chapters
     # _WORD_PAGEBREAK is injected AFTER figure list to separate it from preface.
     # Step 6 below prepends another _WORD_PAGEBREAK at content start (TOC → Danh mục hình).
     if figure_list_md:
-        match = re.search(r'# Lời nói đầu', content)
+        match = re.search(rf'# {re.escape(profile.preface_heading)}', content)
         if match:
             insert_pos = match.start()
             content = (
@@ -604,34 +756,36 @@ def _build_title_block(title: str) -> str:
         "#pagebreak()\n"
         "```"
     )
-# TOC page — rendered after the title page (numbering still none).
-_TYPST_TOC_BLOCK = (
-    "```{=typst}\n"
-    "#v(1em)\n"
-    "#align(center)[\n"
-    '  #text(weight: "bold", size: 1.4em)[Mục lục]\n'
-    "]\n"
-    "#v(0.5em)\n"
-    "#outline(title: none, indent: auto)\n"
-    "```"
-)
+def _build_typst_toc_block(label: str) -> str:
+    safe_label = label.replace("]", "\\]")
+    return (
+        "```{=typst}\n"
+        "#v(1em)\n"
+        "#align(center)[\n"
+        f'  #text(weight: "bold", size: 1.4em)[{safe_label}]\n'
+        "]\n"
+        "#v(0.5em)\n"
+        "#outline(title: none, indent: auto)\n"
+        "```"
+    )
 
-# Figure list page — only included when enable_images=True.
-# Numbering is still none (inherited from _TYPST_SETUP_BLOCK).
-_TYPST_FIGURE_LIST_BLOCK = (
-    "```{=typst}\n"
-    "#pagebreak()\n"
-    "#v(1em)\n"
-    "#align(center)[\n"
-    '  #text(weight: "bold", size: 1.4em)[Danh mục hình]\n'
-    "]\n"
-    "#v(0.5em)\n"
-    "#outline(\n"
-    "  title: none,\n"
-    "  target: figure.where(kind: image),\n"
-    ")\n"
-    "```"
-)
+
+def _build_typst_figure_list_block(label: str) -> str:
+    safe_label = label.replace("]", "\\]")
+    return (
+        "```{=typst}\n"
+        "#pagebreak()\n"
+        "#v(1em)\n"
+        "#align(center)[\n"
+        f'  #text(weight: "bold", size: 1.4em)[{safe_label}]\n'
+        "]\n"
+        "#v(0.5em)\n"
+        "#outline(\n"
+        "  title: none,\n"
+        "  target: figure.where(kind: image),\n"
+        ")\n"
+        "```"
+    )
 
 # Numbering start block — injected immediately before body content.
 # NO explicit #pagebreak() here: #set page() in Typst already triggers an
@@ -670,13 +824,15 @@ def publish_curriculum(state: AgentState) -> dict:
         2.  Prepend preface with LaTeX artifact stripping
         3.  CRLF → LF normalization (LLM responses may use Windows line endings)
         4.  fix_unicode_math()          — Unicode sub/superscripts → $math$
-        5.  fix_markdown_headings()     — headings on own lines
-        6.  fix_inline_display_math()   — trivial $$ blocks → inline $
-        7.  fix_math_formatting()       — Typst-compatible math 
-        8.  fix_typst_deprecated_symbols() — times.circle → times.o
-        9.  fix_chapter_pagebreaks()    — #pagebreak() before # CHƯƠNG 
-        10. add_figure_numbers()        — "Hình X.Y.N:" 
-        11. Assemble front matter:
+        5.  fix_programming_inline_code() — code-like $...$ → `...`
+        6.  normalize_english_dashes()  — English em/en dashes → ASCII hyphen
+        7.  fix_markdown_headings()     — headings on own lines
+        8.  fix_inline_display_math()   — trivial $$ blocks → inline $
+        9.  fix_math_formatting()       — Typst-compatible math
+        10. fix_typst_deprecated_symbols() — times.circle → times.o
+        11. fix_chapter_pagebreaks()    — #pagebreak() before # CHƯƠNG
+        12. add_figure_numbers()        — "Hình X.Y.N:"
+        13. Assemble front matter:
                 _TYPST_SETUP_BLOCK
                 _build_title_block()   — vertically+horizontally centred title
                 _TYPST_TOC_BLOCK
@@ -684,9 +840,9 @@ def publish_curriculum(state: AgentState) -> dict:
                 _TYPST_PAGEBREAK
                 _TYPST_START_NUMBERING → page 1 = Lời nói đầu
                 body content
-        12. Save .md file
-        13. Pandoc → Typst → PDF  (falls back to .md if pypandoc unavailable)
-        14. cleanup_temp_images() in finally block
+        14. Save .md file
+        15. Pandoc → Typst → PDF  (falls back to .md if pypandoc unavailable)
+        16. cleanup_temp_images() in finally block
 
     Page numbering:
         Title page     — no number
@@ -704,6 +860,8 @@ def publish_curriculum(state: AgentState) -> dict:
     logger.info("=" * 60)
     logger.info("NODE: Publisher - Finalizing document")
     logger.info("=" * 60)
+    language = state.get("language", "vi")
+    profile = get_language_profile(language)
 
     # ------------------------------------------------------------------
     # Step 1 — Merge content buffers
@@ -754,7 +912,7 @@ def publish_curriculum(state: AgentState) -> dict:
         # Collapse blank lines left by stripping
         preface_clean = re.sub(r'\n{3,}', '\n\n', preface_clean).strip()
 
-        full_content = "# Lời nói đầu\n\n" + preface_clean + "\n\n" + full_content
+        full_content = f"# {profile.preface_heading}\n\n" + preface_clean + "\n\n" + full_content
         logger.info("✓ Preface cleaned and prepended")
 
     # ------------------------------------------------------------------
@@ -776,7 +934,7 @@ def publish_curriculum(state: AgentState) -> dict:
     # Pandoc's default title-block rendering. The visual title is handled
     # by _build_title_block() with proper vertical centering.
     # ------------------------------------------------------------------
-    title = state.get("textbook_title") or state.get("request", "Giáo trình")
+    title = state.get("textbook_title") or state.get("request", profile.default_title_prefix)
     yaml_header = (
         f'---\n'
         f'title-meta: "{title}"\n'
@@ -795,12 +953,15 @@ def publish_curriculum(state: AgentState) -> dict:
     # Step 6 — Fix passes (applied in dependency order)
     # ------------------------------------------------------------------
     full_content = fix_unicode_math(full_content)
+    full_content = fix_programming_inline_code(full_content)
+    if language == "en":
+        full_content = normalize_english_dashes(full_content)
     full_content = fix_markdown_headings(full_content)
     full_content = fix_inline_display_math(full_content)
     full_content = fix_math_formatting(full_content)
     full_content = fix_typst_deprecated_symbols(full_content)
-    full_content = fix_chapter_pagebreaks(full_content)   
-    full_content = add_figure_numbers(full_content)        
+    full_content = fix_chapter_pagebreaks(full_content, language=language)
+    full_content = add_figure_numbers(full_content, language=language)
     logger.info("✓ All fix passes applied")
 
     # ------------------------------------------------------------------
@@ -808,17 +969,19 @@ def publish_curriculum(state: AgentState) -> dict:
     # ------------------------------------------------------------------
     front_matter = (
         _build_title_block(title)
-        + "\n\n" + _TYPST_TOC_BLOCK
+        + "\n\n" + _build_typst_toc_block(profile.toc_label)
     )
     if state.get("enable_images", True):
-        front_matter += "\n\n" + _TYPST_FIGURE_LIST_BLOCK
+        front_matter += "\n\n" + _build_typst_figure_list_block(profile.figure_list_label)
 
     full_content = (
         front_matter
         + "\n\n" + _TYPST_START_NUMBERING
         + "\n\n" + full_content
     )
-    logger.info("✓ Front matter assembled (title centred, page 1 = Lời nói đầu)")
+    logger.info(
+        f"✓ Front matter assembled (title centred, page 1 = {profile.preface_heading})"
+    )
 
     # Final safety pass: ensure no heading is directly preceded by a non-blank line
     final_document = yaml_header + full_content
@@ -946,6 +1109,7 @@ def publish_curriculum(state: AgentState) -> dict:
                         safe_document,
                         title,
                         enable_images=bool(state.get("enable_images", True)),
+                        language=language,
                     )
 
                     docx_md = pandoc_tmp / f"{file_base}_word.md"

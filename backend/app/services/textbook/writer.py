@@ -30,6 +30,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.config import settings
 from app.services.runtime_config import get_api_key
+from app.services.textbook.language import get_language_profile
 
 LLM_MODEL_PREMIUM = settings.LLM_MODEL_PREMIUM
 LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
@@ -168,7 +169,8 @@ def _build_length_rule(
     else:
         calibration_line = (
             f"- {type_key:<8} (~{char_min} chars min): "
-            f"{blocks} ### blocks × {paras} paragraphs × {sents} sentences each"
+            f"{blocks} ### blocks, with about {paras} cohesive paragraph groups; "
+            f"most body paragraphs should fully develop an idea across {sents}+ sentences"
         )
 
     return (
@@ -178,13 +180,14 @@ def _build_length_rule(
         f"Calibration for this section ({section_type} / {content_level}):\n"
         f"{calibration_line}\n\n"
         f"CRITICAL — HOW to reach the character target:\n"
-        f"Write DEEPER within each ### block — more paragraphs, richer analysis,\n"
-        f"concrete examples, worked illustrations. Do NOT add extra ### blocks.\n"
+        f"Write DEEPER within each ### block — richer analysis, concrete examples,\n"
+        f"worked illustrations, and fuller paragraphs. Do NOT add extra ### blocks.\n"
         f"Rule 6 sets the ### block ceiling. This rule sets the depth inside each block.\n"
-        f"If short: expand the shallowest ### block with additional explanation or example.\n\n"
-        f"Self-check before finishing: mentally estimate your paragraph count.\n"
+        f"If short: expand the shallowest ### block by deepening existing paragraphs "
+        f"or adding one substantial paragraph where the idea genuinely needs it.\n\n"
+        f"Self-check before finishing: mentally estimate flow and character count.\n"
         f"If you have not reached {char_min} characters, continue writing —\n"
-        f"add more depth to existing blocks. Do NOT stop early."
+        f"add more depth to existing blocks. Do NOT create many short paragraphs."
     )
 
 
@@ -278,15 +281,19 @@ class ContentWriter:
         )
         self._prompt_logger = setup_prompt_logger("writer")
 
-    def _get_visual_rule(self, section_type: str, enable_images: bool) -> str:
+    def _get_visual_rule(self, section_type: str, enable_images: bool, language: str) -> str:
         """Return the appropriate visual placeholder rule for this section."""
         if not enable_images:
             return self._VISUAL_RULES["disabled"]
+        profile = get_language_profile(language)
         if section_type == "light":
-            return self._VISUAL_RULES["light"]
+            rule = self._VISUAL_RULES["light"]
+            return rule.replace("Vietnamese hint", f"{profile.image_hint_language} hint")
         if section_type == "applied":
-            return self._VISUAL_RULES["applied"]
-        return self._VISUAL_RULES["default"]
+            rule = self._VISUAL_RULES["applied"]
+            return rule.replace("Vietnamese hint", f"{profile.image_hint_language} hint")
+        rule = self._VISUAL_RULES["default"]
+        return rule.replace("Vietnamese hint", f"{profile.image_hint_language} hint")
 
     def generate(
         self,
@@ -304,6 +311,7 @@ class ContentWriter:
         enable_images: bool,
         review_feedback: str,
         section_summaries: list[str],
+        language: str = "vi",
     ) -> str:
         """
         Generate academic content for a single textbook section.
@@ -328,10 +336,42 @@ class ContentWriter:
             Generated Markdown string with [IMAGE_NEEDED: ...] placeholders.
         """
         char_min, char_max = char_target
+        profile = get_language_profile(language)
         length_rule   = _build_length_rule(section_type, content_level, char_min, char_max)
-        visual_rule   = self._get_visual_rule(section_type, enable_images)
+        visual_rule   = self._get_visual_rule(section_type, enable_images, language)
         prior_block   = _build_prior_summary_block(section_summaries)
         hk_hint       = _get_hk_hint(section_type)
+        back_reference = (
+            'When writing in Vietnamese, reference prior concepts with a natural '
+            'phrase such as "như đã trình bày ở mục X.Y" when relevant.'
+            if language == "vi"
+            else 'When writing in English, reference prior concepts with a natural '
+            'phrase such as "as discussed in Section X.Y" when relevant.'
+        )
+        double_number_example = (
+            "NEVER double-number: ❌ ## 1.1. Mục 1.1 → ✅ ## 1.1 Tiêu đề"
+            if language == "vi"
+            else "NEVER double-number: ❌ ## 1.1. Section 1.1 → ✅ ## 1.1 Title"
+        )
+        good_heading_1 = "Định nghĩa và nguồn gốc" if language == "vi" else "Definitions and Origins"
+        good_heading_2 = "Ứng dụng trong thực tế" if language == "vi" else "Real-World Applications"
+        bad_heading_1 = "Định nghĩa" if language == "vi" else "Definitions"
+        bad_heading_2 = "Nguồn gốc" if language == "vi" else "Origins"
+        bad_heading_3 = "Đặc điểm" if language == "vi" else "Characteristics"
+        bad_heading_4 = "Ứng dụng" if language == "vi" else "Applications"
+        style_rule = (
+            "English punctuation: do NOT use em dash or en dash characters "
+            "(—, –). Use commas, parentheses, semicolons, or ASCII hyphen-minus (-) instead."
+            if language == "en"
+            else "Use natural Vietnamese punctuation; avoid mixing English punctuation habits into Vietnamese prose."
+        )
+        paragraph_flow_rule = (
+            "Paragraph rhythm: write cohesive prose in the target language, "
+            "not note-like fragments. Most body paragraphs should develop one "
+            "idea across 4-7 sentences. Use a short 2-3 sentence paragraph only "
+            "for orientation, transition, or emphasis. If adjacent short "
+            "paragraphs continue the same idea, merge them into one stronger paragraph."
+        )
 
         revision_block = ""
         if review_feedback:
@@ -373,7 +413,7 @@ Write content for the following textbook section.
 [CRITERION]
 CONTINUITY — build on prior sections:
 - Do NOT re-introduce or redefine concepts already covered in [PRIOR SECTIONS].
-- Reference prior concepts with "như đã trình bày ở mục X.Y" when relevant.
+- {back_reference}
 - Assume the reader has read all prior sections.
 
 Adapt depth to section_type:
@@ -385,16 +425,25 @@ Adapt depth to section_type:
 {length_rule}
 
 Sub-section depth:
-- Each ### block: minimum 4–6 substantial paragraphs (4–6 sentences each).
+- Each ### block: use fewer, fuller paragraphs rather than many short ones.
+- Paragraphs may vary by depth and content; avoid a repeated pattern of 2–3 sentence paragraphs.
 - light → 1–2 ### blocks; medium → 2–3; deep → 3–4; applied → 2–3.
 - PREFER fewer, deeper blocks over many shallow ones.
+- {paragraph_flow_rule}
 
 Content standards:
-- Formal Vietnamese (Tiếng Việt học thuật). No conversational fillers.
+- {profile.tone_rule} No conversational fillers.
 - Adapt tone: precise for IT/Engineering, narrative for History/Arts.
 - Bold (**term**) ONLY for the primary concept defined for the first time.
 - At least one concrete, domain-relevant example per section.
 - Code blocks must include language identifier: ```python, ```bash, etc.
+- Inline code rule: programming identifiers, keywords, function names, method
+  names, operators, and code expressions MUST use backticks, not $...$ math.
+  Correct: `student_scores["Alice"]`, `keys()`, `if`, `for`, `str()`.
+  Incorrect: $student_scores["Alice"]$, $keys()$, $if$, $str()$.
+- Use $...$ only for real mathematical notation. Do not use $...$ for Python
+  keywords, variable names, string literals, dictionary/list indexing, or methods.
+- {style_rule}
 
 {hk_hint}
 [/CRITERION]
@@ -408,7 +457,7 @@ Rule 2 — DOCUMENT STRUCTURE:
 - Sub-section: ### {section_num}.N Title (N starts at 1)
 - NEVER use unnumbered ### headers
 - NEVER use # unless Rule 1 explicitly instructs it
-- NEVER double-number: ❌ ## 1.1. Mục 1.1 → ✅ ## 1.1 Tiêu đề
+- {double_number_example}
 - NEVER use colon after number: ❌ ## 1.1: → ✅ ## 1.1
 
 Rule 3 — BLANK LINES (PDF will break if violated):
@@ -417,9 +466,9 @@ every code block, every math block. Zero exceptions.
 
 Rule 4 — No ### heading for content that fits in 1–2 paragraphs.
 
-Rule 5 — Do NOT create a '### Kết luận' or '### Conclusion' subsection.\n"
-Concluding thoughts must be woven into the last paragraph of the final ### block.\n"
-A dedicated conclusion sub-heading is redundant and breaks academic prose flow."
+Rule 5 — Do NOT create a '### Kết luận' or '### Conclusion' subsection.
+Concluding thoughts must be woven into the last paragraph of the final ### block.
+A dedicated conclusion sub-heading is redundant and breaks academic prose flow.
 
 Rule 6 — SUB-SECTION COUNT PER DEPTH LEVEL (STRICT CEILING):
 - light   → maximum 2 ### blocks
@@ -429,34 +478,35 @@ Rule 6 — SUB-SECTION COUNT PER DEPTH LEVEL (STRICT CEILING):
 
 CRITICAL — MERGE OVER SPLIT:
 If you have more sub-topics than the limit above, MERGE related topics
-into the same ### block. Write DEEPER within each block — more paragraphs,
+into the same ### block. Write DEEPER within each block — fuller paragraphs,
 richer analysis, concrete examples — instead of creating more ### headings.
 
-Each ### block must contain at least 4–6 substantial paragraphs.
-Do NOT create a ### heading for content shorter than 4 paragraphs.
+Each ### block must contain substantial paragraph development.
+Do NOT create a ### heading for content that cannot sustain several full paragraphs.
 
 PREFER: Fewer ### blocks with rich, flowing prose inside each block.
 AVOID: Many ### blocks with thin content (1-2 paragraphs each).
+AVOID: Long sequences of separate 2-3 sentence paragraphs that should be merged.
 
 Rule 7 — EXAMPLE STRUCTURE:
 GOOD (medium section with 2 ### blocks):
-  ### 1.1.1 Định nghĩa và nguồn gốc
+  ### 1.1.1 {good_heading_1}
   [5-6 paragraphs of deep explanation with examples]
   
-  ### 1.1.2 Ứng dụng trong thực tế
+  ### 1.1.2 {good_heading_2}
   [5-6 paragraphs of practical analysis]
 
 BAD (medium section with 4 ### blocks):
-  ### 1.1.1 Định nghĩa
+  ### 1.1.1 {bad_heading_1}
   [2 paragraphs — TOO THIN]
   
-  ### 1.1.2 Nguồn gốc
+  ### 1.1.2 {bad_heading_2}
   [2 paragraphs — TOO THIN]
   
-  ### 1.1.3 Đặc điểm
+  ### 1.1.3 {bad_heading_3}
   [2 paragraphs — TOO THIN]
   
-  ### 1.1.4 Ứng dụng
+  ### 1.1.4 {bad_heading_4}
   [2 paragraphs — TOO THIN]
 
 The BAD example splits content unnecessarily. Merge 1.1.1 + 1.1.2 into one
@@ -464,7 +514,7 @@ rich ### block, merge 1.1.3 + 1.1.4 into another.
 [/CONSTRAINT]
 
 [FORMAT]
-- Language: Vietnamese
+- Language: {profile.prompt_name}
 - Output: raw Markdown — NO outer fences
 - First line: strictly follow Rule 1
 - Character count MUST reach {char_min} minimum
@@ -514,13 +564,13 @@ class ImageDescriptionGenerator:
     minimise latency and cost.
     """
 
-    _SYSTEM_PROMPT = """You are a visual art director writing image generation prompts
+    _SYSTEM_PROMPT_TEMPLATE = """You are a visual art director writing image generation prompts
 for an educational textbook.
 
-For each Vietnamese hint provided, write a fully formatted image tag.
+For each {hint_language} hint provided, write a fully formatted image tag.
 
 Output format (one per line, same order as input):
-[IMAGE: <Vietnamese title 3-6 words> | <English description 2-3 sentences>]
+[IMAGE: <{title_language} title 3-6 words> | <English description 2-3 sentences>]
 
 English description rules:
 - Describe shapes, composition, key visual elements, mood, and atmosphere.
@@ -540,7 +590,13 @@ Return ONLY the formatted [IMAGE: ...] tags, one per line. No commentary."""
             temperature=0.3,
         )
 
-    def process(self, content: str, course_topic: str, section_title: str) -> str:
+    def process(
+        self,
+        content: str,
+        course_topic: str,
+        section_title: str,
+        language: str = "vi",
+    ) -> str:
         """
         Replace all [IMAGE_NEEDED: hint] placeholders with formatted image tags.
 
@@ -560,6 +616,12 @@ Return ONLY the formatted [IMAGE: ...] tags, one per line. No commentary."""
         if not placeholders:
             return content
 
+        profile = get_language_profile(language)
+        system_prompt = self._SYSTEM_PROMPT_TEMPLATE.format(
+            hint_language=profile.image_hint_language,
+            title_language=profile.prompt_name,
+        )
+
         hints_text = "\n".join(
             f"{i + 1}. {hint}" for i, hint in enumerate(placeholders)
         )
@@ -571,7 +633,7 @@ Return ONLY the formatted [IMAGE: ...] tags, one per line. No commentary."""
 
         try:
             response = self._llm.invoke([
-                SystemMessage(content=self._SYSTEM_PROMPT),
+                SystemMessage(content=system_prompt),
                 HumanMessage(content=user_prompt),
             ])
 
@@ -640,6 +702,7 @@ class WriterAgent:
         review_feedback: str    = "",
         section_summaries: list[str] = (), #type: ignore
         used_queries: list[str]  = [], #type: ignore
+        language: str = "vi",
         
     ) -> str:
         """
@@ -694,6 +757,7 @@ class WriterAgent:
             enable_images=enable_images,
             review_feedback=review_feedback,
             section_summaries=list(section_summaries),
+            language=language,
         )
 
         if not isinstance(content, str):
@@ -708,6 +772,7 @@ class WriterAgent:
                 content=content,
                 course_topic=course_topic,
                 section_title=section_title,
+                language=language,
             )
 
         # ------------------------------------------------------------------
@@ -789,6 +854,7 @@ def extract_section_summary(
     content: str,
     section_num: str,
     section_title: str,
+    language: str = "vi",
 ) -> str:
     """
     Extract a one-line summary from a completed section for continuity tracking.
@@ -802,15 +868,16 @@ def extract_section_summary(
         section_title: Section title.
 
     Returns:
-        Summary string: "Mục X.Y 'Title': <prose preview>..."
+        Summary string: "Mục/Section X.Y 'Title': <prose preview>..."
     """
+    profile = get_language_profile(language)
     prose_lines = [
         line.strip()
         for line in content.split('\n')
         if line.strip() and not line.startswith('#') and not line.startswith('>')
     ]
     preview = ' '.join(prose_lines)[:_SUMMARY_PREVIEW_CHARS]
-    return f"Mục {section_num} '{section_title}': {preview}..."
+    return f"{profile.prior_section_label} {section_num} '{section_title}': {preview}..."
 
 
 
@@ -848,6 +915,8 @@ def write_section_crag(state: AgentState) -> dict:
     sub_idx           = state["current_subsection_index"]
     review_feedback   = state.get("review_feedback", "")
     section_summaries = state.get("section_summaries", [])
+    language          = state.get("language", "vi")
+    profile           = get_language_profile(language)
 
     # ------------------------------------------------------------------
     # CRAG addition: inject formatting-fix prefix on formatting_error
@@ -898,11 +967,12 @@ def write_section_crag(state: AgentState) -> dict:
         header_already_written = state.get("chapter_header_written", False)
 
         if is_chapter_open and not header_already_written:
+            expected_heading = f"# {profile.chapter_label} {display_chap}: {chap_title.upper()}"
             chapter_instruction_text = (
                 f"This is the opening section of Chapter {display_chap}.\n"
                 f"Output EXACTLY this line as the very first line "
                 f"(before the ## section header):\n"
-                f"# CHƯƠNG {display_chap}: {chap_title.upper()}\n\n"
+                f"{expected_heading}\n\n"
                 f"Then on the next line write: ## {display_sec} {sec_title}"
             )
             emit_header = True
@@ -946,6 +1016,7 @@ def write_section_crag(state: AgentState) -> dict:
             review_feedback=review_feedback,
             section_summaries=section_summaries,
             used_queries=used_queries,
+            language=language,
         )
 
         # Layer 2 — Suppress spurious level-1 headings
@@ -958,16 +1029,17 @@ def write_section_crag(state: AgentState) -> dict:
                     f"⚠️  Stripped spurious # heading from {display_sec}"
                 )
 
-        # Layer 2b — Enforce missing # CHƯƠNG heading
-        if emit_header and not re.search(r'^# CHƯƠNG', content, flags=re.MULTILINE):
-            expected = f"# CHƯƠNG {display_chap}: {chap_title.upper()}"
+        # Layer 2b — Enforce missing chapter heading
+        chapter_heading_re = rf'^# {re.escape(profile.chapter_label)}'
+        if emit_header and not re.search(chapter_heading_re, content, flags=re.MULTILINE):
+            expected = f"# {profile.chapter_label} {display_chap}: {chap_title.upper()}"
             content  = expected + "\n\n" + content.lstrip('\n')
-            logger.warning(f"⚠️  Prepended missing # CHƯƠNG: '{expected}'")
+            logger.warning(f"⚠️  Prepended missing chapter heading: '{expected}'")
 
         # Layer 2c — Normalize chapter title text to uppercase
         if emit_header:
             content = re.sub(
-                r'^(# CHƯƠNG [^:]+: )(.+)$',
+                rf'^(# {re.escape(profile.chapter_label)} [^:]+: )(.+)$',
                 lambda m: m.group(1) + m.group(2).upper(),
                 content,
                 flags=re.MULTILINE,

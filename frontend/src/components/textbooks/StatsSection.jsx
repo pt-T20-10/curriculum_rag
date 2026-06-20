@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next'
+import { getSubsectionProgress } from '../../utils/progressMetrics'
 
 export function StatsSection({ progressData }) {
   const { t } = useTranslation()
@@ -14,6 +15,12 @@ export function StatsSection({ progressData }) {
   const actualTotalChapters = total_chapters || curriculum_data?.chapters?.length || 0
   const actualTotalSubsections = total_subsections || 
     curriculum_data?.chapters?.reduce((sum, ch) => sum + (ch.subsections?.length || 0), 0) || 0
+  const { completedSubsections } = getSubsectionProgress({
+    curriculumData: curriculum_data,
+    currentChapter: current_chapter,
+    currentSubsection: current_subsection,
+    totalSubsections: actualTotalSubsections,
+  })
 
   return (
     <div className="px-4 py-3 space-y-4">
@@ -29,7 +36,7 @@ export function StatsSection({ progressData }) {
         <div className="bg-gray-50 rounded-lg p-3 text-center">
           <div className="text-xs text-gray-500 mb-1">{t('textbook.contentSidebar.subsections')}</div>
           <div className="text-lg font-bold text-gray-800">
-            {current_subsection} / {actualTotalSubsections}
+            {completedSubsections} / {actualTotalSubsections}
           </div>
         </div>
       </div>

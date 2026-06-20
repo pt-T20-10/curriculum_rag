@@ -2,12 +2,13 @@
 Textbook management endpoints.
 """
 
-from typing import Optional
+from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
 from app.database import get_async_db
+from app.models.credit_history import CreditHistory
 from app.models.textbook import Textbook, TextbookStatus
 from app.models.user import User
 from app.schemas.textbook import (
@@ -18,9 +19,96 @@ from app.schemas.textbook import (
     CurriculumConfirmRequest,
 )
 from app.security.jwt import get_current_user_id
+from app.services.textbook.language import (
+    localized_validation_fallback,
+    normalize_language,
+    progress_text,
+)
 from app.services.textbook.validator import validate_topic
 
 router = APIRouter(prefix="/textbooks", tags=["textbooks"])
+
+
+def _clean_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _sanitize_confirmed_curriculum(curriculum: dict) -> tuple[dict, list[str], int]:
+    chapters = curriculum.get("chapters") if isinstance(curriculum, dict) else None
+    if not isinstance(chapters, list) or not chapters:
+        raise HTTPException(status_code=400, detail="Curriculum must contain at least one chapter")
+
+    sanitized_chapters = []
+    for chapter in chapters:
+        if not isinstance(chapter, dict):
+            raise HTTPException(status_code=400, detail="Invalid chapter data")
+
+        chapter_title = _clean_text(chapter.get("title"))
+        if not chapter_title:
+            raise HTTPException(status_code=400, detail="Chapter title cannot be empty")
+
+        subsections = chapter.get("subsections")
+        if not isinstance(subsections, list) or not subsections:
+            raise HTTPException(status_code=400, detail="Each chapter must contain at least one subsection")
+
+        sanitized_subsections = []
+        for subsection in subsections:
+            if not isinstance(subsection, dict):
+                raise HTTPException(status_code=400, detail="Invalid subsection data")
+
+            title = _clean_text(subsection.get("title"))
+            if not title:
+                raise HTTPException(status_code=400, detail="Subsection title cannot be empty")
+
+            description = _clean_text(subsection.get("description")) or f"Content about {title}"
+            search_query = _clean_text(subsection.get("search_query")) or title
+            section_type = _clean_text(subsection.get("section_type")) or "medium"
+            sanitized_subsections.append({
+                "title": title,
+                "description": description,
+                "search_query": search_query,
+                "section_type": section_type,
+            })
+
+        sanitized_chapters.append({
+            "title": chapter_title,
+            "subsections": sanitized_subsections,
+        })
+
+    sanitized = {
+        "topic": _clean_text(curriculum.get("topic")),
+        "chapters": sanitized_chapters,
+    }
+    chapter_titles = [chapter["title"] for chapter in sanitized_chapters]
+    total_subsections = sum(len(chapter["subsections"]) for chapter in sanitized_chapters)
+    return sanitized, chapter_titles, total_subsections
+
+
+def _planning_draft_phase(textbook: Textbook) -> bool:
+    progress_data = dict(textbook.progress_data or {})  # type: ignore
+    phase = progress_data.get("phase") or ""
+    credits_used = int(textbook.credits_used or 0)  # type: ignore
+    return credits_used == 0 and (
+        phase in {"", "planning", "reviewing"}
+        or textbook.status == TextbookStatus.PENDING.value  # type: ignore
+    )
+
+
+def _revoke_textbook_task(textbook: Textbook, textbook_id: int) -> None:
+    from app.utils import task_registry
+
+    celery_task_id = (
+        str(textbook.celery_task_id)  # type: ignore
+        if textbook.celery_task_id  # type: ignore
+        else task_registry.get(textbook_id)
+    )
+    if not celery_task_id:
+        return
+
+    from app.celery_app import celery_app
+    celery_app.control.revoke(celery_task_id, terminate=True, signal="SIGKILL")
+    task_registry.delete(textbook_id)
+    textbook.celery_task_id = None  # type: ignore
 
 
 @router.post("/", response_model=TextbookResponse, status_code=201)
@@ -39,12 +127,13 @@ async def create_textbook(
     """
 
     # ================ VALIDATE TOPIC ================
-    validation = validate_topic(textbook_data.topic)
+    ui_language = normalize_language(textbook_data.ui_language)
+    validation = validate_topic(textbook_data.topic, ui_language=ui_language)
 
     if not validation:
         raise HTTPException(
             status_code=500,
-            detail="Topic validation service unavailable. Please try again."
+            detail=localized_validation_fallback("validator_unavailable", ui_language)
         )
 
     if not validation.get("valid", False):
@@ -52,8 +141,18 @@ async def create_textbook(
             status_code=400,
             detail={
                 "validation_failed": True,
-                "reason": validation.get("reason", "Chủ đề không hợp lệ"),
+                "reason": validation.get(
+                    "reason",
+                    localized_validation_fallback("invalid_topic", ui_language),
+                ),
                 "suggestion": validation.get("suggestion", ""),
+                "input_language": validation.get("input_language", ""),
+                "requested_language": validation.get("requested_language", ""),
+                "target_language": validation.get("target_language", ui_language),
+                "language_source": validation.get("language_source", "ui"),
+                "unsupported_language": validation.get("unsupported_language", ""),
+                "unsupported_language_name_en": validation.get("unsupported_language_name_en", ""),
+                "unsupported_language_name_vi": validation.get("unsupported_language_name_vi", ""),
             }
         )
 
@@ -61,6 +160,7 @@ async def create_textbook(
     detected_type = validation.get("content_type", "technical")
     core_topic = validation.get("core_topic", textbook_data.topic)
     user_requirements = validation.get("user_requirements", "")
+    textbook_language = normalize_language(validation.get("target_language"), ui_language)
     
     # ================ CHECK CREDITS ================
     result = await db.execute(select(User).where(User.id == current_user_id))
@@ -69,7 +169,7 @@ async def create_textbook(
     if not user or user.credits < 1:  # type: ignore
         raise HTTPException(
             status_code=400,
-            detail="Insufficient credits. Please top up to create textbooks."
+            detail=localized_validation_fallback("insufficient_credits", ui_language)
         )
 
     # ================ CREATE TEXTBOOK ================
@@ -83,13 +183,13 @@ async def create_textbook(
         content_level=textbook_data.content_level,
         max_subsections_per_chapter=textbook_data.max_subsections_per_chapter,
         enable_images=textbook_data.enable_images,
+        language=textbook_language,
         content_type=detected_type,
         status=TextbookStatus.PENDING,
-        credits_used=1,
+        credits_used=0,
     )
 
     db.add(textbook)
-    user.credits -= 1  # type: ignore
     await db.commit()
     await db.refresh(textbook)
 
@@ -248,6 +348,8 @@ async def get_textbook_progress(
         progress_data.setdefault("max_subsections_per_chapter", textbook.max_subsections_per_chapter)  # type: ignore
     if textbook.enable_images is not None:  # type: ignore
         progress_data.setdefault("enable_images", textbook.enable_images)  # type: ignore
+    if textbook.language:  # type: ignore
+        progress_data.setdefault("language", textbook.language)  # type: ignore
 
     return TextbookProgressResponse(
         id=textbook.id,  # type: ignore
@@ -273,36 +375,55 @@ async def confirm_curriculum(
         select(Textbook).where(
             Textbook.id == textbook_id,
             Textbook.user_id == current_user_id,
-        )
+        ).with_for_update()
     )
     textbook = result.scalar_one_or_none()
 
     if not textbook:
         raise HTTPException(status_code=404, detail="Textbook not found")
 
-    chapters = request.curriculum.get("chapters", [])
-    chapter_titles = [
-        ch.get("title", f"Chương {i + 1}")
-        for i, ch in enumerate(chapters)
-    ]
-    total_subsections = sum(len(ch.get("subsections", [])) for ch in chapters)
+    progress_phase = dict(textbook.progress_data or {}).get("phase")  # type: ignore
+    if textbook.credits_used and progress_phase in {"generating", "done"}:  # type: ignore
+        return {"message": "Content generation already started", "textbook_id": textbook_id}
 
+    confirmed_curriculum, chapter_titles, total_subsections = _sanitize_confirmed_curriculum(request.curriculum)
+
+    if not textbook.credits_used:  # type: ignore
+        user_result = await db.execute(
+            select(User).where(User.id == current_user_id).with_for_update()
+        )
+        user = user_result.scalar_one_or_none()
+        if not user or user.credits < 1:  # type: ignore
+            raise HTTPException(
+                status_code=400,
+                detail=localized_validation_fallback("insufficient_credits", textbook.language),  # type: ignore
+            )
+
+        user.credits -= 1  # type: ignore
+        textbook.credits_used = 1  # type: ignore
+        db.add(CreditHistory(
+            user_id=current_user_id,
+            delta=-1,
+            reason=f"Textbook generation #{textbook_id}",
+            balance_after=user.credits,  # type: ignore
+        ))
 
     progress_data = dict(textbook.progress_data or {}) #type: ignore
     progress_data.update({ #type: ignore
         "phase": "generating",
         "progress_value": 0.20,
-        "status_text": "Bước 3/4: Đang tạo nội dung giáo trình...",
-        "curriculum_data": request.curriculum,
+        "status_text": progress_text(textbook.language, "content_generation_started"), # type: ignore
+        "curriculum_data": confirmed_curriculum,
         "chapter_titles": chapter_titles,
         "total_chapters": len(chapter_titles),
         "total_subsections": total_subsections,
+        "language": textbook.language, # type: ignore
     })
 
     textbook.progress_data = progress_data  # type: ignore
     
   
-    textbook.curriculum_json = request.curriculum  # type: ignore
+    textbook.curriculum_json = confirmed_curriculum  # type: ignore
     textbook.total_chapters = len(chapter_titles)  # type: ignore
     textbook.total_subsections = total_subsections  # type: ignore
     textbook.current_chapter = 0  # type: ignore
@@ -314,7 +435,7 @@ async def confirm_curriculum(
     # Trigger content generation task
     from app.tasks.textbook_tasks import continue_textbook_generation_task
     from app.utils import task_registry
-    task_result = continue_textbook_generation_task.delay(textbook_id, request.curriculum)
+    task_result = continue_textbook_generation_task.delay(textbook_id, confirmed_curriculum)
     task_registry.store(textbook_id, task_result.id)
     textbook.celery_task_id = task_result.id  # type: ignore
     await db.commit()
@@ -341,16 +462,16 @@ async def stop_generation(
         raise HTTPException(status_code=404, detail="Textbook not found")
 
     # 1. Set Redis stop flag — worker checks this before each LangGraph node
-    from app.utils import stop_signal, task_registry
+    from app.utils import stop_signal
     stop_signal.request_stop_for(textbook_id)
 
     # 2. Revoke the Celery task — prefer DB-stored ID, fall back to registry
-    celery_task_id = str(textbook.celery_task_id) if textbook.celery_task_id else task_registry.get(textbook_id)  # type: ignore
-    if celery_task_id:
-        from app.celery_app import celery_app
-        celery_app.control.revoke(celery_task_id, terminate=True, signal="SIGKILL")
-        task_registry.delete(textbook_id)
-        textbook.celery_task_id = None  # type: ignore
+    _revoke_textbook_task(textbook, textbook_id)
+
+    if _planning_draft_phase(textbook):
+        await db.delete(textbook)
+        await db.commit()
+        return {"message": "Planning draft deleted", "deleted": True}
 
     # 3. Update DB status
     textbook.status = "failed"  # type: ignore
@@ -358,8 +479,9 @@ async def stop_generation(
     textbook.progress_data = {  # type: ignore
         "phase": "idle",
         "progress_value": 0.0,
-        "status_text": "Đã dừng theo yêu cầu",
+        "status_text": progress_text(textbook.language, "stopped"),  # type: ignore
+        "language": textbook.language,  # type: ignore
     }
 
     await db.commit()
-    return {"message": "Generation stopped"}
+    return {"message": "Generation stopped", "deleted": False}

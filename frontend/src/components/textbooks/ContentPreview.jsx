@@ -5,10 +5,19 @@ import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
+import { getSubsectionProgress } from '../../utils/progressMetrics'
 
 const NEAR_BOTTOM_THRESHOLD = 120 // px — within this distance = "at bottom"
 
-export function ContentPreview({ content, currentChapter, currentSubsection, totalChapters, totalSubsections, isGenerating }) {
+export function ContentPreview({
+  content,
+  currentChapter,
+  currentSubsection,
+  totalChapters,
+  totalSubsections,
+  curriculumData,
+  isGenerating,
+}) {
   const { i18n, t } = useTranslation()
   const contentRef = useRef(null)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
@@ -38,6 +47,15 @@ export function ContentPreview({ content, currentChapter, currentSubsection, tot
 
   const wordCount = content ? content.split(/\s+/).filter(Boolean).length : 0
   const locale = i18n.resolvedLanguage === 'en' ? 'en-US' : 'vi-VN'
+  const {
+    chapterNumber,
+    currentGlobalSubsection,
+  } = getSubsectionProgress({
+    curriculumData,
+    currentChapter,
+    currentSubsection,
+    totalSubsections,
+  })
 
   if (!content) {
     return (
@@ -188,8 +206,8 @@ export function ContentPreview({ content, currentChapter, currentSubsection, tot
       {/* Footer */}
       <div className="border-t border-gray-200 px-6 py-3 bg-gray-50 flex-shrink-0">
         <div className="flex justify-between text-sm text-gray-600">
-          <span>{t('textbook.contentPreview.chapterCounter', { current: (currentChapter || 0) + 1, total: totalChapters || 0 })}</span>
-          <span>{t('textbook.contentPreview.subsectionCounter', { current: (currentSubsection || 0) + 1, total: totalSubsections || 0 })}</span>
+          <span>{t('textbook.contentPreview.chapterCounter', { current: chapterNumber, total: totalChapters || 0 })}</span>
+          <span>{t('textbook.contentPreview.subsectionCounter', { current: currentGlobalSubsection, total: totalSubsections || 0 })}</span>
           <span>{t('textbook.contentPreview.wordCount', { count: wordCount.toLocaleString(locale) })}</span>
         </div>
       </div>

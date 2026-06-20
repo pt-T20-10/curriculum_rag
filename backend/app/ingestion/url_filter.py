@@ -305,6 +305,8 @@ def filter_and_classify_urls(
     scored_results: Optional[List[Dict[str, str]]] = None,
     topic: str = "",
     content_type: str = "technical",   # ← thêm parameter
+    min_snippet_score: float | None = None,
+    max_workers: int | None = None,
 ) -> List[Dict[str, str]]:
     """
     Filter and classify URLs into valid crawlable resources.
@@ -328,6 +330,9 @@ def filter_and_classify_urls(
     Returns:
         List of dicts: [{"url": "...", "type": "pdf|html"}, ...]
     """
+    threshold = SNIPPET_SCORE_THRESHOLD if min_snippet_score is None else min_snippet_score
+    worker_count = URL_FILTER_MAX_WORKERS if max_workers is None else max_workers
+
     # Step 1: Deduplicate
     unique_urls = list(dict.fromkeys(urls))
     logger.info(f"Dedup: {len(urls)} → {len(unique_urls)} unique URLs")
@@ -361,7 +366,7 @@ def filter_and_classify_urls(
         before_snippet = len(remaining_urls)
         remaining_urls = [
             u for u in remaining_urls
-            if score_map.get(u, SNIPPET_SCORE_THRESHOLD) >= SNIPPET_SCORE_THRESHOLD
+            if score_map.get(u, threshold) >= threshold
         ]
         removed_snippet = before_snippet - len(remaining_urls)
         if removed_snippet > 0:
@@ -396,7 +401,7 @@ def filter_and_classify_urls(
                 clean_urls.append({"url": url, "type": doc_type})
 
     with concurrent.futures.ThreadPoolExecutor(
-        max_workers=URL_FILTER_MAX_WORKERS
+        max_workers=worker_count
     ) as executor:
         futures = [
             executor.submit(check_and_collect, url)

@@ -12,14 +12,22 @@ class ValidationResult(BaseModel):
     content_type: str = "technical"
     core_topic: str = ""
     user_requirements: str = ""
+    input_language: str = ""
+    requested_language: str = ""
+    target_language: str = "vi"
+    language_source: str = "ui"
+    unsupported_language: str = ""
+    unsupported_language_name_en: str = ""
+    unsupported_language_name_vi: str = ""
 
 
 class TextbookCreate(BaseModel):
-    topic: str = Field(..., min_length=3, max_length=500)
+    topic: str = Field(..., min_length=1, max_length=500)
     num_chapters: int = Field(default=3, ge=1, le=20)
     content_level: str = Field(default="Trung Bình")
     max_subsections_per_chapter: int = Field(default=3, ge=2, le=10)
     enable_images: bool = False
+    ui_language: str = Field(default="vi", pattern="^(vi|en)$")
     export_formats: List[str] = Field(default_factory=lambda: ["PDF", "Word"])
 
 
@@ -33,6 +41,7 @@ class TextbookResponse(BaseModel):
     content_level: str
     max_subsections_per_chapter: int
     enable_images: bool
+    language: str = "vi"
     content_type: str
     status: str
     pdf_path: Optional[str] = None
@@ -67,6 +76,7 @@ class ProgressData(BaseModel):
     current_subsection: int = 0
     total_chapters: int = 0
     total_subsections: int = 0
+    language: str = "vi"
     subsections_in_chapter: int = 0
 
     sub_stages: Dict[str, str] = {

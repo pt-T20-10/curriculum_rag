@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next'
+import { getSubsectionProgress } from '../../utils/progressMetrics'
 
 export function SubStageCard({ 
   subStages, 
@@ -8,8 +9,15 @@ export function SubStageCard({
   curriculumData  // ⭐ NEW: For calculating subsections
 }) {
   const { t } = useTranslation()
-  // Calculate subsections from curriculum if available
-  const currentChapterSubsections = curriculumData?.chapters?.[chapter]?.subsections?.length || 0
+  const {
+    chapterNumber,
+    subsectionNumber,
+    currentChapterTotal,
+  } = getSubsectionProgress({
+    curriculumData,
+    currentChapter: chapter,
+    currentSubsection: subsection,
+  })
   
   const icons = {
     researcher: '🔍',
@@ -45,10 +53,10 @@ export function SubStageCard({
           <span className="text-lg">⚙️</span>
           <span className="ml-2 font-semibold">
             {t('textbook.workflow.chapterSubsectionProgress', {
-              chapter: chapter + 1,
+              chapter: chapterNumber,
               total: totalChapters,
-              subsection: subsection + 1,
-              subsectionTotal: currentChapterSubsections,
+              subsection: subsectionNumber,
+              subsectionTotal: currentChapterTotal,
             })}
           </span>
         </div>

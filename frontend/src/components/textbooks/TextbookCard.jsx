@@ -20,6 +20,9 @@ export function TextbookCard({ textbook }) {
 
   const isGenerating = textbook.status === 'generating'
   const isCompleted = textbook.status === 'done' || textbook.status === 'completed'
+  const languageLabel = textbook.language
+    ? t(`textbook.language.${textbook.language}`, { defaultValue: textbook.language.toUpperCase() })
+    : null
 
   return (
     <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 hover:shadow-md transition-shadow">
@@ -51,6 +54,15 @@ export function TextbookCard({ textbook }) {
           </svg>
           <span>{t('textbook.card.createdAt', { date: formatDate(textbook.created_at) })}</span>
         </div>
+
+        {languageLabel && (
+          <div className="flex items-center gap-2">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 0A18.022 18.022 0 018.864 14.5M12 20l4-9 4 9m-1.5-3h-5" />
+            </svg>
+            <span>{t('textbook.card.language', { language: languageLabel })}</span>
+          </div>
+        )}
 
         {textbook.completed_at && (
           <div className="flex items-center gap-2 text-green-600">

@@ -41,6 +41,7 @@ from PIL import Image
 
 from app.config import settings
 from app.services.runtime_config import get_api_key
+from app.services.textbook.language import get_language_profile
 from app.utils.log_config import setup_logger, setup_prompt_logger
 
 BASE_DIR = settings.BASE_DIR
@@ -218,9 +219,9 @@ class IllustratorAgent:
             logger.warning(f"Query optimization failed: {e}")
             return ' '.join(description.split()[:6])
 
-    def translate_caption(self, caption: str) -> str:
+    def translate_caption(self, caption: str, language: str = "vi") -> str:
         """
-        Translate an image caption to Vietnamese for use in the PDF figure block.
+        Translate an image caption to the textbook language for figure blocks.
 
         Skips the LLM call if the caption already contains Vietnamese diacritic
         characters (BUG-09 fix) — Writer generates titles in Vietnamese by default,
@@ -232,14 +233,19 @@ class IllustratorAgent:
         Returns:
             Vietnamese caption string, or the original on error.
         """
-        # Fast path — skip LLM call if already Vietnamese
-        if _is_vietnamese(caption):
+        profile = get_language_profile(language)
+
+        # Fast paths — skip LLM call if caption already matches target language.
+        if profile.code == "vi" and _is_vietnamese(caption):
             logger.debug(f"Caption already Vietnamese — skipping translation: '{caption[:40]}'")
+            return caption
+        if profile.code == "en" and not _is_vietnamese(caption):
+            logger.debug(f"Caption already English — skipping translation: '{caption[:40]}'")
             return caption
 
         try:
             response = self.llm.invoke(
-                "Translate this image caption to Vietnamese. "
+                f"Translate this image caption to {profile.prompt_name}. "
                 "Return ONLY the translation, no explanation:\n\n" + caption
             )
             translated = str(response.content).strip()
@@ -650,7 +656,12 @@ class IllustratorAgent:
     # Main orchestration
     # ------------------------------------------------------------------
 
-    def illustrate_content(self, content: str, section_type: str = "medium") -> str:
+    def illustrate_content(
+        self,
+        content: str,
+        section_type: str = "medium",
+        language: str = "vi",
+    ) -> str:
         """
         Process all image tags in `content` and replace them with figure blocks.
 
@@ -699,6 +710,7 @@ class IllustratorAgent:
         for match in matches:
             old_tag    = f"> [IMAGE: {match}]"
             local_path = ""
+            last_resort = ""
 
             # -- Parse title | description -------------------------------------
             # Format: "Short Vietnamese/English title | Detailed English description"
@@ -809,9 +821,12 @@ class IllustratorAgent:
                     )
             # -- Build figure block --------------------------------------------
             if local_path:
-                # Caption: prefer TITLE (short, often already Vietnamese).
-                # translate_caption() skips the LLM call when already Vietnamese.
-                vietnamese_caption = self.translate_caption(title if title else description)
+                # Caption: prefer TITLE (short). Translate only when it does not
+                # match the target textbook language.
+                figure_caption = self.translate_caption(
+                    title if title else description,
+                    language=language,
+                )
 
                 # Relative path from BASE_DIR — Typst sandbox requires paths
                 # relative to the document root, not absolute system paths.
@@ -823,7 +838,7 @@ class IllustratorAgent:
                 # leaves room for the caption without overflow.
                 figure_block = (
                     "\n\n"
-                    f"![{vietnamese_caption}]({img_path_for_markdown}){{width=70%}}\n\n"
+                    f"![{figure_caption}]({img_path_for_markdown}){{width=70%}}\n\n"
                 )
 
                 new_content = new_content.replace(old_tag, figure_block)
@@ -994,5 +1009,9 @@ def illustrate_section(state: AgentState) -> dict:
             pass
 
     agent = IllustratorAgent()
-    illustrated_content = agent.illustrate_content(current_content, section_type=sec_type)
+    illustrated_content = agent.illustrate_content(
+        current_content,
+        section_type=sec_type,
+        language=state.get("language", "vi"),
+    )
     return {"current_content": illustrated_content}

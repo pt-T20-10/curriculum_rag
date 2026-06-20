@@ -10,7 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.models.textbook import Textbook
-from app.schemas.curriculum import AgentState
+from app.schemas.curriculum import AgentState, build_initial_state
+from app.services.textbook.language import get_language_profile, progress_text
 from app.utils.log_config import setup_logger
 from app.utils.stop_signal import WorkflowStoppedException
 
@@ -45,6 +46,8 @@ async def run_textbook_workflow(
     max_subsections_per_chapter: int,
     enable_images: bool,
     export_formats: list,
+    language: str = "vi",
+    advanced_config: dict[str, Any] | None = None,
     db: Optional[AsyncSession] = None,
 ) -> Dict[str, Any]:
     """
@@ -61,38 +64,27 @@ async def run_textbook_workflow(
         textbook_record = result.scalar_one_or_none()
         core_topic_val = textbook_record.core_topic if textbook_record else topic
         user_req_val = textbook_record.user_requirements if textbook_record else ""
+        content_type_val = textbook_record.content_type if textbook_record else "technical"
+        language_val = textbook_record.language if textbook_record else language
     else:
         core_topic_val = topic
         user_req_val = ""
+        content_type_val = "technical"
+        language_val = language
     # Build initial state
-    initial_state: AgentState = { #type: ignore
-        "request": topic,
-        "core_topic": core_topic_val,
-        "user_requirements": user_req_val,
-        "num_chapters": num_chapters,
-        "enable_images": enable_images,
-        "content_level": content_level,
-        "min_chars_per_section": 0,
-        "max_subsections_per_chapter": max_subsections_per_chapter,
-        "curriculum": None,
-        "textbook_title": "",
-        "preface_content": "",
-        "rag_context": "",
-        "current_chapter_index": 0,
-        "current_subsection_index": 0,
-        "revision_number": 0,
-        "review_feedback": "",
-        "chapter_header_written": False,
-        "messages": [],
-        "final_content": "",
-        "current_content": "",
-        "export_formats": export_formats,
-        "final_docx_filepath": None,
-        "final_filepath": None,
-        "chapter1_content": "",
-        "content_type": "technical",
-        "section_summaries": [],
-    }
+    initial_state: AgentState = build_initial_state( # type: ignore
+        request=topic,
+        num_chapters=num_chapters,
+        enable_images=enable_images,
+        content_level=content_level,
+        max_subsections_per_chapter=max_subsections_per_chapter,
+        content_type=content_type_val, #type: ignore
+        core_topic=core_topic_val, #type: ignore
+        user_requirements=user_req_val, #type: ignore
+        language=language_val, #type: ignore
+        advanced_config=advanced_config,
+        export_formats=export_formats,
+    )
 
     # Use planning-only workflow (planner → END)
     from app.services.textbook.orchestrator import create_planning_only_workflow
@@ -105,11 +97,12 @@ async def run_textbook_workflow(
             await update_progress(db, textbook_id, {
                 "phase": "planning",
                 "progress_value": 10.0,
-                "status_text": "Bước 1/3: Đang lập dàn ý...",
+                "status_text": progress_text(language_val, "planning_started"), #type: ignore
                 "planner_status": "active",
                 "ingestion_status": "pending",
                 "publisher_status": "pending",
                 "topic": topic,
+                "language": language_val,
             })
 
         cumulative_state: Dict[str, Any] = dict(initial_state)
@@ -127,6 +120,7 @@ async def run_textbook_workflow(
                     chapter_titles = []
 
                     if curriculum:
+                        profile = get_language_profile(language_val) #type: ignore
                         if hasattr(curriculum, 'model_dump'):
                             curriculum_data = curriculum.model_dump()
                         elif hasattr(curriculum, 'dict'):
@@ -136,7 +130,10 @@ async def run_textbook_workflow(
 
                         chapters = curriculum.chapters if hasattr(curriculum, 'chapters') else curriculum.get('chapters', [])
                         chapter_titles = [
-                            ch.title if hasattr(ch, 'title') else ch.get('title', f'Chương {i+1}')
+                            ch.title if hasattr(ch, 'title') else ch.get(
+                                'title',
+                                f"{profile.chapter_label.title()} {i+1}",
+                            )
                             for i, ch in enumerate(chapters)
                         ]
 
@@ -152,13 +149,14 @@ async def run_textbook_workflow(
                     await update_progress(db, textbook_id, {
                         "phase": "reviewing",
                         "progress_value": 15.0,
-                        "status_text": "Bước 1/3: Vui lòng xem xét và xác nhận cấu trúc",
+                        "status_text": progress_text(language_val, "review_curriculum"), #type: ignore
                         "planner_status": "completed",
                         "ingestion_status": "pending",
                         "curriculum_data": curriculum_data,
                         "chapter_titles": chapter_titles,
                         "total_chapters": len(chapter_titles),
                         "topic": topic,
+                        "language": language_val,
                     })
 
                     logger.info(f"[Workflow] Planning complete. Waiting for curriculum confirmation...")
@@ -270,7 +268,7 @@ async def continue_after_curriculum_confirmation(
             await update_progress(db, textbook_id, {
                 "phase": "generating",
                 "progress_value": 25.0,
-                "status_text": "Bước 2/3: Đang thu thập dữ liệu...",
+                "status_text": progress_text(initial_state.get("language", "vi"), "collecting_data"),
                 "planner_status": "completed",
                 "ingestion_status": "active",
                 "publisher_status": "pending",
@@ -283,6 +281,7 @@ async def continue_after_curriculum_confirmation(
                 "total_chapters": len(curriculum.chapters),
                 "total_subsections": sum(len(ch.subsections) for ch in curriculum.chapters),
                 "topic": topic,
+                "language": initial_state.get("language", "vi"),
             })
 
         cumulative_state: Dict[str, Any] = dict(content_state)
@@ -314,16 +313,17 @@ async def continue_after_curriculum_confirmation(
                         await update_progress(db, textbook_id, {
                             "phase":          "idle",
                             "progress_value": 0.0,
-                            "status_text":    f"Lỗi thu thập dữ liệu: {failed_msg}",
+                            "status_text":    progress_text(initial_state.get("language", "vi"), "ingestion_error", error=failed_msg),
                             "error_message":  failed_msg,
                             "topic":          topic,
+                            "language":       initial_state.get("language", "vi"),
                         })
                         logger.error(f"[Workflow] Ingestion failed: {failed_msg}")
                     else:
                         await update_progress(db, textbook_id, {
                             "phase":          "generating",
                             "progress_value": 30.0,
-                            "status_text":    "Bước 3/3: Đang tạo nội dung...",
+                            "status_text":    progress_text(initial_state.get("language", "vi"), "generating_content"),
                             "planner_status":   "completed",
                             "ingestion_status": "completed",
                             "publisher_status": "pending",
@@ -336,6 +336,7 @@ async def continue_after_curriculum_confirmation(
                                 len(ch.subsections) for ch in curriculum.chapters
                             ),
                             "topic": topic,
+                            "language": initial_state.get("language", "vi"),
                         })
 
                 elif node_name in _CRAG_NODES and db:
@@ -347,9 +348,12 @@ async def continue_after_curriculum_confirmation(
                     await update_progress(db, textbook_id, {
                         "phase": "generating",
                         "progress_value": min(progress, 90.0),
-                        "status_text": (
-                            f"Bước 3/3: Chương {display_chapter}/"
-                            f"{len(curriculum.chapters)} - Mục {display_subsection}"
+                        "status_text": progress_text(
+                            initial_state.get("language", "vi"),
+                            "generating_section",
+                            chapter=display_chapter,
+                            total_chapters=len(curriculum.chapters),
+                            subsection=display_subsection,
                         ),
                         "planner_status":   "completed",
                         "ingestion_status": "completed",
@@ -357,6 +361,7 @@ async def continue_after_curriculum_confirmation(
                         "current_subsection":   display_subsection,
                         "current_content_preview": cumulative_state.get("final_content", ""),
                         "topic": topic,
+                        "language": initial_state.get("language", "vi"),
                         "sub_stages": {
                             "retriever":  "active" if node_name in ("query_formulator", "retriever_node", "context_evaluator") else "done",
                             "writer":     "active" if node_name == "content_writer"  else ("done" if node_name in ("reviewer", "illustrator") else "pending"),
@@ -369,11 +374,12 @@ async def continue_after_curriculum_confirmation(
                     await update_progress(db, textbook_id, {
                         "phase": "generating",
                         "progress_value": 95.0,
-                        "status_text": "Bước 3/3: Đang xuất bản...",
+                        "status_text": progress_text(initial_state.get("language", "vi"), "publishing"),
                         "planner_status": "completed",
                         "ingestion_status": "completed",
                         "publisher_status": "active",
                         "topic": topic,
+                        "language": initial_state.get("language", "vi"),
                     })
 
         # Guard: if ingestion failed, error state was already written inside the loop.
@@ -390,11 +396,12 @@ async def continue_after_curriculum_confirmation(
             await update_progress(db, textbook_id, {
                 "phase": "done",
                 "progress_value": 100.0,
-                "status_text": "Hoàn tất!",
+                "status_text": progress_text(initial_state.get("language", "vi"), "done"),
                 "planner_status": "completed",
                 "ingestion_status": "completed",
                 "publisher_status": "completed",
                 "topic": topic,
+                "language": initial_state.get("language", "vi"),
             })
 
         logger.info(f"[Workflow] Content generation complete: {title}")
@@ -419,6 +426,7 @@ async def continue_after_curriculum_confirmation(
                 "phase": "idle",
                 "error_message": str(e),
                 "topic": topic,
+                "language": initial_state.get("language", "vi"),
             })
 
         return {"success": False, "error": str(e)}

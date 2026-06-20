@@ -10,6 +10,8 @@ from datetime import datetime
 from app.celery_app import celery_app
 from app.database import AsyncSessionLocal
 from app.models.textbook import Textbook, TextbookStatus
+from app.services.config_service import load_effective_config
+from app.services.textbook.language import progress_text
 from app.utils.log_config import setup_logger
 from sqlalchemy import select
 
@@ -30,9 +32,16 @@ async def update_textbook_progress(db, textbook_id: int, **kwargs):
         total_ch = getattr(textbook, "total_chapters", 0) or 0
         if textbook.progress_data:
             progress_data = dict(textbook.progress_data)
-            progress_data["status_text"] = f"Chương {ch}/{total_ch} - Mục {sub}"
+            progress_data["status_text"] = progress_text(
+                getattr(textbook, "language", "vi"),
+                "chapter_progress",
+                chapter=ch,
+                total_chapters=total_ch,
+                subsection=sub,
+            )
             progress_data["current_chapter"] = ch
             progress_data["current_subsection"] = sub
+            progress_data["language"] = getattr(textbook, "language", "vi")
             textbook.progress_data = progress_data
     await db.commit()
     return textbook
@@ -85,11 +94,12 @@ def generate_textbook_task(self, textbook_id: int):
                 textbook.progress_data = { #type: ignore
                     "phase": "planning",
                     "progress_value": 5.0,
-                    "status_text": "Bước 1/3: Đang lập dàn ý...",
+                    "status_text": progress_text(textbook.language, "planning_started"), # type: ignore
                     "planner_status": "active",
                     "ingestion_status": "pending",
                     "publisher_status": "pending",
                     "topic": textbook.topic,
+                    "language": textbook.language,
                 }
                 await db.commit()
 
@@ -97,6 +107,7 @@ def generate_textbook_task(self, textbook_id: int):
                 
                 # Import workflow runner
                 from app.services.textbook.workflow_runner import run_textbook_workflow
+                advanced_config = await load_effective_config(db, textbook.user_id)  # type: ignore[arg-type]
                 
                 # Run planning phase (stops at curriculum review)
                 result = await run_textbook_workflow(
@@ -107,6 +118,8 @@ def generate_textbook_task(self, textbook_id: int):
                     max_subsections_per_chapter=textbook.max_subsections_per_chapter, #type: ignore
                     enable_images=textbook.enable_images, #type: ignore
                     export_formats=["PDF", "Word"],
+                    language=textbook.language, # type: ignore
+                    advanced_config=advanced_config,
                     db=db,
                 )
                 
@@ -203,6 +216,7 @@ def continue_textbook_generation_task(self, textbook_id: int, confirmed_curricul
                 from app.services.textbook.workflow_runner import continue_after_curriculum_confirmation
                 
                 from app.schemas.curriculum import build_initial_state
+                advanced_config = await load_effective_config(db, textbook.user_id)  # type: ignore[arg-type]
                 initial_state = build_initial_state(
                     request              = textbook.topic,         # type: ignore
                     num_chapters         = textbook.num_chapters,  # type: ignore
@@ -212,6 +226,8 @@ def continue_textbook_generation_task(self, textbook_id: int, confirmed_curricul
                     content_type         = textbook.content_type,  # type: ignore
                     core_topic           = textbook.core_topic or textbook.topic,       # type: ignore
                     user_requirements    = textbook.user_requirements or "",            # type: ignore
+                    language             = textbook.language,      # type: ignore
+                    advanced_config       = advanced_config,
                     export_formats       = ["PDF", "Word"],
                 )
                 # Preserve planner-generated title from Phase 1

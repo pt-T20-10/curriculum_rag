@@ -75,19 +75,31 @@ class QueryExpansionAgent:
 
     _SOURCE_HINTS: dict[str, dict[str, str]] = {
             "scholarly": {
-                "vi": "Ưu tiên: Wikipedia tiếng Việt, sách giáo khoa đại học, tài liệu .edu.vn",
+                "vi": (
+                    "Prioritize Vietnamese sources: Vietnamese Wikipedia, "
+                    "university textbooks, .edu.vn materials"
+                ),
                 "en": "Prioritize: Wikipedia, OpenStax, arXiv, MIT OpenCourseWare, encyclopedia.com",
             },
             "technical": {
-                "vi": "Ưu tiên: tài liệu kỹ thuật, blog công nghệ uy tín, docs chính thức",
+                "vi": (
+                    "Prioritize Vietnamese sources: technical materials, "
+                    "reputable technology blogs, official documentation"
+                ),
                 "en": "Prioritize: GeeksForGeeks, official documentation, arXiv, cs.cmu.edu, university course pages",
             },
             "practical": {
-                "vi": "Ưu tiên: hướng dẫn thực hành từng bước, blog dạy nghề, tài liệu vocational",
+                "vi": (
+                    "Prioritize Vietnamese sources: step-by-step practical guides, "
+                    "vocational blogs, training materials"
+                ),
                 "en": "Prioritize: wikihow.com, instructables.com, step-by-step tutorial sites",
             },
             "lifestyle": {
-                "vi": "Ưu tiên: hướng dẫn thực hành, trang sức khỏe/phong cách sống uy tín",
+                "vi": (
+                    "Prioritize Vietnamese sources: practical guides, "
+                    "reputable health and lifestyle sites"
+                ),
                 "en": "Prioritize: wikihow.com, health/wellness sites, practical lifestyle guides",
             },
         }

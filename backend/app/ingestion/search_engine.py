@@ -172,6 +172,7 @@ def search_web(
     query: str,
     max_results: int = 10,
     region: str = "vn-vn",
+    min_snippet_score: float | None = None,
 ) -> List[Dict[str, str]]:
     """
     Search web using DuckDuckGo for a single region.
@@ -228,7 +229,8 @@ def search_web(
         (r, score_search_result(r, query))
         for r in hard_filtered
     ]
-    filtered = [r for r, s in scored if s >= MIN_SNIPPET_SCORE]
+    threshold = MIN_SNIPPET_SCORE if min_snippet_score is None else min_snippet_score
+    filtered = [r for r, s in scored if s >= threshold]
 
     # Log score distribution for tuning
     if scored:

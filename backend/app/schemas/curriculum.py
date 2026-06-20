@@ -196,6 +196,8 @@ class AgentState(TypedDict):
     enable_images: bool
     min_chars_per_section: int
     max_subsections_per_chapter: int
+    language: str
+    advanced_config: dict[str, Any]
 
     # ---- Planning ----
     curriculum: Any
@@ -267,7 +269,7 @@ class AgentState(TypedDict):
     validation_failed:     bool
     """True when validator node rejects the topic — routes graph to END."""
     validation_reason:     str
-    """Short Vietnamese explanation of why the topic was rejected."""
+    """Localized explanation of why the topic was rejected."""
     validation_suggestion: str
     """Pipe-separated list of more specific topic alternatives."""
 
@@ -346,7 +348,12 @@ def clean_section_title(title: str) -> str:
     Returns:
         Cleaned title with prefix stripped, or original if no match.
     """
-    return re.sub(r'^(Mục|Phần|Bài)\s+[\d.]+\s*:\s*', '', title).strip()
+    return re.sub(
+        r'^(Mục|Phần|Bài|Section|Chapter|Part|Lesson)\s+[\d.]+\s*:\s*',
+        '',
+        title,
+        flags=re.IGNORECASE,
+    ).strip()
 
 
 def build_initial_state(
@@ -359,6 +366,8 @@ def build_initial_state(
     content_type: str = "technical",
     core_topic: str = "",
     user_requirements: str = "",
+    language: str = "vi",
+    advanced_config: dict[str, Any] | None = None,
     section_summaries: list = None, #type: ignore
     export_formats: list | None = None,
 ) -> dict:
@@ -378,6 +387,7 @@ def build_initial_state(
         content_type:                One of 'scholarly'|'technical'|'practical'|'lifestyle'.
         core_topic:                  Core subject extracted by Validator (defaults to request).
         user_requirements:           Optional requirements extracted by Validator.
+        advanced_config:             Effective user/system config snapshot for this workflow run.
         section_summaries:           Pre-populated summaries list (for resume flows).
         export_formats:              List of export formats ('PDF', 'Word').
 
@@ -396,6 +406,8 @@ def build_initial_state(
         "min_chars_per_section":       min_chars_per_section,
         "max_subsections_per_chapter": max_subsections_per_chapter,
         "content_type":                content_type,
+        "language":                    language,
+        "advanced_config":             advanced_config or {},
         # ---- Planning ----
         "curriculum":      None,
         "textbook_title":  "",

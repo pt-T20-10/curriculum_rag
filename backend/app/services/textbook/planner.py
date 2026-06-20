@@ -20,6 +20,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from app.schemas.curriculum import AgentState, CurriculumOutline
 from app.config import settings
 from app.services.runtime_config import get_api_key
+from app.services.textbook.language import get_language_profile
 from app.utils.log_config import setup_logger, setup_prompt_logger
 
 LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
@@ -64,6 +65,7 @@ class HybridPlanner:
         core_topic: str,
         user_requirements: str,  
         num_chapters: int,
+        language: str = "vi",
     ) -> Optional[List[str]]:
         """
         Generate chapter titles directly from topic.
@@ -75,10 +77,17 @@ class HybridPlanner:
 
         zone_a = max(1, num_chapters // 3)
         zone_b = max(1, num_chapters // 3)
+        profile = get_language_profile(language)
+        chapter_good_example = (
+            "Mạng nơ-ron tích chập CNN"
+            if language == "vi"
+            else "Convolutional Neural Networks"
+        )
+        chapter_bad_example = "Học sâu" if language == "vi" else "Deep Learning"
 
         system_prompt = f"""
     [CONTEXT]
-    You are a curriculum designer building a Vietnamese university textbook.
+    You are a curriculum designer building a {profile.prompt_name} university textbook.
     Your task is to plan chapter titles that form a coherent, progressive learning arc.
     [/CONTEXT]
 
@@ -91,8 +100,8 @@ class HybridPlanner:
     (a) Cover a DISTINCT aspect of the subject — no two chapters may overlap
         in their primary topic.
     (b) Be specific and descriptive rather than generic.
-        Good: "Mạng nơ-ron tích chập CNN"
-        Bad:  "Học sâu"
+        Good: "{chapter_good_example}"
+        Bad:  "{chapter_bad_example}"
     (c) Follow a progressive learning arc across three zones:
         - Chapters 1–{zone_a}: Foundations (concepts, definitions, basic theory)
         - Chapters {zone_a + 1}–{zone_a + zone_b}: Core techniques and mechanisms
@@ -102,13 +111,13 @@ class HybridPlanner:
     [CONSTRAINT]
     Rule 1 — NO OVERLAP: Do not repeat or rephrase the same concept across different chapters.
     Rule 2 — EXACT COUNT: Output EXACTLY {num_chapters} titles — no more, no less.
-    Rule 3 — LANGUAGE: All titles must be in Vietnamese.
+    Rule 3 — LANGUAGE: All titles must be in {profile.prompt_name}.
     [/CONSTRAINT]
 
     [FORMAT]
-    Output a JSON array of exactly {num_chapters} Vietnamese chapter title strings.
+    Output a JSON array of exactly {num_chapters} {profile.prompt_name} chapter title strings.
     No explanation, no markdown — ONLY the JSON array.
-    Example: ["Tiêu đề chương 1", "Tiêu đề chương 2"]
+    Example: ["{profile.subsection_example}", "{profile.title_example}"]
     [/FORMAT]
     """
 
@@ -160,7 +169,7 @@ class HybridPlanner:
                     )
                     titles = titles[:num_chapters]
                     while len(titles) < num_chapters:
-                        titles.append(f"Chương {len(titles) + 1}: {core_topic}")
+                        titles.append(f"{profile.chapter_label.title()} {len(titles) + 1}: {core_topic}")
 
                 logger.info(f"✓ Phase 1: {len(titles)} chapter titles planned")
                 return [str(t) for t in titles]
@@ -184,6 +193,7 @@ class HybridPlanner:
         num_chapters: int,
         max_subsections: int = 3,
         assigned_chapters: Optional[List[Dict[str, Any]]] = None,
+        language: str = "vi",
     ) -> Optional[List[Dict[str, Any]]]:
         """
         Generate subsections for a single chapter.
@@ -204,16 +214,18 @@ class HybridPlanner:
                 lines.append(f"  • {prev['title']}: {sub_titles}")
             already_covered_block = "\n".join(lines)
 
+        profile = get_language_profile(language)
+
         system_prompt = f"""You are an expert curriculum designer.
-Generate 1 to {max_subsections} subsections for ONE chapter of a Vietnamese textbook.
+Generate 1 to {max_subsections} subsections for ONE chapter of a {profile.prompt_name} textbook.
 Choose as many subsections as the chapter NATURALLY needs.
 
 CRITICAL: Do NOT force a minimum of 3 subsections if the chapter naturally needs fewer.
 Some chapters may only need 1-2 focused subsections. Quality over quantity.
 
 OUTPUT: A JSON array of subsection objects. Each object must have:
-- "title": string (in Vietnamese — descriptive title suited to the subject domain)
-- "description": string (in Vietnamese, 1-2 sentences)
+- "title": string (in {profile.prompt_name} — descriptive title suited to the subject domain)
+- "description": string (in {profile.prompt_name}, 1-2 sentences)
 - "search_query": string (in English, 3-5 specific keywords for RAG)
 - "section_type": one of "light", "medium", "deep", "applied"
 
@@ -315,15 +327,36 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
     # Phase 3 — Title and preface generation
     # ------------------------------------------------------------------
 
-    def _generate_textbook_title(self, topic: str, curriculum: CurriculumOutline) -> str:
+    def _generate_textbook_title(
+        self,
+        topic: str,
+        curriculum: CurriculumOutline,
+        language: str = "vi",
+    ) -> str:
         """
-        Generate a Vietnamese textbook title adapted to the subject domain.
+        Generate a textbook title adapted to the subject domain and language.
 
         Examples by domain:
             Academic:  "Giáo trình Hóa học Đại cương"
             Practical: "Nghệ thuật Làm bánh — Từ Cơ bản đến Nâng cao"
             Lifestyle: "Kỹ thuật Làm Nail Chuyên nghiệp"
         """
+        profile = get_language_profile(language)
+        technical_example = (
+            "Lập trình Python Ứng dụng Thực tế"
+            if language == "vi"
+            else "Practical Python Programming"
+        )
+        practical_example = (
+            "Nghệ thuật Làm bánh — Từ Cơ bản đến Nâng cao"
+            if language == "vi"
+            else "The Art of Baking: From Basics to Advanced Practice"
+        )
+        lifestyle_example = (
+            "Kỹ thuật Làm Nail Chuyên nghiệp"
+            if language == "vi"
+            else "Professional Nail Care Techniques"
+        )
         logger.info("Generating textbook title...")
         chapter_list = "\n".join(f"  - {ch.title}" for ch in curriculum.chapters)
 
@@ -332,7 +365,7 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
             "You are a neutral title specialist for an educational content platform\n"
             "that covers all learning domains — from university-level academics to\n"
             "practical crafts, cooking, beauty, sports, and lifestyle skills.\n"
-            "Your task is to produce a Vietnamese title that feels natural and\n"
+            f"Your task is to produce a {profile.prompt_name} title that feels natural and\n"
             "appropriate for the specific domain, not uniformly academic.\n"
             "[/CONTEXT]\n\n"
 
@@ -341,31 +374,38 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
             "  (a) Accurately reflect the subject and scope of the chapter list.\n"
             "  (b) Match the tone appropriate for the domain:\n"
             "      - Scholarly/scientific → formal academic style\n"
-            "        e.g. \"Giáo trình Hóa học Đại cương\"\n"
+            f"        e.g. \"{profile.title_example}\"\n"
             "      - Technical/engineering → clear and professional\n"
-            "        e.g. \"Lập trình Python Ứng dụng Thực tế\"\n"
+            f"        e.g. \"{technical_example}\"\n"
             "      - Practical/lifestyle → engaging and descriptive\n"
-            "        e.g. \"Nghệ thuật Làm bánh — Từ Cơ bản đến Nâng cao\"\n"
-            "        e.g. \"Kỹ thuật Làm Nail Chuyên nghiệp\"\n"
+            f"        e.g. \"{practical_example}\"\n"
+            f"        e.g. \"{lifestyle_example}\"\n"
             "  (c) Be concise — maximum 12 words.\n"
             "[/CRITERION]\n\n"
 
             "[CONSTRAINT]\n"
-            "Rule 1 — LANGUAGE: Output must be in Vietnamese only.\n"
+            f"Rule 1 — LANGUAGE: Output must be in {profile.prompt_name} only.\n"
             "Rule 2 — LENGTH: Maximum 12 words.\n"
             "Rule 3 — FORMAT: Output the title string only — no explanation,\n"
             "  no markdown, no surrounding quotes.\n"
-            "[/CONSTRAINT]\n\n"
+            + (
+                "Rule 4 — ENGLISH PUNCTUATION: Do NOT use em dash or en dash "
+                "characters (—, –). Use a colon, comma, parentheses, or ASCII "
+                "hyphen-minus (-) instead.\n"
+                if language == "en"
+                else ""
+            )
+            + "[/CONSTRAINT]\n\n"
 
             "[FORMAT]\n"
-            "A single Vietnamese title string. Nothing else.\n"
+            f"A single {profile.prompt_name} title string. Nothing else.\n"
             "[/FORMAT]"
         )
 
         user_prompt = (
             f"User request: {topic}\n\n"
             f"Chapter list:\n{chapter_list}\n\n"
-            "Output the Vietnamese title:"
+            f"Output the {profile.prompt_name} title:"
         )
 
         prompt = ChatPromptTemplate.from_messages([
@@ -384,30 +424,38 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
             return title
         except Exception as e:
             logger.warning(f"Title generation failed: {e}")
-            return f"Giáo trình {topic}"
+            return f"{profile.default_title_prefix} {topic}"
 
     def _generate_preface(
         self,
         topic: str,
         title: str,
         curriculum: CurriculumOutline,
+        language: str = "vi",
     ) -> str:
         """
-        Generate the Lời nói đầu (Preface) adapted to the subject domain.
+        Generate the preface adapted to the subject domain and language.
 
         4-6 paragraphs covering target audience, objectives, chapter structure,
         distinctive features, and usage guidance — tone adapted to the domain.
         """
-        logger.info("Generating preface (Lời nói đầu)...")
+        profile = get_language_profile(language)
+        style_rule = (
+            "  - Do NOT use em dash or en dash characters (—, –); use commas, "
+            "parentheses, semicolons, or ASCII hyphen-minus (-) instead\n"
+            if language == "en"
+            else ""
+        )
+        logger.info(f"Generating preface ({profile.preface_heading})...")
         chapter_summary = "\n".join(
-            f"  - Chương {i + 1}: {ch.title}"
+            f"  - {profile.chapter_label.title()} {i + 1}: {ch.title}"
             for i, ch in enumerate(curriculum.chapters)
         )
 
         system_prompt = (
             "[CONTEXT]\n"
-            "You are a neutral academic writing specialist producing a Vietnamese\n"
-            "preface (Lời nói đầu) for an educational content platform that covers\n"
+            f"You are a neutral academic writing specialist producing a {profile.prompt_name}\n"
+            f"preface ({profile.preface_heading}) for an educational content platform that covers\n"
             "all learning domains — university academics, technical skills, practical\n"
             "crafts, cooking, beauty, sports, and lifestyle topics.\n"
             "The preface must feel natural and fitting for the specific domain,\n"
@@ -415,7 +463,7 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
             "[/CONTEXT]\n\n"
 
             "[TASK]\n"
-            "Write a Lời nói đầu (Preface) in plain Markdown — no LaTeX commands,\n"
+            f"Write a {profile.preface_heading} in plain Markdown — no LaTeX commands,\n"
             "no outer code fences, no \\begin or \\end tags.\n"
             "Write 4–6 paragraphs that naturally cover these aspects\n"
             "(in any order, without rigid section labels):\n"
@@ -437,13 +485,14 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
             "Quality standards (apply to all domains):\n"
             "  - Each paragraph 3–5 sentences, flowing naturally\n"
             "  - No bolded section labels inside paragraphs\n"
-            "  - No conversational filler (\"Chúng ta hãy cùng...\", \"Bạn sẽ thấy...\")\n"
+            f"  - No conversational filler ({profile.filler_examples})\n"
             "  - Tailor content specifically to the topic and chapter structure provided\n"
             "  - Output starts directly with the first paragraph — no title, no heading\n"
+            f"{style_rule}"
             "[/CRITERION]\n\n"
 
             "[CONSTRAINT]\n"
-            "Rule 1 — LANGUAGE: All output must be in Vietnamese.\n"
+            f"Rule 1 — LANGUAGE: All output must be in {profile.prompt_name}.\n"
             "Rule 2 — FORMAT: Plain Markdown only — no LaTeX, no code fences,\n"
             "  no outer wrappers. Blank line between each paragraph.\n"
             "Rule 3 — LENGTH: 4–6 paragraphs. Do not pad with generic filler\n"
@@ -460,7 +509,7 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
             f"Title: {title}\n"
             f"Topic: {topic}\n\n"
             f"Chapter list:\n{chapter_summary}\n\n"
-            "Write the Vietnamese preface now:"
+            f"Write the {profile.prompt_name} preface now:"
         )
 
         prompt = ChatPromptTemplate.from_messages([
@@ -491,6 +540,7 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
         user_requirements: str,  
         num_chapters: int = 3,
         max_subsections: int = 5,
+        language: str = "vi",
     ) -> Optional[Dict[str, Any]]:
         """
         Build full curriculum from topic name only.
@@ -506,7 +556,12 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
             f"({num_chapters + 1} total LLM calls, max {max_subsections} subsections/chapter)"
         )
 
-        chapter_titles = self._plan_chapter_titles(core_topic, user_requirements, num_chapters)
+        chapter_titles = self._plan_chapter_titles(
+            core_topic,
+            user_requirements,
+            num_chapters,
+            language=language,
+        )
         if not chapter_titles:
             return None
 
@@ -522,6 +577,7 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
                 num_chapters=num_chapters,
                 max_subsections=max_subsections,
                 assigned_chapters=chapters,
+                language=language,
             )
 
             if subsections:
@@ -532,8 +588,8 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
                 chapters.append({
                     "title": title,
                     "subsections": [{
-                        "title":        f"Giới thiệu về {title}",
-                        "description":  f"Tổng quan về {title}",
+                        "title":        f"Giới thiệu về {title}" if language == "vi" else f"Introduction to {title}",
+                        "description":  f"Tổng quan về {title}" if language == "vi" else f"Overview of {title}",
                         "search_query": f"{core_topic} {title} introduction",
                         "section_type": "light",
                     }],
@@ -557,6 +613,7 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
         user_requirements: str,
         num_chapters: int = 3,
         max_subsections: int = 5,
+        language: str = "vi",
     ) -> Optional[CurriculumOutline]:
         """
         Main entry point: generate curriculum directly from topic.
@@ -578,6 +635,7 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
             user_requirements,
             num_chapters=num_chapters,  
             max_subsections=max_subsections,
+            language=language,
         )
 
         if not plan_dict:
@@ -613,7 +671,7 @@ def plan_curriculum(state: AgentState) -> dict:
 
      Writes to state:
         curriculum               — CurriculumOutline Pydantic object
-        textbook_title           — formal Vietnamese academic title (≤ 12 words)
+        textbook_title           — formal title in the target language (≤ 12 words)
         current_chapter_index    = 0
         current_subsection_index = 0
         final_content            = ""
@@ -634,18 +692,21 @@ def plan_curriculum(state: AgentState) -> dict:
     user_requirements = state.get("user_requirements", "")
     num_chapters = state.get("num_chapters", 3)
     max_subsections = state.get("max_subsections_per_chapter", 5)
+    language = state.get("language", "vi")
 
     logger.info(f"Core topic         : {core_topic}")
     logger.info(f"User requirements  : {user_requirements or '(none)'}")
     logger.info(f"Num chapters       : {num_chapters}")
     logger.info(f"Max subsections/ch : {max_subsections}")
+    logger.info(f"Language           : {language}")
 
     planner = HybridPlanner()
     curriculum = planner.create_curriculum(
         core_topic, 
         user_requirements,  
         num_chapters=num_chapters, 
-        max_subsections=max_subsections
+        max_subsections=max_subsections,
+        language=language,
     )
 
     if not curriculum:
@@ -673,7 +734,7 @@ def plan_curriculum(state: AgentState) -> dict:
 
 def generate_metadata_node(state: AgentState) -> dict:
     """
-    Metadata generation node: produce textbook title + Lời nói đầu from
+    Metadata generation node: produce textbook title + preface from
     confirmed curriculum. Runs as the first node in the content-generation
     workflow, immediately after the Human-in-the-Loop gate.
 
@@ -686,16 +747,18 @@ def generate_metadata_node(state: AgentState) -> dict:
     Writes: textbook_title, preface_content
     """
     logger.info("=" * 60)
-    logger.info("NODE: GenerateMetadata - Building title + Lời nói đầu")
+    logger.info("NODE: GenerateMetadata - Building title + preface")
     logger.info("=" * 60)
 
     core_topic = state.get("core_topic", state["request"])
     curriculum = state.get("curriculum")
+    language = state.get("language", "vi")
+    profile = get_language_profile(language)
 
     if not curriculum:
         logger.warning("generate_metadata_node: curriculum is None — skipping")
         return {
-            "textbook_title":  f"Giáo trình {core_topic}",
+            "textbook_title":  f"{profile.default_title_prefix} {core_topic}",
             "preface_content": "",
             "messages": ["⚠️ Metadata skipped: curriculum not available"],
         }
@@ -703,10 +766,15 @@ def generate_metadata_node(state: AgentState) -> dict:
     planner = HybridPlanner()
 
     textbook_title = (
-        planner._generate_textbook_title(core_topic, curriculum)
-        or f"Giáo trình {core_topic}"
+        planner._generate_textbook_title(core_topic, curriculum, language=language)
+        or f"{profile.default_title_prefix} {core_topic}"
     )
-    preface_content = planner._generate_preface(core_topic, textbook_title, curriculum)
+    preface_content = planner._generate_preface(
+        core_topic,
+        textbook_title,
+        curriculum,
+        language=language,
+    )
 
     logger.info(f"✓ Title: {textbook_title}")
     logger.info(f"✓ Preface: {len(preface_content)} chars")

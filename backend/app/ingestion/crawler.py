@@ -16,7 +16,7 @@ import time
 import io
 import re
 from urllib.parse import urljoin, urlparse
-from typing import List, Dict, Set, Optional
+from typing import Any, List, Dict, Set, Optional
 
 import requests
 import concurrent.futures
@@ -60,6 +60,20 @@ MIN_RELEVANCE_BY_TYPE: dict[str, float] = {
 }
 
 logger = setup_logger(name="Crawler", logfile="logs/crawler.log")
+
+
+def _config_int(config: dict[str, Any], key: str, default: int, minimum: int = 0) -> int:
+    try:
+        return max(minimum, int(config.get(key, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _config_float(config: dict[str, Any], key: str, default: float) -> float:
+    try:
+        return float(config.get(key, default))
+    except (TypeError, ValueError):
+        return default
 
 embedding_model = get_embedding_model()
 HEADERS = {
@@ -226,6 +240,7 @@ def compute_relevance_scores(
     topic_emb, 
     embedding_model,
     progress_callback=None,
+    embedding_batch_size: int | None = None,
 ):
     """
     Compute cosine similarity scores for chunks using batched encoding.
@@ -270,7 +285,8 @@ def compute_relevance_scores(
         all_embeddings = _embed_with_openai(
             chunk_texts, 
             embedding_model,
-            progress_callback=progress_callback
+            progress_callback=progress_callback,
+            batch_size=embedding_batch_size,
         )
     
     else:  # EMBEDDING_PROVIDER == "local"
@@ -278,7 +294,8 @@ def compute_relevance_scores(
         all_embeddings = _embed_with_local(
             chunk_texts,
             embedding_model,
-            progress_callback=progress_callback
+            progress_callback=progress_callback,
+            batch_size=embedding_batch_size,
         )
     
     # ========================================================================
@@ -298,6 +315,7 @@ def _embed_with_openai(
     texts: List[str],
     embedding_model,
     progress_callback=None,
+    batch_size: int | None = None,
 ) -> List[List[float]]:
     """
     Embed texts using OpenAI API with rate limit handling.
@@ -319,7 +337,7 @@ def _embed_with_openai(
     import time
     from openai import RateLimitError
     
-    BATCH_SIZE = 500  # OpenAI can handle large batches efficiently
+    BATCH_SIZE = max(1, int(batch_size or 500))  # OpenAI can handle large batches efficiently
     all_embeddings = []
     
     logger.info(
@@ -380,6 +398,7 @@ def _embed_with_local(
     texts: List[str],
     embedding_model,
     progress_callback=None,
+    batch_size: int | None = None,
 ) -> List[List[float]]:
     """
     Embed texts using local bge-m3 model with sequential batching.
@@ -398,7 +417,7 @@ def _embed_with_local(
     import time
     from app.config import settings
     
-    BATCH_SIZE = settings.EMBEDDING_BATCH_SIZE  # Default: 200
+    BATCH_SIZE = max(1, int(batch_size or settings.EMBEDDING_BATCH_SIZE))
     all_embeddings = []
     
     logger.info(
@@ -1542,7 +1561,11 @@ def clean_toc_lines(text: str) -> str:
 # Deep crawl worker
 # ---------------------------------------------------------------------------
 
-def process_deep_crawl(link_info: Dict[str, str]) -> List[Document]:
+def process_deep_crawl(
+    link_info: Dict[str, str],
+    crawl_max_sub_links: int | None = None,
+    crawl_max_depth2_links: int | None = None,
+) -> List[Document]:
     """
     Process a single root URL with adaptive depth crawling.
 
@@ -1564,6 +1587,8 @@ def process_deep_crawl(link_info: Dict[str, str]) -> List[Document]:
     url          = link_info["url"]
     doc_type     = link_info["type"]
     content_type = link_info.get("content_type", "technical")
+    sub_link_limit = CRAWL_MAX_SUB_LINKS if crawl_max_sub_links is None else crawl_max_sub_links
+    depth2_limit = CRAWL_MAX_DEPTH2_LINKS if crawl_max_depth2_links is None else crawl_max_depth2_links
     results: List[Document] = []
 
     try:
@@ -1625,7 +1650,7 @@ def process_deep_crawl(link_info: Dict[str, str]) -> List[Document]:
         if not soup:
             return results
 
-        sub_links = get_internal_links(soup, url, limit=CRAWL_MAX_SUB_LINKS)
+        sub_links = get_internal_links(soup, url, limit=sub_link_limit)
         if not sub_links:
             return results
 
@@ -1658,7 +1683,7 @@ def process_deep_crawl(link_info: Dict[str, str]) -> List[Document]:
                 # Avoids unnecessary depth-2 when root had real content.
                 if root_is_nav and sub_soup is not None and not stop_signal.is_stopped():
                     depth2_links = get_internal_links(
-                        sub_soup, sub, limit=CRAWL_MAX_DEPTH2_LINKS
+                        sub_soup, sub, limit=depth2_limit
                     )
                     if depth2_links:
                         logger.info(
@@ -1697,6 +1722,7 @@ def ingest_dynamic_data(
     clean_links: List[Dict[str, str]],
     content_type: str = "technical",
     progress_callback=None,
+    runtime_config: dict[str, Any] | None = None,
 ) -> bool: #type: ignore
     """
     Ingest data from filtered URLs into ChromaDB.
@@ -1719,10 +1745,46 @@ def ingest_dynamic_data(
         logger.warning("No clean links provided — skipping ingestion")
         return False
 
+    runtime_config = runtime_config or {}
+    crawl_max_workers = _config_int(
+        runtime_config, "CRAWL_MAX_WORKERS", CRAWL_MAX_WORKERS, minimum=1
+    )
+    crawl_max_sub_links = _config_int(
+        runtime_config, "CRAWL_MAX_SUB_LINKS", CRAWL_MAX_SUB_LINKS
+    )
+    crawl_max_depth2_links = _config_int(
+        runtime_config, "CRAWL_MAX_DEPTH2_LINKS", CRAWL_MAX_DEPTH2_LINKS
+    )
+    chunk_size = _config_int(runtime_config, "CHUNK_SIZE", CHUNK_SIZE, minimum=1)
+    chunk_overlap = _config_int(runtime_config, "CHUNK_OVERLAP", CHUNK_OVERLAP)
+    if chunk_overlap >= chunk_size:
+        chunk_overlap = max(0, chunk_size // 5)
+        logger.warning(
+            "CHUNK_OVERLAP must be smaller than CHUNK_SIZE; using %s for this run",
+            chunk_overlap,
+        )
+    max_chunks_to_embed = _config_int(
+        runtime_config, "MAX_CHUNKS_TO_EMBED", settings.MAX_CHUNKS_TO_EMBED, minimum=1
+    )
+    embedding_batch_size = _config_int(
+        runtime_config, "EMBEDDING_BATCH_SIZE", settings.EMBEDDING_BATCH_SIZE, minimum=1
+    )
+    chromadb_batch_size = _config_int(
+        runtime_config, "CHROMADB_BATCH_SIZE", settings.CHROMADB_BATCH_SIZE, minimum=1
+    )
+    configured_min_relevance = _config_float(
+        runtime_config, "MIN_RELEVANCE_SCORE", settings.MIN_RELEVANCE_SCORE
+    )
+    if configured_min_relevance != settings.MIN_RELEVANCE_SCORE:
+        min_relevance = configured_min_relevance
+    else:
+        min_relevance = MIN_RELEVANCE_BY_TYPE.get(content_type, configured_min_relevance)
+
     t_start = time.time()
     logger.info(
         f"Starting deep crawler "
-        f"(max depth=1, 5 sub-links/page, {len(clean_links)} root URLs)..."
+        f"(max depth=1, {crawl_max_sub_links} sub-links/page, "
+        f"{crawl_max_depth2_links} depth-2 links/page, {len(clean_links)} root URLs)..."
     )
 
     # ── Step 1: Parallel deep crawl ──────────────────────────────────────────
@@ -1733,9 +1795,14 @@ def ingest_dynamic_data(
         link["content_type"] = content_type
     crawled_count = 0
     total_links   = len(clean_links)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=CRAWL_MAX_WORKERS) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=crawl_max_workers) as executor:
         futures = [
-            executor.submit(process_deep_crawl, link)
+            executor.submit(
+                process_deep_crawl,
+                link,
+                crawl_max_sub_links,
+                crawl_max_depth2_links,
+            )
             for link in clean_links
             if not stop_signal.is_stopped()
         ]
@@ -1766,8 +1833,8 @@ def ingest_dynamic_data(
 
     # ── Step 2: Chunking ─────────────────────────────────────────────────────
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=CHUNK_SIZE,
-        chunk_overlap=CHUNK_OVERLAP,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
     )
     chunks = text_splitter.split_documents(all_docs)
     logger.info(f"Chunked: {len(chunks)} total chunks")
@@ -1788,6 +1855,13 @@ def ingest_dynamic_data(
         logger.error("All chunks removed by quality filter — data may be entirely noise")
         return False
 
+    if len(quality_chunks) > max_chunks_to_embed:
+        logger.info(
+            f"Max chunks cap: {len(quality_chunks)} → {max_chunks_to_embed} "
+            f"before embedding"
+        )
+        quality_chunks = quality_chunks[:max_chunks_to_embed]
+
     logger.info(f"Quality filter: {len(chunks)} → {len(quality_chunks)} chunks ...")
     if progress_callback:
         progress_callback(
@@ -1796,7 +1870,6 @@ def ingest_dynamic_data(
         )
     # ── Step 4: Relevance filter ─────────────────────────────────────────────
     t4 = time.time()
-    min_relevance = MIN_RELEVANCE_BY_TYPE.get(content_type, MIN_RELEVANCE_SCORE)
     logger.info(
     f"Relevance scoring {len(quality_chunks)} chunks "
     f"(threshold={min_relevance}, content_type={content_type})..."
@@ -1829,16 +1902,12 @@ def ingest_dynamic_data(
         quality_chunks, 
         topic_emb, 
         embedding_model,
-        progress_callback=progress_callback 
+        progress_callback=progress_callback,
+        embedding_batch_size=embedding_batch_size,
     )
 
     relevant_pairs = [
         (chunk, embedding) 
-        for chunk, score, embedding in zip(quality_chunks, scores, chunk_embeddings)
-        if score >= min_relevance
-    ]
-    relevant_pairs = [
-        (chunk, embedding)
         for chunk, score, embedding in zip(quality_chunks, scores, chunk_embeddings)
         if score >= min_relevance
     ]
@@ -1891,6 +1960,7 @@ def ingest_dynamic_data(
         # to avoid complete ingestion failure
         logger.warning("Falling back to quality-only chunks (relevance filter bypassed)")
         relevant_chunks = quality_chunks
+        capped_embeddings = chunk_embeddings
 
     logger.info(f"Relevance filter: {len(quality_chunks)} → {len(relevant_chunks)} chunks ...")
     if progress_callback:
@@ -1902,9 +1972,6 @@ def ingest_dynamic_data(
     # ── Step 5: Save to ChromaDB ─────────────────────────────────────────────
     t5 = time.time()
     logger.info(f"Saving {len(relevant_chunks)} chunks to ChromaDB...")
-    
-    from app.config import settings
-    CHROMADB_BATCH_SIZE = settings.CHROMADB_BATCH_SIZE
     
     try:
         if len(relevant_chunks) == 0:
@@ -1925,12 +1992,12 @@ def ingest_dynamic_data(
         
         # Batch insertion with pre-computed embeddings
         total_saved = 0
-        for i in range(0, len(texts), CHROMADB_BATCH_SIZE):
-            batch_texts = texts[i:i + CHROMADB_BATCH_SIZE]
-            batch_metas = metadatas[i:i + CHROMADB_BATCH_SIZE]
-            batch_embs = capped_embeddings[i:i + CHROMADB_BATCH_SIZE]
-            batch_num = (i // CHROMADB_BATCH_SIZE) + 1
-            total_batches = (len(texts) + CHROMADB_BATCH_SIZE - 1) // CHROMADB_BATCH_SIZE
+        for i in range(0, len(texts), chromadb_batch_size):
+            batch_texts = texts[i:i + chromadb_batch_size]
+            batch_metas = metadatas[i:i + chromadb_batch_size]
+            batch_embs = capped_embeddings[i:i + chromadb_batch_size]
+            batch_num = (i // chromadb_batch_size) + 1
+            total_batches = (len(texts) + chromadb_batch_size - 1) // chromadb_batch_size
             
             try:
                 # Use add_texts with pre-computed embeddings

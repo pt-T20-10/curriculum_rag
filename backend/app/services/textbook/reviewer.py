@@ -35,6 +35,7 @@ from app.schemas.curriculum import (
 )
 from app.config import settings
 from app.services.runtime_config import get_api_key
+from app.services.textbook.language import get_language_profile
 
 LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
 
@@ -80,6 +81,7 @@ class ReviewerAgent:
         self,
         content: str,
         char_min: int = 300,
+        language: str = "vi",
     ) -> tuple[bool, str]:
         """
         Quality gate: decide whether polished content meets minimum standards.
@@ -88,7 +90,7 @@ class ReviewerAgent:
             1. Character count below char_min (content too short).
             2. Naked math — LaTeX symbols outside $ delimiters (e.g. a_x, \\frac).
             3. Wrong math delimiters — \\[ \\] or \\( \\) instead of $$ or $.
-            4. Conversational or unprofessional tone in Vietnamese.
+            4. Conversational or unprofessional tone in the target language.
             5. Superficial content — missing definitions, examples, or core
             explanations; OR any ### sub-section with fewer than 3 paragraphs.
             6. Any Markdown heading not preceded by a blank line.
@@ -116,8 +118,9 @@ class ReviewerAgent:
                 f"{len(content)} chars ≥ {char_min * 1.2:.0f} (floor {char_min} × 1.2)"
             )
             return False, ""
+        profile = get_language_profile(language)
         prompt = ChatPromptTemplate.from_messages([
-            ("system", """
+            ("system", f"""
     [CONTEXT]
     You are a neutral academic quality evaluator. Your only output is a JSON object.
     No extra text, no explanation, no preamble.
@@ -145,7 +148,8 @@ class ReviewerAgent:
 
     Rule 3 — WRONG MATH DELIMITERS: Contains \\[ \\] or \\( \\) instead of $$ or $.
 
-    Rule 4 — TONE: Uses conversational or unprofessional tone in Vietnamese.
+    Rule 4 — TONE: Uses conversational or unprofessional tone in {profile.prompt_name}.
+    Expected tone: {profile.tone_rule}
 
     Rule 5 — DEPTH: Section is superficial — missing definitions, examples, or
     core explanations. OR any ### sub-section contains fewer than 3 paragraphs.
@@ -154,12 +158,12 @@ class ReviewerAgent:
     by a blank line — i.e., the line immediately before the `#` is non-empty text.
     [/CONSTRAINT]
 
-    [FORMAT]
-    Output a single JSON object. No markdown fences, no extra text.
-    {{"needs_revision": true, "feedback": "Actionable feedback for the writer"}}
-    or
-    {{"needs_revision": false, "feedback": ""}}
-    [/FORMAT]"""),
+        [FORMAT]
+        Output a single JSON object. No markdown fences, no extra text.
+        {{{{"needs_revision": true, "feedback": "Actionable feedback for the writer"}}}}
+        or
+        {{{{"needs_revision": false, "feedback": ""}}}}
+        [/FORMAT]"""),
             ("user", "Content to evaluate:\n\n{content}")
         ])
 
@@ -234,10 +238,10 @@ class ReviewerAgent:
 
         result = '\n'.join(fixed_lines)
 
-        # If ## section header is missing or stripped, inject it after # CHƯƠNG line.
+        # If ## section header is missing or stripped, inject it after a level-1 chapter line.
         if not section_header_found:
-            # Find insertion point: after # CHƯƠNG line if present, else at start.
-            chap_match = re.search(r'^# CHƯƠNG.*$', result, flags=re.MULTILINE)
+            # Find insertion point: after level-1 chapter line if present, else at start.
+            chap_match = re.search(r'^# .+$', result, flags=re.MULTILINE)
             if chap_match:
                 insert_pos = chap_match.end()
                 result = (
@@ -257,6 +261,7 @@ class ReviewerAgent:
         section_num: str,
         section_title: str,
         chapter_cmd: str,
+        language: str = "vi",
     ) -> str:
         """
         Pass A: Mechanical format fixes — LaTeX, headings, blank lines.
@@ -282,6 +287,19 @@ class ReviewerAgent:
         Returns:
             Format-fixed Markdown. Returns original draft unchanged on error.
         """
+        profile = get_language_profile(language)
+        language_math_rule = (
+            "Vietnamese inside math blocks: use \\\\text{{...}}:\n"
+            "  $v_{{cuoi}}$  →  $v_{{\\\\text{{cuối}}}}$"
+            if profile.code == "vi"
+            else "Language-specific words inside math blocks: use \\\\text{{...}} only when ordinary words appear inside math."
+        )
+        format_style_rule = (
+            "English output: replace em dash/en dash characters (—, –) with "
+            "commas, parentheses, semicolons, or ASCII hyphen-minus (-)."
+            if profile.code == "en"
+            else "No language-specific dash replacement required."
+        )
         format_system = """
 [CONTEXT]
 You are a format compliance engine, not an editor.
@@ -310,8 +328,7 @@ Rule 3 — Naked math: wrap standalone variables/subscripts in $:
   a_max = 5  →  $a_{{max}} = 5$
   Only fix CLEAR mathematical notation — do NOT wrap ordinary text in $.
 
-Rule 4 — Vietnamese inside math blocks: use \\text{{...}}:
-  $v_{{cuoi}}$  →  $v_{{\\text{{cuối}}}}$
+Rule 4 — {language_math_rule}
 
 Rule 5 — Unicode subscripts/superscripts → math notation:
   H₂O → H$_2$O  |  CO₂ → CO$_2$  |  Na⁺ → Na$^+$  |  Cl⁻ → Cl$^-$
@@ -337,6 +354,18 @@ Rule 8 — Blank lines: every #, ##, ### heading MUST have a blank line immediat
 Rule 9 — Code blocks: must have a language identifier.
   ``` →  ```python  (or ```bash, ```sql, ```json depending on content)
 
+Rule 10 — Inline programming code:
+  Programming identifiers, keywords, function names, method names, operators,
+  and code expressions MUST use Markdown backticks, not $...$ math.
+  Fix: $student\\_scores["Alice"]$ → `student_scores["Alice"]`
+  Fix: $del student\\_scores["Bob"]$ → `del student_scores["Bob"]`
+  Fix: `keys()$ → `keys()`
+  Do NOT wrap Python keywords, variables, string literals, list/dict indexing,
+  or methods in math delimiters.
+
+Rule 11 — Language-specific punctuation:
+  {format_style_rule}
+
 --- ABSOLUTE PROHIBITION ---
 
 You MUST NOT:
@@ -361,6 +390,8 @@ No fences, no preamble, no explanation.
                     section_num=section_num,
                     section_title=section_title,
                     chap_cmd=chapter_cmd,
+                    language_math_rule=language_math_rule,
+                    format_style_rule=format_style_rule,
                 )
             except Exception:
                 logged_system = format_system
@@ -385,6 +416,8 @@ No fences, no preamble, no explanation.
                 "section_num":   section_num,
                 "section_title": section_title,
                 "chap_cmd":      chapter_cmd,
+                "language_math_rule": language_math_rule,
+                "format_style_rule": format_style_rule,
                 "draft":         draft,
             })
             return str(response.content)
@@ -402,6 +435,7 @@ No fences, no preamble, no explanation.
         section_num: str,
         section_title: str,
         section_description: str,
+        language: str = "vi",
     ) -> str:
         """
         Pass B: Content quality — academic tone, depth, and visuals.
@@ -434,6 +468,13 @@ No fences, no preamble, no explanation.
         Returns:
             Content-polished Markdown. Returns draft unchanged on error.
         """
+        profile = get_language_profile(language)
+        content_style_rule = (
+            "Do NOT use em dash or en dash characters (—, –) in English output. "
+            "Use commas, parentheses, semicolons, or ASCII hyphen-minus (-) instead."
+            if profile.code == "en"
+            else "Use natural Vietnamese punctuation."
+        )
         content_system = """
 [CONTEXT]
 You are a neutral academic writing editor for an educational platform covering
@@ -459,10 +500,13 @@ Focus ONLY on the content quality improvements below.
 [CRITERION]
 --- TONE ---
 Remove conversational fillers. Examples to eliminate:
-  "Chúng ta hãy cùng xem...", "Trong phần này tôi sẽ...", "Bạn sẽ thấy rằng..."
-Keep: direct, formal Vietnamese academic prose.
+  {filler_examples}
+Keep: direct, {tone_rule}
 Adapt register to domain: precise for sciences/engineering, narrative for history/arts.
 Technical terms in English: keep as-is (DataFrame, API, CPU, LaTeX).
+Punctuation: {content_style_rule}
+Inline programming code: preserve Markdown backticks for variables, methods,
+keywords, and code expressions. Never convert programming code into $...$ math.
 
 --- DEPTH ---
 If any ### sub-section block contains fewer than 3 substantial paragraphs:
@@ -515,6 +559,9 @@ Output rules:
                     section_num=section_num,
                     section_title=section_title,
                     section_description=section_description,
+                    filler_examples=profile.filler_examples,
+                    tone_rule=profile.tone_rule,
+                    content_style_rule=content_style_rule,
                 )
             except Exception:
                 logged_system = content_system
@@ -542,6 +589,9 @@ Output rules:
                 "section_num":         section_num,
                 "section_title":       section_title,
                 "section_description": section_description,
+                "filler_examples":     profile.filler_examples,
+                "tone_rule":           profile.tone_rule,
+                "content_style_rule":  content_style_rule,
                 "draft":               draft,
             })
             return str(response.content)
@@ -563,6 +613,7 @@ Output rules:
         section_description: str,
         draft_content: str,
         chapter_cmd: str,
+        language: str = "vi",
     ) -> str:
         """
         Full editorial pass: sanitize, refine tone, fix structure, audit visuals.
@@ -617,6 +668,7 @@ Output rules:
             section_num=section_num,
             section_title=section_title,
             chapter_cmd=chapter_cmd,
+            language=language,
         )
         pass_a_len = len(format_fixed)
         logger.info(f"  Pass A complete: {len(safe_draft)} → {pass_a_len} chars")
@@ -631,6 +683,7 @@ Output rules:
             section_num=section_num,
             section_title=section_title,
             section_description=section_description,
+            language=language,
         )
         pass_b_len = len(polished)
         logger.info(
@@ -758,6 +811,8 @@ def review_section(state: AgentState) -> dict:
     chap_idx        = state["current_chapter_index"]
     sub_idx         = state["current_subsection_index"]
     revision_number = state.get("revision_number", 0)
+    language = state.get("language", "vi")
+    profile = get_language_profile(language)
 
     try:
         # Unified curriculum access — handles Pydantic and dict formats.
@@ -791,7 +846,7 @@ def review_section(state: AgentState) -> dict:
         # ------------------------------------------------------------------
         # Chapter header directive for the Reviewer.
         #
-        # The Writer owns # CHƯƠNG headers exclusively. The Reviewer must never
+        # The Writer owns level-1 chapter headers exclusively. The Reviewer must never
         # add one. For the first subsection (sub_idx == 0), we ask the Reviewer
         # to verify the header exists — but NOT to add it if missing.
         #
@@ -799,9 +854,9 @@ def review_section(state: AgentState) -> dict:
         # avoid false matches on section numbers like "1.11" or "2.21".
         # ------------------------------------------------------------------
         draft = state.get("current_content", "")
-        correct_heading  = f"# CHƯƠNG {display_chap_num}: {chap_title.upper()}"
+        correct_heading  = f"# {profile.chapter_label} {display_chap_num}: {chap_title.upper()}"
         chap_cmd_text    = ""
-        draft_has_header = draft.lstrip().startswith("# CHƯƠNG")
+        draft_has_header = draft.lstrip().startswith(f"# {profile.chapter_label}")
 
         if sub_idx == 0 and state.get("chapter_header_written", False):
             if draft_has_header:
@@ -836,10 +891,11 @@ def review_section(state: AgentState) -> dict:
             section_description=sec_desc,
             draft_content=draft,
             chapter_cmd=chap_cmd_text,
+            language=language,
         )
 
         # ------------------------------------------------------------------
-        # Guard: restore # CHƯƠNG heading if Reviewer LLM stripped it.
+        # Guard: restore chapter heading if Reviewer LLM stripped it.
         #
         # Reviewer rewrites content from scratch, which causes it to drop the
         # level-1 chapter heading even when instructed to preserve it. This
@@ -850,13 +906,17 @@ def review_section(state: AgentState) -> dict:
         # and only when chapter_header_written=True (meaning Writer did emit it).
         # ------------------------------------------------------------------
         if sub_idx == 0 and state.get("chapter_header_written", False):
-            expected_heading = f"# CHƯƠNG {display_chap_num}: {chap_title.upper()}"
-            existing = re.search(r'^# CHƯƠNG.*$', polished, flags=re.MULTILINE)
+            expected_heading = f"# {profile.chapter_label} {display_chap_num}: {chap_title.upper()}"
+            existing = re.search(
+                rf'^# {re.escape(profile.chapter_label)}.*$',
+                polished,
+                flags=re.MULTILINE,
+            )
 
             if existing:
                 found_text = existing.group(0).strip()
                 if found_text != expected_heading:
-                    # Malformed heading found (e.g. '# CHƯƠNG 1: ...' with literal
+                    # Malformed heading found (e.g. '# CHAPTER 1: ...' with literal
                     # ellipsis placeholder, or wrong casing). Replace deterministically.
                     polished = (
                         polished[:existing.start()]
@@ -885,7 +945,11 @@ def review_section(state: AgentState) -> dict:
         char_min, _ = get_char_target(sec_type, state.get("content_level", "Trung Bình"))
 
         if revision_number < MAX_REVISIONS:
-            needs_revision, feedback = agent.should_revise(polished, char_min=char_min)
+            needs_revision, feedback = agent.should_revise(
+                polished,
+                char_min=char_min,
+                language=language,
+            )
 
             if needs_revision:
                 logger.info(

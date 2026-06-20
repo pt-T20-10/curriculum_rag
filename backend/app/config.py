@@ -103,10 +103,12 @@ class Settings(BaseSettings):
     CHUNK_OVERLAP: int = 300
     
     # ==================== Ingestion Speed Controls ====================
+    SEARCH_QUERIES_PER_LANGUAGE: int = 6
     SEARCH_RESULTS_PER_QUERY: int = 30
     SEARCH_MAX_WORKERS: int = 6
     CRAWL_MAX_WORKERS: int = 5
     CRAWL_MAX_SUB_LINKS: int = 5
+    CRAWL_MAX_ROOT_URLS: int = 0
     URL_FILTER_MAX_WORKERS: int = 5
     INDICATE_LINKS_FOR_PICS: int = 12
     CRAWL_MAX_DEPTH2_LINKS: int = 3

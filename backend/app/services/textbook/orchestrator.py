@@ -202,7 +202,12 @@ def append_and_update_subsection(state: AgentState) -> dict:
         _, subsection = get_chapter_and_subsection(curriculum, current_chapter, current_subsection)
         sec_title   = subsection.title if isinstance(subsection, SubSection) else subsection.get("title", "")
         sec_title   = clean_section_title(sec_title)
-        new_summary = extract_section_summary(completed_content, display_sec, sec_title)
+        new_summary = extract_section_summary(
+            completed_content,
+            display_sec,
+            sec_title,
+            language=state.get("language", "vi"),
+        )
         prior       = state.get("section_summaries", [])
         updated_summaries = prior + [new_summary]
     except Exception as e:
@@ -250,7 +255,12 @@ def append_and_update_chapter(state: AgentState) -> dict:
         _, subsection = get_chapter_and_subsection(curriculum, current_chapter, current_subsection)
         sec_title  = subsection.title if isinstance(subsection, SubSection) else subsection.get("title", "")
         sec_title  = clean_section_title(sec_title)
-        new_summary = extract_section_summary(completed_content, display_sec, sec_title)
+        new_summary = extract_section_summary(
+            completed_content,
+            display_sec,
+            sec_title,
+            language=state.get("language", "vi"),
+        )
         prior       = state.get("section_summaries", [])
         updated_summaries = prior + [new_summary]
     except Exception as e:

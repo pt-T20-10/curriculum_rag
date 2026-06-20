@@ -120,6 +120,9 @@ export function TextbookDetailPage() {
   const docxUrl = textbook.docx_path
     ? `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/${extractRelativePath(textbook.docx_path)}`
     : null
+  const languageLabel = textbook.language
+    ? t(`textbook.language.${textbook.language}`, { defaultValue: textbook.language.toUpperCase() })
+    : null
 
   // ⭐ DEBUG: Log constructed URL
   console.log('Constructed PDF URL:', pdfUrl)
@@ -174,7 +177,10 @@ export function TextbookDetailPage() {
             </button>
             <div>
               <h1 className="text-xl font-bold text-gray-900">{textbook.title}</h1>
-              <p className="text-sm text-gray-500">{t('textbook.detail.chapters', { count: textbook.num_chapters })}</p>
+              <p className="text-sm text-gray-500">
+                {t('textbook.detail.chapters', { count: textbook.num_chapters })}
+                {languageLabel ? ` · ${t('textbook.detail.language', { language: languageLabel })}` : ''}
+              </p>
             </div>
           </div>
           

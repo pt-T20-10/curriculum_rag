@@ -20,8 +20,8 @@ import { CONTENT_LEVEL } from '../constants/textbookOptions'
 export function CreateTextbookPage() {
   const navigate = useNavigate()
   const { textbookId: urlTextbookId } = useParams()
-  const { user } = useAuth()
-  const { t } = useTranslation()
+  const { user, loadUser } = useAuth()
+  const { i18n, t } = useTranslation()
 
   const [textbookId, setTextbookId] = useState(urlTextbookId || null)
   const [phase, setPhase] = useState('idle')
@@ -36,7 +36,27 @@ export function CreateTextbookPage() {
   const [showStopModal, setShowStopModal] = useState(false)
   const [showCompletionModal, setShowCompletionModal] = useState(false)
   const [completedTextbookData, setCompletedTextbookData] = useState(null)
+  const [confirmingCurriculum, setConfirmingCurriculum] = useState(false)
   const pollingRef = useRef(null)
+
+  const clearDraftState = () => {
+    setPhase('idle')
+    setTextbookId(null)
+    setProgressData(null)
+    setTextbookTitle('')
+    setSubmittedConfig(null)
+    setConfirmedCurriculum(null)
+    setCompletedTextbookData(null)
+    setShowCompletionModal(false)
+    setError(null)
+    setConfirmingCurriculum(false)
+    setConfigExpanded(false)
+
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current)
+      pollingRef.current = null
+    }
+  }
 
   // Load existing textbook
   useEffect(() => {
@@ -64,7 +84,8 @@ export function CreateTextbookPage() {
               num_chapters: data.num_chapters || 3,
               content_level: data.content_level || CONTENT_LEVEL.MEDIUM,
               max_subsections_per_chapter: data.max_subsections_per_chapter || 5,
-              enable_images: data.enable_images !== undefined ? data.enable_images : true
+              enable_images: data.enable_images !== undefined ? data.enable_images : true,
+              language: data.language || 'vi'
             })
 
             const curriculum = data.curriculum_data
@@ -125,10 +146,12 @@ export function CreateTextbookPage() {
 
   const handleSubmit = async (formData) => {
     setError(null)
+    const uiLanguage = (i18n.resolvedLanguage || i18n.language || 'vi').split('-')[0]
 
     try {
       const response = await textbooksAPI.create({
         ...formData,
+        ui_language: uiLanguage,
         export_formats: ['PDF', 'Word'],
       })
 
@@ -136,7 +159,10 @@ export function CreateTextbookPage() {
       setTextbookId(textbook.id)
       setPhase('planning')
       setTextbookTitle(formData.topic)
-      setSubmittedConfig(formData) // ⭐ Save actual submitted config
+      setSubmittedConfig({
+        ...formData,
+        language: textbook.language || uiLanguage,
+      }) // ⭐ Save actual submitted config
       setConfigExpanded(false)
 
       navigate(`/create/${textbook.id}`, { replace: true })
@@ -170,31 +196,45 @@ export function CreateTextbookPage() {
 
     try {
       await textbooksAPI.stop(textbookId)
-      setPhase('idle')
-      setTextbookId(null)
-      setProgressData(null)
-      setTextbookTitle('')
-      setSubmittedConfig(null) // ⭐ Clear config
-      setConfirmedCurriculum(null)
-
+      clearDraftState()
       navigate('/create', { replace: true })
-
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current)
-      }
     } catch (err) {
       console.error('Stop error:', err)
     }
   }
 
   const handleCurriculumConfirm = async (curriculum) => {
+    if (!textbookId || confirmingCurriculum) return
+
     try {
+      setConfirmingCurriculum(true)
       setConfirmedCurriculum(curriculum)
       await textbooksAPI.confirmCurriculum(textbookId, curriculum)
+      await loadUser?.()
       setPhase('generating')
     } catch (err) {
       console.error('Confirm curriculum error:', err)
-      setError({ message: t('textbook.confirmError') })
+      const detail = err.response?.data?.detail
+      setError({ message: typeof detail === 'string' ? detail : t('textbook.confirmError') })
+    } finally {
+      setConfirmingCurriculum(false)
+    }
+  }
+
+  const handlePlanningReset = async () => {
+    if (!textbookId) {
+      clearDraftState()
+      navigate('/create', { replace: true })
+      return
+    }
+
+    try {
+      await textbooksAPI.stop(textbookId)
+      clearDraftState()
+      navigate('/create', { replace: true })
+    } catch (err) {
+      console.error('Reset planning draft error:', err)
+      setError({ message: t('textbook.resetDraftError') })
     }
   }
 
@@ -281,7 +321,7 @@ export function CreateTextbookPage() {
                 {!isIdle && (
                   <div className="flex items-center justify-between gap-4 mb-4">
                     <div className="flex-1" />
-                    {phase !== 'done' && phase !== 'reviewing' && (
+                    {phase !== 'done' && (
                       <Button
                         variant="danger"
                         onClick={handleStopClick}
@@ -355,7 +395,8 @@ export function CreateTextbookPage() {
                   <CurriculumEditor
                     curriculum={progressData.curriculum_data}
                     onConfirm={handleCurriculumConfirm}
-                    onReset={() => setPhase('planning')}
+                    onReset={handlePlanningReset}
+                    confirming={confirmingCurriculum}
                   />
                 </div>
               )}
@@ -391,6 +432,7 @@ export function CreateTextbookPage() {
               currentSubsection={progressData?.current_subsection}
               totalChapters={progressData?.total_chapters}
               totalSubsections={progressData?.total_subsections}
+              curriculumData={enhancedProgressData?.curriculum_data}
               isGenerating={phase === 'generating'}
             />
           }
@@ -408,6 +450,7 @@ export function CreateTextbookPage() {
         onClose={() => setShowStopModal(false)}
         onConfirm={handleStopConfirm}
         currentProgress={progressData?.status_text}
+        isPlanningDraft={phase === 'planning' || phase === 'reviewing'}
       />
 
       <CompletionModal

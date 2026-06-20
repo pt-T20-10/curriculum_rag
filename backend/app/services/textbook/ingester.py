@@ -64,6 +64,22 @@ def set_ingestion_callback(callback) -> None:
 def _get_ingestion_callback():
     """Retrieve the module-level progress callback."""
     return _progress_callback
+
+
+def _config_int(config: dict[str, Any], key: str, default: int, minimum: int = 0) -> int:
+    try:
+        return max(minimum, int(config.get(key, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _config_float(config: dict[str, Any], key: str, default: float) -> float:
+    try:
+        return float(config.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
 def perform_ingestion(state: AgentState) -> dict:
     """
     Ingestion node: populate ChromaDB with topic-relevant documents.
@@ -101,6 +117,51 @@ def perform_ingestion(state: AgentState) -> dict:
     # cleaner bilingual queries without requirement noise polluting the searches.
     topic        = state.get("core_topic", "") or state["request"]
     content_type = state.get("content_type", "technical")
+    runtime_config = state.get("advanced_config", {}) or {}
+    targeted_per_chapter = _config_int(
+        runtime_config,
+        "TARGETED_CRAWL_QUERIES_PER_CHAPTER",
+        TARGETED_CRAWL_QUERIES_PER_CHAPTER,
+    )
+    targeted_max_queries = _config_int(
+        runtime_config,
+        "TARGETED_CRAWL_MAX_QUERIES",
+        TARGETED_CRAWL_MAX_QUERIES,
+    )
+    search_results_per_query = _config_int(
+        runtime_config,
+        "SEARCH_RESULTS_PER_QUERY",
+        SEARCH_RESULTS_PER_QUERY,
+        minimum=1,
+    )
+    search_queries_per_language = _config_int(
+        runtime_config,
+        "SEARCH_QUERIES_PER_LANGUAGE",
+        getattr(settings, "SEARCH_QUERIES_PER_LANGUAGE", 6),
+        minimum=1,
+    )
+    search_max_workers = _config_int(
+        runtime_config,
+        "SEARCH_MAX_WORKERS",
+        SEARCH_MAX_WORKERS,
+        minimum=1,
+    )
+    url_filter_max_workers = _config_int(
+        runtime_config,
+        "URL_FILTER_MAX_WORKERS",
+        settings.URL_FILTER_MAX_WORKERS,
+        minimum=1,
+    )
+    min_snippet_score = _config_float(
+        runtime_config,
+        "MIN_SNIPPET_SCORE",
+        settings.MIN_SNIPPET_SCORE,
+    )
+    crawl_max_root_urls = _config_int(
+        runtime_config,
+        "CRAWL_MAX_ROOT_URLS",
+        getattr(settings, "CRAWL_MAX_ROOT_URLS", 0),
+    )
 
     print(f"[DEBUG INGESTER] perform_ingestion START — topic='{topic}' callback={'set' if callback else 'NONE'}", flush=True)
     logger.info("=" * 60)
@@ -129,8 +190,8 @@ def perform_ingestion(state: AgentState) -> dict:
     query_expansion_agent = QueryExpansionAgent()
     expanded = query_expansion_agent.expand_query_bilingual(topic, content_type=content_type)
 
-    vi_queries = expanded["vi"]
-    en_queries = expanded["en"]
+    vi_queries = expanded["vi"][:search_queries_per_language]
+    en_queries = expanded["en"][:search_queries_per_language]
 
     logger.info(f"Query expansion with content_type: '{content_type}'")
     logger.info(f"VI queries: {vi_queries}")
@@ -153,11 +214,15 @@ def perform_ingestion(state: AgentState) -> dict:
     curriculum       = state.get("curriculum")
     targeted_queries: list[str] = []
     if curriculum:
-        targeted_queries = _extract_curriculum_queries(curriculum)
+        targeted_queries = _extract_curriculum_queries(
+            curriculum,
+            max_per_chapter=targeted_per_chapter,
+            total_cap=targeted_max_queries,
+        )
         if targeted_queries:
             logger.info(
                 f"Targeted crawling: {len(targeted_queries)} curriculum-derived queries "
-                f"(cap={TARGETED_CRAWL_MAX_QUERIES}, per_chapter={TARGETED_CRAWL_QUERIES_PER_CHAPTER})"
+                f"(cap={targeted_max_queries}, per_chapter={targeted_per_chapter})"
             )
             if callback:
                 callback(
@@ -185,9 +250,15 @@ def perform_ingestion(state: AgentState) -> dict:
     all_raw_urls:          list[str] = []
     all_results_with_meta: list[dict] = []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=SEARCH_MAX_WORKERS) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=search_max_workers) as executor:
         futures = {
-            executor.submit(search_web, q, SEARCH_RESULTS_PER_QUERY, r): (q, r)
+            executor.submit(
+                search_web,
+                q,
+                search_results_per_query,
+                r,
+                min_snippet_score=min_snippet_score,
+            ): (q, r)
             for q, r in region_query_pairs
         }
         for future in concurrent.futures.as_completed(futures):
@@ -244,7 +315,14 @@ def perform_ingestion(state: AgentState) -> dict:
         scored_results=all_results_with_meta,
         topic=topic,
         content_type=content_type,
+        min_snippet_score=min_snippet_score,
+        max_workers=url_filter_max_workers,
     )
+    if crawl_max_root_urls > 0 and len(clean_links) > crawl_max_root_urls:
+        logger.info(
+            f"Root URL cap: {len(clean_links)} → {crawl_max_root_urls} before deep crawl"
+        )
+        clean_links = clean_links[:crawl_max_root_urls]
     print(f"[DEBUG INGESTER] Step 4 done: {len(clean_links)} clean links after filtering", flush=True)
     logger.info(f"Found {len(clean_links)} valid links to crawl")
     pdf_n  = sum(1 for u in clean_links if u["type"] == "pdf")
@@ -278,6 +356,7 @@ def perform_ingestion(state: AgentState) -> dict:
         topic, clean_links,
         content_type=content_type,
         progress_callback=_get_ingestion_callback(),
+        runtime_config=runtime_config,
     )
     print(f"[DEBUG INGESTER] Step 5 done: success={success}", flush=True)
     logger.info(

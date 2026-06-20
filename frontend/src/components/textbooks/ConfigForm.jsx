@@ -16,6 +16,11 @@ const CONTENT_LEVEL_HINT_KEYS = {
   [CONTENT_LEVEL.VERY_LONG]: 'textbook.form.levelVeryLongHint',
 }
 
+const LANGUAGE_LABEL_KEYS = {
+  vi: 'textbook.language.vi',
+  en: 'textbook.language.en',
+}
+
 export function ConfigForm({
   onSubmit,
   loading,
@@ -115,6 +120,14 @@ export function ConfigForm({
                   {(submittedConfig?.enable_images !== undefined ? submittedConfig.enable_images : formData.enable_images) ? t('app.yes') : t('app.no')}
                 </span>
               </div>
+              {submittedConfig?.language && (
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-xs text-gray-500">{t('textbook.form.textbookLanguage')}</span>
+                  <span className="font-semibold text-gray-800">
+                    {t(LANGUAGE_LABEL_KEYS[submittedConfig.language] || 'textbook.language.vi')}
+                  </span>
+                </div>
+              )}
             </div>
           </div>
         )}

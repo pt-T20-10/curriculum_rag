@@ -1,7 +1,13 @@
 import { useTranslation } from 'react-i18next'
 import { translateProgressText } from '../../utils/progressText'
 
-export function StopWarningModal({ isOpen, onClose, onConfirm, currentProgress }) {
+export function StopWarningModal({
+  isOpen,
+  onClose,
+  onConfirm,
+  currentProgress,
+  isPlanningDraft = false,
+}) {
   const { t } = useTranslation()
 
   if (!isOpen) return null
@@ -31,7 +37,10 @@ export function StopWarningModal({ isOpen, onClose, onConfirm, currentProgress }
         {/* Message */}
         <div className="mb-6 space-y-2">
           <p className="text-gray-700 text-center">
-            {t('textbook.stopModal.description')}
+            {t(isPlanningDraft
+              ? 'textbook.stopModal.planningDescription'
+              : 'textbook.stopModal.description'
+            )}
           </p>
           
           {currentProgress && (
@@ -46,10 +55,16 @@ export function StopWarningModal({ isOpen, onClose, onConfirm, currentProgress }
           )}
 
           <p className="text-sm text-red-600 font-medium text-center">
-            ⚠️ {t('textbook.stopModal.lostWarning')}
+            ⚠️ {t(isPlanningDraft
+              ? 'textbook.stopModal.planningLostWarning'
+              : 'textbook.stopModal.lostWarning'
+            )}
           </p>
           <p className="text-xs text-gray-500 text-center">
-            {t('textbook.stopModal.creditWarning')}
+            {t(isPlanningDraft
+              ? 'textbook.stopModal.planningCreditWarning'
+              : 'textbook.stopModal.creditWarning'
+            )}
           </p>
         </div>
 
@@ -68,7 +83,7 @@ export function StopWarningModal({ isOpen, onClose, onConfirm, currentProgress }
             }}
             className="flex-1 px-4 py-2 bg-red-600 text-white font-medium rounded-lg hover:bg-red-700 transition-colors"
           >
-            ⛔ {t('textbook.stopModal.confirm')}
+            ⛔ {t(isPlanningDraft ? 'textbook.stopModal.planningConfirm' : 'textbook.stopModal.confirm')}
           </button>
         </div>
       </div>
