@@ -11,6 +11,7 @@ running under Celery worker.
 """
 
 import logging
+from logging.handlers import RotatingFileHandler
 import sys
 import threading
 from datetime import datetime
@@ -47,10 +48,15 @@ class PromptLogger:
         from app.config import settings
         
         self.agent_name = agent_name
+        self.enabled = getattr(settings, "ENABLE_PROMPT_LOGS", True)
         # Convert to absolute path using BASE_DIR
         log_dir_path = settings.BASE_DIR / log_dir if not Path(log_dir).is_absolute() else Path(log_dir)
         self.log_path = log_dir_path / f"{agent_name}_prompts.log"
-        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.enabled:
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        if not self.enabled:
+            return 0
+
         with _prompt_counter_lock:
             if agent_name not in _prompt_counters:
                 _prompt_counters[agent_name] = 0
@@ -198,7 +204,7 @@ def setup_logger(
     # ========================================================================
     # 2. File Handler (ALWAYS add if force_file_handler=True)
     # ========================================================================
-    if force_file_handler or not has_file:
+    if getattr(settings, "LOG_TO_FILES", True) and (force_file_handler or not has_file):
         try:
             # Remove old file handler if exists and we're forcing
             if force_file_handler and has_file:
@@ -209,7 +215,13 @@ def setup_logger(
                             handler.close()
             
             # Add new file handler
-            file_handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+            file_handler = RotatingFileHandler(
+                log_path,
+                mode="a",
+                maxBytes=getattr(settings, "LOG_MAX_BYTES", 10 * 1024 * 1024),
+                backupCount=getattr(settings, "LOG_BACKUP_COUNT", 5),
+                encoding="utf-8",
+            )
             file_handler.setFormatter(formatter)
             logger.addHandler(file_handler)
             

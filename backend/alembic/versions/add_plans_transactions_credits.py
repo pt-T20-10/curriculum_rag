@@ -36,7 +36,7 @@ def upgrade() -> None:
         sa.Column('id', sa.Integer(), primary_key=True, index=True),
         sa.Column('bank_name', sa.String(100), nullable=False, server_default='Vietcombank'),
         sa.Column('bank_id', sa.String(50), nullable=False, server_default='vietcombank'),
-        sa.Column('account_number', sa.String(50), nullable=False, server_default='9782832044'),
+        sa.Column('account_number', sa.String(50), nullable=False, server_default=''),
         sa.Column('account_holder', sa.String(200), nullable=False, server_default=''),
         sa.Column('updated_at', sa.DateTime(), nullable=False, server_default=sa.text('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP')),
     )

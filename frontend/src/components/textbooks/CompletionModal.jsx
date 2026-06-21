@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next'
+import { getOutputUrl } from '../../utils/helpers'
 
 export function CompletionModal({ isOpen, onClose, textbookData, onViewDashboard }) {
   const { t } = useTranslation()
@@ -10,7 +11,8 @@ export function CompletionModal({ isOpen, onClose, textbookData, onViewDashboard
     if (!path) return
 
     // Trigger download
-    window.open(path, '_blank')
+    const downloadUrl = getOutputUrl(path)
+    if (downloadUrl) window.open(downloadUrl, '_blank')
   }
 
   return (

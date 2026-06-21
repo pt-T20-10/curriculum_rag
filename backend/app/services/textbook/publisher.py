@@ -45,6 +45,11 @@ logger = setup_logger(name="PublisherAgent", logfile="logs/agents.log")
 image_dir = BASE_DIR / "outputs" / "images"
 
 
+def _document_font() -> str:
+    """Return the configured font, tolerating a pre-restart Settings singleton."""
+    return getattr(settings, "DOCUMENT_FONT", "Times New Roman")
+
+
 # ---------------------------------------------------------------------------
 # Utility functions
 # ---------------------------------------------------------------------------
@@ -653,7 +658,7 @@ def _get_word_reference_doc(pandoc_tmp: Path) -> Path | None:
                 check=True,
             )
 
-        # Override default font to Times New Roman for all styles.
+        # Override the default font for all styles.
         # Modifying the document-level default (w:docDefaults) ensures
         # every style that doesn't explicitly set a font inherits TNR.
         ref_doc = DocxDocument(cached) # type: ignore
@@ -675,14 +680,14 @@ def _get_word_reference_doc(pandoc_tmp: Path) -> Path | None:
                 rfonts = OxmlElement("w:rFonts")
                 rpr.insert(0, rfonts)
             for attr in ("w:ascii", "w:hAnsi", "w:cs", "w:eastAsia"):
-                rfonts.set(qn(attr), "Times New Roman")
+                rfonts.set(qn(attr), _document_font())
 
         # 2. Patch Normal style explicitly as a safety net
         for style in ref_doc.styles:
             if style.name == "Normal":
                 from docx.styles.style import _ParagraphStyle
                 if isinstance(style, _ParagraphStyle):
-                    style.font.name = "Times New Roman"
+                    style.font.name = _document_font()
                     style.font.size = Pt(12)
                 break
 
@@ -700,7 +705,7 @@ def _get_word_reference_doc(pandoc_tmp: Path) -> Path | None:
                 break
 
         ref_doc.save(cached)  # type: ignore
-        logger.info("✓ reference.docx generated with Times New Roman default font")
+        logger.info("✓ reference.docx generated with %s default font", _document_font())
         return cached
     except Exception as e:
         logger.warning(f"Could not generate reference.docx: {e} — using Pandoc built-in default")
@@ -939,7 +944,7 @@ def publish_curriculum(state: AgentState) -> dict:
         f'---\n'
         f'title-meta: "{title}"\n'
         f'fontsize: 12pt\n'
-        f'mainfont: "Times New Roman"\n'
+        f'mainfont: "{_document_font()}"\n'
         f'---\n\n'
     )
 

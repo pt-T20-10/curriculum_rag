@@ -15,7 +15,6 @@ from typing import AsyncGenerator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles 
-from fastapi.responses import FileResponse  
 from pathlib import Path  
 
 from fastapi.responses import JSONResponse
@@ -52,11 +51,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     print("🚀 Starting AI Textbook Generator API...")
     
     try:
-        # Create database tables
-        async with engine.begin() as conn:
-            import app.models  # noqa: F401 - register all SQLAlchemy models
-            await conn.run_sync(Base.metadata.create_all)
-        print("✅ Database tables created/verified")
+        if settings.ENVIRONMENT != "production":
+            # Local convenience only. Production schema is managed by Alembic.
+            async with engine.begin() as conn:
+                import app.models  # noqa: F401 - register all SQLAlchemy models
+                await conn.run_sync(Base.metadata.create_all)
+            print("✅ Database tables created/verified")
+        else:
+            print("✅ Production schema managed by Alembic")
 
         from app.services.bootstrap import ensure_default_admin_user
 
@@ -90,12 +92,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",     # Vite dev server
-        "http://127.0.0.1:5173",     # Alternative localhost
-        "http://localhost:3000",     # React dev server
-        "http://127.0.0.1:3000",     # Alternative
-    ],
+    allow_origins=settings.ALLOWED_CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],  
     allow_headers=["*"],

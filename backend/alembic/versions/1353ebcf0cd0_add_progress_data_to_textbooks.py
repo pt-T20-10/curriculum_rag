@@ -1,7 +1,7 @@
 """add_progress_data_to_textbooks
 
 Revision ID: 1353ebcf0cd0
-Revises: 
+Revises: initial_schema
 Create Date: 2026-04-29 17:19:15.911406
 
 """
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = '1353ebcf0cd0'
-down_revision: Union[str, None] = None
+down_revision: Union[str, None] = 'initial_schema'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

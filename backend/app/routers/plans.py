@@ -16,6 +16,7 @@ from app.models.plan import Plan
 from app.models.transaction import Transaction, TransactionStatus
 from app.models.user import User
 from app.security.jwt import get_current_user_id
+from app.config import settings
 
 router = APIRouter()
 
@@ -62,7 +63,7 @@ async def get_bank_config(db: AsyncSession = Depends(get_async_db)):
         return {
             "bank_name": "Vietcombank",
             "bank_id": "vietcombank",
-            "account_number": "9782832044",
+            "account_number": settings.SEPAY_ACCOUNT_NUMBER,
             "account_holder": "",
         }
     return {

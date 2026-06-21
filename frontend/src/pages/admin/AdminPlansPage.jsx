@@ -224,7 +224,7 @@ export function AdminPlansPage() {
           {[
             ['bank_name', t('admin.plans.bankName'), 'Vietcombank'],
             ['bank_id', t('admin.plans.bankId'), 'vietcombank'],
-            ['account_number', t('admin.plans.accountNumber'), '9782832044'],
+            ['account_number', t('admin.plans.accountNumber'), ''],
             ['account_holder', t('admin.plans.accountHolder'), 'Nguyen Van A'],
           ].map(([key, label, placeholder]) => (
             <div key={key}>

@@ -412,7 +412,7 @@ Nhóm `API Keys` trong Admin System Config lưu secret vào bảng `system_confi
 - Node.js 20+
 - MySQL 8
 - Redis 7
-- Pandoc
+- Pandoc 3.6.4+ (cần bản hỗ trợ Typst PDF engine)
 - Typst
 
 Windows:
@@ -436,7 +436,9 @@ Repo có `docker-compose.yml` cho MySQL, Redis và phpMyAdmin:
 docker compose up -d mysql redis
 ```
 
-Nếu dùng compose mặc định, đảm bảo `.env` và `backend/alembic.ini` dùng cùng credential/database. `alembic.ini` hiện chứa một local MySQL URL hard-coded, nên chỉnh lại nếu DB của bạn khác.
+Nếu dùng compose mặc định, cấu hình credential/database trong `.env`. Alembic và
+backend cùng đọc URL từ `Settings`, nên không cần sửa credential trong
+`backend/alembic.ini`.
 
 `docker-compose.yml` chỉ khởi tạo database service. Khi backend kết nối vào database này ở lần chạy đầu, backend sẽ tạo/verify tables và seed tài khoản admin mặc định nếu chưa tồn tại.
 
@@ -517,13 +519,9 @@ thực sự được tạo.
 
 ### First Login And API Keys
 
-Sau khi backend và frontend chạy, đăng nhập bằng tài khoản admin mặc định:
-
-```text
-Username: admin
-Email: admin@example.com
-Password: password123@
-```
+Sau khi backend và frontend chạy, đăng nhập bằng tài khoản admin development
+được cấu hình qua các biến `DEFAULT_ADMIN_*` trong `.env`. Không dùng lại tài
+khoản hoặc password development này cho bản demo public.
 
 Việc cần làm đầu tiên trong Admin UI:
 
@@ -678,12 +676,98 @@ curriculum_rag/
 |       |   |-- common/
 ```
 
+## Deploy Demo Trên VPS
+
+Cấu hình này dành cho một VPS Linux tối thiểu 2 GB RAM + 2 GB swap. Nó giữ
+nguyên API, giao diện, JWT localStorage, Celery workflow và đường dẫn
+`/outputs`; Caddy thêm HTTPS và một lớp Basic Auth bao quanh toàn bộ demo.
+Backend image đã khóa Typst `0.13.1` và Pandoc `3.6.4`, đồng thời có font
+Liberation Serif để xuất PDF/Word nhất quán mà không cần cài chúng trên VPS.
+
+### Chuẩn bị
+
+1. Trỏ domain về VPS và mở cổng `80`, `443`.
+2. Copy `.env.production.example` thành `.env.production`, thay toàn bộ
+   `REPLACE_*`, URL và email mẫu; sau đó chạy `chmod 600 .env.production`.
+3. Tạo các secret cần thiết:
+
+```bash
+openssl rand -hex 32
+docker run --rm caddy:2.10-alpine caddy hash-password --plaintext 'demo-password'
+python -c "import bcrypt; print(bcrypt.hashpw(b'admin-password', bcrypt.gensalt()).decode())"
+```
+
+Đặt Caddy hash và bcrypt hash trong dấu nháy đơn ở `.env.production` để ký tự
+`$` không bị Docker Compose nội suy. Cấu hình Google OAuth callback phải là:
+
+```text
+https://<domain>/api/v1/auth/google/callback
+```
+
+### Build và chạy
+
+Nên build image trên máy local/CI rồi push lên registry hoặc chuyển bằng
+`docker save`/`docker load`; không nên build dependency trên VPS 2 GB. Sau khi
+image có trên server:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.prod.yml config
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d
+docker compose --env-file .env.production -f docker-compose.prod.yml ps
+```
+
+Sau mỗi lần cập nhật image hoặc code cấu hình, recreate các process dài hạn để
+Celery/Uvicorn không giữ singleton Settings cũ trong RAM:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.prod.yml run --rm migrate
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d \
+  --force-recreate api worker web
+```
+
+Service `migrate` chạy `alembic upgrade head` trước khi API và worker khởi
+động. Migration `initial_schema` hỗ trợ database production mới hoàn toàn.
+Nếu mang một database local cũ từng được tạo bằng `create_all()` nhưng chưa có
+Alembic version sang server, phải backup và đối chiếu schema trước khi stamp;
+không chạy baseline đè lên các bảng đã tồn tại. Kiểm tra log và smoke test:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.prod.yml logs -f api worker
+DEMO_URL=https://<domain> \
+DEMO_BASIC_AUTH_USER=<user> \
+DEMO_BASIC_AUTH_PASSWORD=<password> \
+bash deploy/smoke.sh
+```
+
+Backup thủ công trước khi cập nhật:
+
+```bash
+bash deploy/backup.sh
+```
+
+File backup MySQL và `outputs` được đặt dưới `backups/<timestamp>/`. Kiểm tra
+khả năng restore trên môi trường staging trước khi xem backup là hợp lệ.
+
+### Giới hạn scale
+
+Demo khóa `CELERY_CONCURRENCY=1` vì ChromaDB và image workspace hiện dùng
+chung. Có thể nâng CPU/RAM để một job ổn định hơn, nhưng không tăng concurrency
+trước khi triển khai isolation theo `textbook_id`. API, worker, database, Redis
+và web đã là các service tách biệt nên có thể chuyển sang máy khác trong phase
+scale sau này.
+
+Dependency audit hiện còn cảnh báo `CVE-2026-45829` ở `chromadb 1.5.9` và chưa
+có bản vá được công bố trong package index. Đây là rủi ro được chấp nhận riêng
+cho bản demo có Basic Auth; cần cập nhật ChromaDB và regression test ngay khi có
+bản vá trước khi coi hệ thống là production công khai.
+
 ## Operational Notes
 
 - ChromaDB là global theo process/path và ingestion xóa `backend/data/chroma_db` ở đầu mỗi generation run. Nên chạy một generation worker hoặc bổ sung isolation theo `textbook_id` nếu cần concurrent generation thật sự.
 - Celery stop dùng Redis key `textbook_stop:{id}` và task registry `task:{id}`. LangGraph node được bọc bởi `_with_stop_check`.
 - Planning/review draft có `credits_used=0`; Stop/Reset xóa record. Sau confirm, credit không được hoàn lại khi user dừng generation.
-- `backend/logs/prompts/*_prompts.log` lưu prompt theo agent để audit.
+- `backend/logs/prompts/*_prompts.log` lưu prompt theo agent để audit khi
+  `ENABLE_PROMPT_LOGS=true`; cấu hình demo mặc định tắt để giảm dùng ổ đĩa.
 - `backend/logs/rag_context.log` lưu full context chunk mà writer đã thấy.
 - Nếu `pypandoc`, Pandoc hoặc Typst không khả dụng, Publisher fallback giữ Markdown/artefact còn tạo được thay vì crash toàn bộ.
 - Frontend dùng `VITE_API_URL`, mặc định `http://localhost:8000`.

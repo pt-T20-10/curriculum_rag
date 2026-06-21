@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy import text
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.pool import NullPool
 
@@ -144,7 +145,7 @@ async def check_db_connection() -> bool:
     """
     try:
         async with AsyncSessionLocal() as session:
-            await session.execute("SELECT 1") #type: ignore
+            await session.execute(text("SELECT 1"))
             return True
     except Exception as e:
         print(f"❌ Database connection failed: {e}")

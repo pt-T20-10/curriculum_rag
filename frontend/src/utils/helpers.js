@@ -1,17 +1,16 @@
-export const getPdfUrl = (pdfPath) => {
-  if (!pdfPath) return null
-  
-  const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
-  
-  // ⭐ Convert Windows backslash to forward slash
-  let cleanPath = pdfPath.replace(/\\/g, '/')
-  
-  // Remove prefixes
-  cleanPath = cleanPath
-    .replace(/^backend\//, '')     // Remove "backend/"
-    .replace(/^\//, '')             // Remove leading "/"
-    .replace(/^outputs\//, '')      // Remove "outputs/" prefix
-  
-  // Build final URL
-  return `${API_BASE}/outputs/${cleanPath}`
+import { buildBackendUrl } from './apiConfig'
+
+export const getOutputUrl = (outputPath) => {
+  if (!outputPath) return null
+
+  const normalized = outputPath.replace(/\\/g, '/')
+  const outputsMatch = normalized.match(/(?:^|\/)outputs\/(.+)$/)
+  const relativePath = outputsMatch
+    ? outputsMatch[1]
+    : normalized.replace(/^backend\//, '').replace(/^\//, '').replace(/^outputs\//, '')
+  const encodedPath = relativePath.split('/').map(encodeURIComponent).join('/')
+
+  return buildBackendUrl(`/outputs/${encodedPath}`)
 }
+
+export const getPdfUrl = getOutputUrl

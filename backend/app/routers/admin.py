@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import get_async_db
 from app.models.bank_config import BankConfig
 from app.models.credit_history import CreditHistory
@@ -686,7 +687,12 @@ async def admin_get_bank_config(
     result = await db.execute(select(BankConfig).limit(1))
     cfg = result.scalar_one_or_none()
     if not cfg:
-        return {"bank_name": "Vietcombank", "bank_id": "vietcombank", "account_number": "9782832044", "account_holder": ""}
+        return {
+            "bank_name": "Vietcombank",
+            "bank_id": "vietcombank",
+            "account_number": settings.SEPAY_ACCOUNT_NUMBER,
+            "account_holder": "",
+        }
     return {"bank_name": cfg.bank_name, "bank_id": cfg.bank_id, "account_number": cfg.account_number, "account_holder": cfg.account_holder}
 
 

@@ -1,0 +1,27 @@
+{$APP_DOMAIN} {
+	basic_auth {
+		{$DEMO_BASIC_AUTH_USER} {$DEMO_BASIC_AUTH_HASH}
+	}
+
+	encode zstd gzip
+
+	@backend path /api/* /outputs/* /docs* /redoc* /openapi.json
+	reverse_proxy @backend api:8000
+
+	root * /srv
+	try_files {path} /index.html
+	file_server
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

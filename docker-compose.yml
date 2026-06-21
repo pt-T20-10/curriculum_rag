@@ -4,17 +4,16 @@ services:
   # ==================== MySQL Database ====================
   # Fresh local setup note:
   # - This service creates the database and loads backend/scripts/init.sql.
-  # - When the backend starts against this database, it seeds a default admin:
-  #   username: admin, email: admin@example.com, password: password123@
+  # - When the backend starts, development bootstrap settings come from .env.
   mysql:
     image: mysql:8.0
     container_name: ai_textbook_mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: root_password_change_me
-      MYSQL_DATABASE: ai_textbook_db
-      MYSQL_USER: admin
-      MYSQL_PASSWORD: kankyo113
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change_me_local_root}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-ai_textbook_db}
+      MYSQL_USER: ${MYSQL_USER:-textbook_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-change_me_local_password}
     ports:
       - "3306:3306"
     volumes:
@@ -51,8 +50,8 @@ services:
     environment:
       PMA_HOST: mysql
       PMA_PORT: 3306
-      PMA_USER: admin
-      PMA_PASSWORD: kankyo113
+      PMA_USER: ${MYSQL_USER:-textbook_user}
+      PMA_PASSWORD: ${MYSQL_PASSWORD:-change_me_local_password}
     ports:
       - "8080:80"
     depends_on:

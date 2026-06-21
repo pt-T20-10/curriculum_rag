@@ -8,6 +8,7 @@ Application configuration using Pydantic Settings.
 import os
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import quote_plus
 
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -43,13 +44,41 @@ class Settings(BaseSettings):
     # Redis
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
+
+    # Deployment/runtime controls. Development defaults preserve existing local
+    # behaviour; the production compose file overrides them explicitly.
+    CORS_ORIGINS: str = ""
+    CELERY_CONCURRENCY: int = 1
+    ENABLE_PROMPT_LOGS: bool = True
+    LOG_TO_FILES: bool = True
+    LOG_MAX_BYTES: int = 10 * 1024 * 1024
+    LOG_BACKUP_COUNT: int = 5
+    DOCUMENT_FONT: str = "Times New Roman"
     
     @property
     def DATABASE_URL(self) -> str:
         return (
-            f"mysql+pymysql://{self.MYSQL_USER}:{self.MYSQL_PASSWORD}"
+            f"mysql+pymysql://{quote_plus(self.MYSQL_USER)}:{quote_plus(self.MYSQL_PASSWORD)}"
             f"@{self.MYSQL_HOST}:{self.MYSQL_PORT}/{self.MYSQL_DATABASE}"
         )
+
+    @property
+    def ALLOWED_CORS_ORIGINS(self) -> list[str]:
+        configured = [
+            origin.strip().rstrip("/")
+            for origin in self.CORS_ORIGINS.split(",")
+            if origin.strip()
+        ]
+        if configured:
+            return configured
+        if self.ENVIRONMENT == "production":
+            return [self.FRONTEND_URL.rstrip("/")]
+        return [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ]
     
     # ==================== Security ====================
     SECRET_KEY: str = "your-secret-key-minimum-32-characters-long"
@@ -302,6 +331,70 @@ class Settings(BaseSettings):
                     field, default, current, reason
                 )
             _cfg_logger.warning("=" * 60)
+
+        if self.ENVIRONMENT == "production":
+            errors: list[str] = []
+            default_admin_hash = "$2b$12$oHvFFApYhi6yUrJfVVORkuG2oQWumTsc37Qr6o9FLV5sqUO8nDvjy"
+
+            def missing(value: str) -> bool:
+                return not value or value.startswith("REPLACE_")
+
+            if (
+                missing(self.SECRET_KEY)
+                or len(self.SECRET_KEY) < 32
+                or self.SECRET_KEY == "your-secret-key-minimum-32-characters-long"
+            ):
+                errors.append("SECRET_KEY must be a non-default value of at least 32 characters")
+            if missing(self.MYSQL_PASSWORD) or self.MYSQL_PASSWORD == "textbook_password_change_me":
+                errors.append("MYSQL_PASSWORD must be configured")
+            for name, value in (
+                ("FRONTEND_URL", self.FRONTEND_URL),
+                ("BACKEND_URL", self.BACKEND_URL),
+                ("GOOGLE_REDIRECT_URI", self.GOOGLE_REDIRECT_URI),
+            ):
+                if (
+                    not value.startswith("https://")
+                    or "localhost" in value
+                    or "127.0.0.1" in value
+                    or "example.com" in value
+                ):
+                    errors.append(f"{name} must be a public HTTPS URL")
+            if any(
+                not origin.startswith("https://")
+                or "localhost" in origin
+                or "127.0.0.1" in origin
+                for origin in self.ALLOWED_CORS_ORIGINS
+            ):
+                errors.append("CORS_ORIGINS must contain only public HTTPS origins")
+            if missing(self.OPENAI_API_KEY):
+                errors.append("OPENAI_API_KEY is required")
+            if missing(self.GROQ_API_KEY):
+                errors.append("GROQ_API_KEY is required")
+            if missing(self.GOOGLE_CLIENT_ID) or missing(self.GOOGLE_CLIENT_SECRET):
+                errors.append("Google OAuth credentials are required")
+            if missing(self.SMTP_USER) or missing(self.SMTP_PASSWORD) or missing(self.EMAIL_FROM):
+                errors.append("SMTP credentials are required for password recovery")
+            if missing(self.SEPAY_ACCOUNT_NUMBER):
+                errors.append("SEPAY_ACCOUNT_NUMBER must be configured for the demo payment screen")
+            if self.EMBEDDING_PROVIDER != "openai":
+                errors.append("EMBEDDING_PROVIDER must be 'openai' on the low-memory demo server")
+            if self.CELERY_CONCURRENCY != 1:
+                errors.append("CELERY_CONCURRENCY must remain 1 until per-job RAG isolation is implemented")
+            if self.DEFAULT_ADMIN_ENABLED:
+                if (
+                    self.DEFAULT_ADMIN_EMAIL == "admin@example.com"
+                    or self.DEFAULT_ADMIN_EMAIL.endswith("@example.com")
+                ):
+                    errors.append("DEFAULT_ADMIN_EMAIL must not use a sample/development account")
+                if (
+                    missing(self.DEFAULT_ADMIN_PASSWORD_HASH)
+                    or self.DEFAULT_ADMIN_PASSWORD_HASH == default_admin_hash
+                    or not self.DEFAULT_ADMIN_PASSWORD_HASH.startswith(("$2a$", "$2b$", "$2y$"))
+                ):
+                    errors.append("DEFAULT_ADMIN_PASSWORD_HASH must be replaced")
+
+            if errors:
+                raise ValueError("Invalid production configuration: " + "; ".join(errors))
 
         return self
     

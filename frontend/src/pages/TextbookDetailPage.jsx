@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { Navbar } from '../components/layout/Navbar'
+import { buildBackendUrl } from '../utils/apiConfig'
+import { getOutputUrl } from '../utils/helpers'
 
 export function TextbookDetailPage() {
   const { id } = useParams()
@@ -19,7 +21,7 @@ export function TextbookDetailPage() {
         // ⭐ FIX: Use direct API call to /textbooks/{id} endpoint
         // This endpoint returns full textbook data including pdf_path and docx_path
         const response = await fetch(
-          `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/api/v1/textbooks/${id}`,
+          buildBackendUrl(`/api/v1/textbooks/${id}`),
           {
             headers: {
               'Authorization': `Bearer ${localStorage.getItem('token')}`,
@@ -92,34 +94,8 @@ export function TextbookDetailPage() {
     )
   }
 
-  // Construct PDF URL - extract relative path from absolute path
-  // Backend stores: "D:\Thesis\curriculum_rag\backend\outputs\file.pdf"
-  // We need: "outputs/file.pdf"
-  const extractRelativePath = (path) => {
-    if (!path) return null
-    // Extract everything after "outputs" (or "outputs\")
-    const match = path.match(/outputs[/\\](.+)$/)
-    if (match) {
-      // URL encode the filename to handle Vietnamese characters
-      const filename = match[1].replace(/\\/g, '/')
-      const encodedFilename = encodeURIComponent(filename)
-      return `outputs/${encodedFilename}`
-    }
-    // If already relative, just normalize slashes and encode
-    const normalized = path.replace(/\\/g, '/')
-    const parts = normalized.split('/')
-    const filename = parts.pop()
-    const dir = parts.join('/')
-    return dir ? `${dir}/${encodeURIComponent(filename)}` : encodeURIComponent(filename)
-  }
-
-  const pdfUrl = textbook.pdf_path 
-    ? `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/${extractRelativePath(textbook.pdf_path)}`
-    : null
-
-  const docxUrl = textbook.docx_path
-    ? `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/${extractRelativePath(textbook.docx_path)}`
-    : null
+  const pdfUrl = getOutputUrl(textbook.pdf_path)
+  const docxUrl = getOutputUrl(textbook.docx_path)
   const languageLabel = textbook.language
     ? t(`textbook.language.${textbook.language}`, { defaultValue: textbook.language.toUpperCase() })
     : null

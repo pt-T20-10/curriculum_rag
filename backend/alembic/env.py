@@ -4,6 +4,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 from alembic import context
 import asyncio
+from app.config import settings
 
 # Import Base and models
 from app.database import Base
@@ -11,6 +12,8 @@ import app.models  # noqa: F401 - register all models for target_metadata
 
 # Alembic Config object
 config = context.config
+alembic_database_url = settings.DATABASE_URL.replace("mysql+pymysql", "mysql+aiomysql")
+config.set_main_option("sqlalchemy.url", alembic_database_url.replace("%", "%%"))
 
 # Interpret the config file for Python logging
 if config.config_file_name is not None:
