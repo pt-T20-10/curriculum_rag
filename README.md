@@ -519,9 +519,19 @@ thực sự được tạo.
 
 ### First Login And API Keys
 
-Sau khi backend và frontend chạy, đăng nhập bằng tài khoản admin development
-được cấu hình qua các biến `DEFAULT_ADMIN_*` trong `.env`. Không dùng lại tài
-khoản hoặc password development này cho bản demo public.
+`docker-compose.yml` khởi tạo MySQL; sau đó, ở lần backend kết nối vào database
+mới, backend sẽ tự tạo/kiểm tra tài khoản Admin development mặc định:
+
+```text
+Username: admin
+Email: admin@example.com
+Password: password123@
+```
+
+Sau khi backend và frontend chạy, có thể đăng nhập bằng username hoặc email ở
+trên. Tài khoản được cấu hình qua các biến `DEFAULT_ADMIN_*` trong `.env`. Chỉ
+dùng thông tin này khi chạy local; phải thay email và password/hash mặc định
+trước khi triển khai demo công khai hoặc production.
 
 Việc cần làm đầu tiên trong Admin UI:
 
