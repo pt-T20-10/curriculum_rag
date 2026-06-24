@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { Navbar } from '../components/layout/Navbar'
 import { buildBackendUrl } from '../utils/apiConfig'
-import { getOutputUrl } from '../utils/helpers'
+import { getDocxUrl, getPdfUrl } from '../utils/helpers'
 
 export function TextbookDetailPage() {
   const { id } = useParams()
@@ -34,14 +34,6 @@ export function TextbookDetailPage() {
         }
         
         const data = await response.json()
-        
-        // ⭐ DEBUG: Log to see what we get
-        console.log('=== TEXTBOOK DATA ===')
-        console.log('Full data:', data)
-        console.log('PDF path:', data.pdf_path)
-        console.log('DOCX path:', data.docx_path)
-        console.log('Status:', data.status)
-        console.log('====================')
         
         setTextbook(data)
       } catch (err) {
@@ -94,15 +86,11 @@ export function TextbookDetailPage() {
     )
   }
 
-  const pdfUrl = getOutputUrl(textbook.pdf_path)
-  const docxUrl = getOutputUrl(textbook.docx_path)
+  const pdfUrl = getPdfUrl(textbook.pdf_path)
+  const docxUrl = getDocxUrl(textbook.docx_path)
   const languageLabel = textbook.language
     ? t(`textbook.language.${textbook.language}`, { defaultValue: textbook.language.toUpperCase() })
     : null
-
-  // ⭐ DEBUG: Log constructed URL
-  console.log('Constructed PDF URL:', pdfUrl)
-  console.log('Constructed DOCX URL:', docxUrl)
 
   if (!pdfUrl) {
     return (
@@ -111,17 +99,20 @@ export function TextbookDetailPage() {
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center max-w-md">
             <div className="text-6xl mb-4">📄</div>
-            <p className="text-gray-600 mb-2">{t('textbook.detail.pdfNotReady')}</p>
-            <p className="text-sm text-gray-500 mb-4">{t('textbook.detail.processing')}</p>
-            
-            {/* ⭐ DEBUG INFO */}
-            <div className="mt-4 p-4 bg-gray-100 rounded-lg text-left text-xs">
-              <p className="font-bold mb-2">Debug Info:</p>
-              <p>Status: {textbook.status || textbook.phase || 'unknown'}</p>
-              <p>PDF Path: {textbook.pdf_path || 'null'}</p>
-              <p>DOCX Path: {textbook.docx_path || 'null'}</p>
-              <p>Title: {textbook.title || textbook.topic || 'unknown'}</p>
-            </div>
+            <p className="text-gray-600 mb-2">{t('textbook.detail.pdfUnavailable')}</p>
+            <p className="text-sm text-gray-500 mb-4">
+              {textbook.error_message || t('textbook.detail.exportFailed')}
+            </p>
+
+            {docxUrl && (
+              <a
+                href={docxUrl}
+                download
+                className="inline-flex px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+              >
+                {t('textbook.detail.downloadWord')}
+              </a>
+            )}
             
             <button
               onClick={() => navigate('/dashboard')}

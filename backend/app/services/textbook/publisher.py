@@ -7,8 +7,9 @@ This agent finalizes the generated content by:
 3. Normalizing line endings and applying fix passes (math, headings, pagebreaks)
 4. Assembling the Typst front matter (title page, TOC, figure list, numbering)
 5. Saving the Markdown source file
-6. Converting to PDF via Pandoc → Typst engine (falls back to .md if unavailable)
-7. Cleaning up temporary image files (always, via finally block)
+6. Converting independently to PDF and DOCX via Pandoc
+7. Returning explicit Markdown/PDF/DOCX artifact paths and export errors
+8. Cleaning up temporary image files (always, via finally block)
 
 PDF pipeline: Pandoc → Typst (not xelatex).
 Math delimiters: Pandoc-compatible $...$ and $$...$$ consumed by Typst's renderer.
@@ -21,6 +22,7 @@ Page structure:
     CHƯƠNG 1 …    — continues from page 1
 """
 import textwrap
+import json
 import os
 import shutil
 from datetime import datetime
@@ -94,6 +96,16 @@ def sanitize_filename(name: str, max_length: int = 50) -> str:
     safe = safe.strip().replace(' ', '_')
     safe = safe[:max_length]
     return safe if safe else "Textbook"
+
+
+def _typst_string_literal(value: str) -> str:
+    """Encode untrusted/dynamic text as a Typst-compatible string literal."""
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def _valid_artifact(path: Path, suffix: str) -> bool:
+    """Return True only for a non-empty file with the expected extension."""
+    return path.suffix.lower() == suffix and path.is_file() and path.stat().st_size > 0
 # ---------------------------------------------------------------------------
 # Unicode → math conversion maps
 #
@@ -748,26 +760,26 @@ def _build_title_block(title: str) -> str:
     --include-in-header in publish_curriculum(), which injects into the
     Pandoc template preamble where #set page() runs without causing a flush.
     """
-    safe_title = title.replace('"', '\\"')
+    safe_title = _typst_string_literal(title)
     return (
         "```{=typst}\n"
         "#show heading.where(level: 1): it => align(center, it)\n"
         "#set figure(numbering: none)\n"
         "#v(1fr)\n"
         "#align(center)[\n"
-        f'  #text(weight: "bold", size: 2em)[{safe_title}]\n'
+        f'  #text({safe_title}, weight: "bold", size: 2em)\n'
         "]\n"
         "#v(1fr)\n"
         "#pagebreak()\n"
         "```"
     )
 def _build_typst_toc_block(label: str) -> str:
-    safe_label = label.replace("]", "\\]")
+    safe_label = _typst_string_literal(label)
     return (
         "```{=typst}\n"
         "#v(1em)\n"
         "#align(center)[\n"
-        f'  #text(weight: "bold", size: 1.4em)[{safe_label}]\n'
+        f'  #text({safe_label}, weight: "bold", size: 1.4em)\n'
         "]\n"
         "#v(0.5em)\n"
         "#outline(title: none, indent: auto)\n"
@@ -776,13 +788,13 @@ def _build_typst_toc_block(label: str) -> str:
 
 
 def _build_typst_figure_list_block(label: str) -> str:
-    safe_label = label.replace("]", "\\]")
+    safe_label = _typst_string_literal(label)
     return (
         "```{=typst}\n"
         "#pagebreak()\n"
         "#v(1em)\n"
         "#align(center)[\n"
-        f'  #text(weight: "bold", size: 1.4em)[{safe_label}]\n'
+        f'  #text({safe_label}, weight: "bold", size: 1.4em)\n'
         "]\n"
         "#v(0.5em)\n"
         "#outline(\n"
@@ -846,7 +858,7 @@ def publish_curriculum(state: AgentState) -> dict:
                 _TYPST_START_NUMBERING → page 1 = Lời nói đầu
                 body content
         14. Save .md file
-        15. Pandoc → Typst → PDF  (falls back to .md if pypandoc unavailable)
+        15. Pandoc → Typst → PDF and Pandoc → DOCX exports
         16. cleanup_temp_images() in finally block
 
     Page numbering:
@@ -860,7 +872,7 @@ def publish_curriculum(state: AgentState) -> dict:
         state: Current LangGraph workflow state (AgentState TypedDict).
 
     Returns:
-        Partial state update with "final_filepath" and "messages".
+        Partial state update with explicit Markdown/PDF/DOCX artifact paths.
     """
     logger.info("=" * 60)
     logger.info("NODE: Publisher - Finalizing document")
@@ -887,6 +899,10 @@ def publish_curriculum(state: AgentState) -> dict:
         return {
             "messages": ["✗ Publisher failed: No content to publish"],
             "final_filepath": None,
+            "final_markdown_filepath": None,
+            "final_pdf_filepath": None,
+            "final_docx_filepath": None,
+            "export_errors": {"publisher": "No content to publish"},
         }
 
     # ------------------------------------------------------------------
@@ -942,9 +958,9 @@ def publish_curriculum(state: AgentState) -> dict:
     title = state.get("textbook_title") or state.get("request", profile.default_title_prefix)
     yaml_header = (
         f'---\n'
-        f'title-meta: "{title}"\n'
+        f'title-meta: {_typst_string_literal(title)}\n'
         f'fontsize: 12pt\n'
-        f'mainfont: "{_document_font()}"\n'
+        f'mainfont: {_typst_string_literal(_document_font())}\n'
         f'---\n\n'
     )
 
@@ -1005,20 +1021,23 @@ def publish_curriculum(state: AgentState) -> dict:
         return {
             "messages": ["✗ Publisher failed: Could not save Markdown"],
             "final_filepath": None,
+            "final_markdown_filepath": None,
+            "final_pdf_filepath": None,
+            "final_docx_filepath": None,
+            "export_errors": {"markdown": str(e)},
         }
 
     # ------------------------------------------------------------------
-    # Step 9 — Pandoc → Typst → PDF conversion
-    # ------------------------------------------------------------------
-   # ------------------------------------------------------------------
     # Step 9 — Export: PDF and/or Word based on state["export_formats"]
     # ------------------------------------------------------------------
     export_formats: list[str] = state.get("export_formats", ["PDF"])   # type: ignore
     want_pdf  = "PDF"  in export_formats
     want_word = "Word" in export_formats
 
-    result_filepath      = str(md_filename)   # fallback if PDF fails/not requested
-    final_docx_filepath  = None
+    final_markdown_filepath: str | None = str(md_filename)
+    final_pdf_filepath: str | None = None
+    final_docx_filepath: str | None = None
+    export_errors: dict[str, str] = {}
 
     if pypandoc and (want_pdf or want_word):
         pandoc_tmp = BASE_DIR / ".pandoc_tmp"
@@ -1099,9 +1118,12 @@ def publish_curriculum(state: AgentState) -> dict:
                             "-V", "margin-bottom=2cm",
                         ],
                     )
+                    if not _valid_artifact(pdf_filename, ".pdf"):
+                        raise RuntimeError("Pandoc returned without creating a valid PDF file")
                     logger.info(f"✓ PDF saved: {pdf_filename}")
-                    result_filepath = str(pdf_filename)
+                    final_pdf_filepath = str(pdf_filename)
                 except Exception as e:
+                    export_errors["pdf"] = str(e)
                     logger.warning(f"PDF generation failed: {e}", exc_info=True)
 
             # ── Word (.docx) ──────────────────────────────────────────
@@ -1134,14 +1156,13 @@ def publish_curriculum(state: AgentState) -> dict:
                         outputfile=str(docx_filename),
                         extra_args=word_args,
                     )
+                    if not _valid_artifact(docx_filename, ".docx"):
+                        raise RuntimeError("Pandoc returned without creating a valid DOCX file")
                     logger.info(f"✓ Word saved: {docx_filename}")
                     final_docx_filepath = str(docx_filename)
 
-                    # If PDF was not requested or failed, use docx as primary result
-                    if result_filepath == str(md_filename):
-                        result_filepath = str(docx_filename)
-
                 except Exception as e:
+                    export_errors["docx"] = str(e)
                     logger.warning(f"Word generation failed: {e}", exc_info=True)
 
         finally:
@@ -1156,14 +1177,27 @@ def publish_curriculum(state: AgentState) -> dict:
     else:
         if not pypandoc:
             logger.warning("pypandoc not installed — skipping all export")
+            if want_pdf:
+                export_errors["pdf"] = "pypandoc is not installed"
+            if want_word:
+                export_errors["docx"] = "pypandoc is not installed"
         cleanup_temp_images()
 
-    messages = [f"✓ Document finalized: {os.path.basename(result_filepath)}"]
+    messages = [f"✓ Markdown saved: {os.path.basename(final_markdown_filepath)}"]
+    if final_pdf_filepath:
+        messages.append(f"✓ PDF export: {os.path.basename(final_pdf_filepath)}")
     if final_docx_filepath:
         messages.append(f"✓ Word export: {os.path.basename(final_docx_filepath)}")
+    for artifact, error in export_errors.items():
+        messages.append(f"✗ {artifact.upper()} export failed: {error}")
 
     return {
         "messages":             messages,
-        "final_filepath":       result_filepath,
+        # Compatibility alias: historically named `final_filepath`, but it is
+        # now strictly PDF-only and never falls back to Markdown or DOCX.
+        "final_filepath":       final_pdf_filepath,
+        "final_markdown_filepath": final_markdown_filepath,
+        "final_pdf_filepath":   final_pdf_filepath,
         "final_docx_filepath":  final_docx_filepath,
+        "export_errors":        export_errors,
     }

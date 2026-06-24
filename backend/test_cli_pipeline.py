@@ -46,7 +46,11 @@ def _successful_result() -> dict:
 
 def test_runner_passes_validator_output_and_generation_config(tmp_path: Path) -> None:
     markdown = tmp_path / "book.md"
+    pdf = tmp_path / "book.pdf"
+    docx = tmp_path / "book.docx"
     markdown.write_text("# Python\n\nMột nội dung có ích.\n\n![Hình](figure.png)", encoding="utf-8")
+    pdf.write_bytes(b"%PDF-1.7\n")
+    docx.write_bytes(b"PK\x03\x04DOCX")
     captured = {}
     curriculum = SimpleNamespace(
         chapters=[
@@ -61,7 +65,12 @@ def test_runner_passes_validator_output_and_generation_config(tmp_path: Path) ->
             captured["config"] = config
             yield {"planner": {"curriculum": curriculum, "textbook_title": "Python thực hành"}}
             yield {"ingestion": {"messages": ["✓ Ingestion complete: Database ready with 2 sources"]}}
-            yield {"publisher": {"final_filepath": str(markdown)}}
+            yield {"publisher": {
+                "final_filepath": str(pdf),
+                "final_markdown_filepath": str(markdown),
+                "final_pdf_filepath": str(pdf),
+                "final_docx_filepath": str(docx),
+            }}
 
     result = automatic_runner.run_automatic_textbook_workflow(
         query="  Python có bài tập  ",
@@ -78,7 +87,11 @@ def test_runner_passes_validator_output_and_generation_config(tmp_path: Path) ->
     assert result["stats"]["chapter_count"] == 2
     assert result["stats"]["subsection_count"] == 3
     assert result["stats"]["image_count"] == 1
-    assert result["artifacts"] == {"markdown": str(markdown.resolve())}
+    assert result["artifacts"] == {
+        "markdown": str(markdown.resolve()),
+        "pdf": str(pdf.resolve()),
+        "word": str(docx.resolve()),
+    }
     assert captured["config"] == {"recursion_limit": 200}
     assert captured["state"]["request"] == "Python có bài tập"
     assert captured["state"]["core_topic"] == "Python"
@@ -144,6 +157,26 @@ def test_runner_requires_markdown_artifact() -> None:
 
     assert result["success"] is False
     assert "Markdown" in result["error"]
+
+
+def test_runner_requires_pdf_and_docx_exports(tmp_path: Path) -> None:
+    markdown = tmp_path / "book.md"
+    markdown.write_text("# Python", encoding="utf-8")
+
+    class Workflow:
+        def stream(self, state, config):
+            yield {"planner": {"curriculum": SimpleNamespace(chapters=[])}}
+            yield {"publisher": {"final_markdown_filepath": str(markdown)}}
+
+    result = automatic_runner.run_automatic_textbook_workflow(
+        query="Python cơ bản",
+        _validator=lambda query, language: VALIDATION,
+        _workflow_factory=Workflow,
+    )
+
+    assert result["success"] is False
+    assert "PDF" in result["error"]
+    assert "DOCX" in result["error"]
 
 
 def test_runner_returns_workflow_exception() -> None:

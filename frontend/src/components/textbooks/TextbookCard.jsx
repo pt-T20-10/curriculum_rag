@@ -2,7 +2,7 @@ import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { StatusBadge, ContentTypeBadge } from '../common/Badge'
 import { Button } from '../common/Button'
-import { getPdfUrl } from '../../utils/helpers'
+import { getDocxUrl, getPdfUrl } from '../../utils/helpers'
 
 export function TextbookCard({ textbook }) {
   const navigate = useNavigate()
@@ -20,6 +20,9 @@ export function TextbookCard({ textbook }) {
 
   const isGenerating = textbook.status === 'generating'
   const isCompleted = textbook.status === 'done' || textbook.status === 'completed'
+  const hasPartialArtifact = Boolean(
+    getPdfUrl(textbook.pdf_path) || getDocxUrl(textbook.docx_path)
+  )
   const languageLabel = textbook.language
     ? t(`textbook.language.${textbook.language}`, { defaultValue: textbook.language.toUpperCase() })
     : null
@@ -89,7 +92,7 @@ export function TextbookCard({ textbook }) {
               {t('textbook.card.progress')}
             </span>
           </Button>
-        ) : isCompleted ? (
+        ) : (isCompleted || hasPartialArtifact) ? (
           <Button
             onClick={() => navigate(`/textbooks/${textbook.id}`)}
             className="flex-1"

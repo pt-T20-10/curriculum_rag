@@ -487,6 +487,8 @@ export const en = {
       backDashboard: 'Back to Dashboard',
       pdfNotReady: 'PDF is not ready',
       processing: 'The textbook is still being processed...',
+      pdfUnavailable: 'The PDF export is unavailable',
+      exportFailed: 'Document export failed. You can still download any available format.',
       chapters: '{{count}} chapters',
       downloadWord: 'Download Word',
       downloadPdf: 'Download PDF',

@@ -487,6 +487,8 @@ export const vi = {
       backDashboard: 'Về Dashboard',
       pdfNotReady: 'PDF chưa sẵn sàng',
       processing: 'Giáo trình đang được xử lý...',
+      pdfUnavailable: 'Không thể tạo bản PDF',
+      exportFailed: 'Bước xuất tài liệu thất bại. Bạn vẫn có thể tải định dạng khả dụng.',
       chapters: '{{count}} chương',
       downloadWord: 'Tải Word',
       downloadPdf: 'Tải PDF',

@@ -258,12 +258,16 @@ class AgentState(TypedDict):
     messages: Annotated[List[str], operator.add]
 
     # ---- Output ----
+    # Compatibility alias for the PDF path. It must never contain DOCX/Markdown.
     final_filepath: Optional[str]
+    final_markdown_filepath: Optional[str]
+    final_pdf_filepath: Optional[str]
     content_level: str
 
     # ---- Export ----
     export_formats: List[str]
     final_docx_filepath: Optional[str]
+    export_errors: dict[str, str]
 
     # ---- Validation ----
     validation_failed:     bool
@@ -437,8 +441,11 @@ def build_initial_state(
         "messages": [],
         # ---- Output ----
         "final_filepath":      None,
+        "final_markdown_filepath": None,
+        "final_pdf_filepath": None,
         "export_formats":      export_formats or ["Word"],
         "final_docx_filepath": None,
+        "export_errors":       {},
         # ---- Validation ----
         "validation_failed":     False,
         "validation_reason":     "",

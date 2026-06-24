@@ -276,6 +276,11 @@ def continue_textbook_generation_task(self, textbook_id: int, confirmed_curricul
                         return {"status": "stopped"}
                     textbook.status = TextbookStatus.FAILED.value #type: ignore
                     textbook.error_message = error_msg
+                    # Preserve any valid partial artifact (for example DOCX)
+                    # without ever mislabelling it as PDF.
+                    textbook.pdf_path = result.get("pdf_path") #type: ignore
+                    textbook.docx_path = result.get("docx_path") #type: ignore
+                    textbook.completed_at = None #type: ignore
                     await db.commit()
 
                     logger.error(f"[TASK] Content generation failed: {error_msg}")

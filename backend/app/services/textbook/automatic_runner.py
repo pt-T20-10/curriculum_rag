@@ -44,25 +44,34 @@ def _curriculum_counts(curriculum: Any) -> tuple[int, int]:
 
 def _find_artifacts(state: dict[str, Any]) -> dict[str, str]:
     """Return only output artefacts that actually exist on disk."""
-    candidates = [
-        state.get("final_filepath"),
-        state.get("final_docx_filepath"),
-    ]
+    explicit = {
+        "markdown": state.get("final_markdown_filepath"),
+        "pdf": state.get("final_pdf_filepath") or state.get("final_filepath"),
+        "word": state.get("final_docx_filepath"),
+    }
+    artifacts = {
+        name: str(Path(value).resolve())
+        for name, value in explicit.items()
+        if value and Path(value).is_file() and Path(value).stat().st_size > 0
+    }
+
+    candidates = [value for value in explicit.values() if value]
     existing = [Path(value) for value in candidates if value and Path(value).is_file()]
     if not existing:
         return {}
 
+    # Compatibility for older/fake publishers that only return final_filepath:
+    # discover sibling artifacts by stem, then validate their existence.
     stem = existing[0].with_suffix("")
-    artifact_paths = {
+    sibling_paths = {
         "markdown": stem.with_suffix(".md"),
         "pdf": stem.with_suffix(".pdf"),
         "word": stem.with_suffix(".docx"),
     }
-    return {
-        name: str(path.resolve())
-        for name, path in artifact_paths.items()
-        if path.is_file()
-    }
+    for name, path in sibling_paths.items():
+        if name not in artifacts and path.is_file() and path.stat().st_size > 0:
+            artifacts[name] = str(path.resolve())
+    return artifacts
 
 
 def _document_stats(markdown_path: str | None) -> dict[str, int]:
@@ -202,6 +211,23 @@ def run_automatic_textbook_workflow(
                 _emit(progress_callback, "failed", error=result["error"])
                 return result
 
+            missing_exports = [
+                label
+                for key, label in (("pdf", "PDF"), ("word", "DOCX"))
+                if key not in artifacts
+            ]
+            if missing_exports:
+                result["error"] = (
+                    "Publisher did not create required export(s): "
+                    + ", ".join(missing_exports)
+                )
+                result["artifacts"] = artifacts
+                result["stats"] = {
+                    "elapsed_seconds": round(time.monotonic() - started, 2)
+                }
+                _emit(progress_callback, "failed", error=result["error"])
+                return result
+
             curriculum = cumulative_state.get("curriculum")
             chapter_count, subsection_count = _curriculum_counts(curriculum)
             stats = _document_stats(artifacts.get("markdown"))
@@ -227,4 +253,3 @@ def run_automatic_textbook_workflow(
         result["stats"] = {"elapsed_seconds": round(time.monotonic() - started, 2)}
         _emit(progress_callback, "failed", error=result["error"])
         return result
-

@@ -13,4 +13,19 @@ export const getOutputUrl = (outputPath) => {
   return buildBackendUrl(`/outputs/${encodedPath}`)
 }
 
-export const getPdfUrl = getOutputUrl
+const hasExtension = (outputPath, extension) => {
+  if (!outputPath) return false
+  const pathOnly = String(outputPath).split(/[?#]/, 1)[0]
+  return pathOnly.toLowerCase().endsWith(extension)
+}
+
+export const isPdfPath = (outputPath) => hasExtension(outputPath, '.pdf')
+export const isDocxPath = (outputPath) => hasExtension(outputPath, '.docx')
+
+export const getPdfUrl = (outputPath) => (
+  isPdfPath(outputPath) ? getOutputUrl(outputPath) : null
+)
+
+export const getDocxUrl = (outputPath) => (
+  isDocxPath(outputPath) ? getOutputUrl(outputPath) : null
+)
