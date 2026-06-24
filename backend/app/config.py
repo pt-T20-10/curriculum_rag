@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     MYSQL_USER: str = "textbook_user"
     MYSQL_PASSWORD: str = "textbook_password_change_me"
     MYSQL_DATABASE: str = "ai_textbook_db"
+    # Native variable names exposed by Railway's MySQL service.
+    MYSQLHOST: str = ""
+    MYSQLPORT: int | None = None
+    MYSQLUSER: str = ""
+    MYSQLPASSWORD: str = ""
+    MYSQLDATABASE: str = ""
     
     SMTP_HOST: str = "smtp.gmail.com"
     SMTP_PORT: int = 587
@@ -47,12 +53,12 @@ class Settings(BaseSettings):
     REDIS_PORT: int = 6379
     REDIS_URL: str = ""
 
-    @field_validator("MYSQL_PORT", mode="before")
+    @field_validator("MYSQL_PORT", "MYSQLPORT", mode="before")
     @classmethod
-    def default_empty_mysql_port(cls, value):
+    def default_empty_mysql_port(cls, value, info):
         """Railway may expose an unresolved/empty optional port reference."""
         if value is None or (isinstance(value, str) and not value.strip()):
-            return 3306
+            return None if info.field_name == "MYSQLPORT" else 3306
         return value
 
     @property
@@ -76,9 +82,14 @@ class Settings(BaseSettings):
             if self.MYSQL_URL.startswith("mysql://"):
                 return self.MYSQL_URL.replace("mysql://", "mysql+pymysql://", 1)
             return self.MYSQL_URL.replace("mysql+aiomysql://", "mysql+pymysql://", 1)
+        host = self.MYSQLHOST or self.MYSQL_HOST
+        port = self.MYSQLPORT if self.MYSQLPORT is not None else self.MYSQL_PORT
+        user = self.MYSQLUSER or self.MYSQL_USER
+        password = self.MYSQLPASSWORD or self.MYSQL_PASSWORD
+        database = self.MYSQLDATABASE or self.MYSQL_DATABASE
         return (
-            f"mysql+pymysql://{quote_plus(self.MYSQL_USER)}:{quote_plus(self.MYSQL_PASSWORD)}"
-            f"@{self.MYSQL_HOST}:{self.MYSQL_PORT}/{self.MYSQL_DATABASE}"
+            f"mysql+pymysql://{quote_plus(user)}:{quote_plus(password)}"
+            f"@{host}:{port}/{database}"
         )
 
     @property
@@ -365,10 +376,14 @@ class Settings(BaseSettings):
             ):
                 errors.append("SECRET_KEY must be a non-default value of at least 32 characters")
             if not self.MYSQL_URL and (
-                missing(self.MYSQL_PASSWORD)
-                or self.MYSQL_PASSWORD == "textbook_password_change_me"
+                missing(self.MYSQLPASSWORD or self.MYSQL_PASSWORD)
+                or (self.MYSQLPASSWORD or self.MYSQL_PASSWORD)
+                == "textbook_password_change_me"
             ):
-                errors.append("MYSQL_PASSWORD must be configured")
+                errors.append(
+                    "MYSQL_URL, MYSQLPASSWORD, or MYSQL_PASSWORD must be configured "
+                    "on the application service"
+                )
             if self.MYSQL_URL and not self.MYSQL_URL.startswith(
                 ("mysql://", "mysql+pymysql://", "mysql+aiomysql://")
             ):

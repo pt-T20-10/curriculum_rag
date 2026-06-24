@@ -54,6 +54,21 @@ def test_railway_mysql_url_is_normalized_for_sqlalchemy() -> None:
     )
 
 
+def test_native_railway_mysql_variables_are_supported() -> None:
+    settings = _valid_production_settings(
+        MYSQL_PASSWORD="",
+        MYSQLHOST="mysql.railway.internal",
+        MYSQLPORT="3306",
+        MYSQLUSER="root",
+        MYSQLPASSWORD="secret@value",
+        MYSQLDATABASE="railway",
+    )
+
+    assert settings.DATABASE_URL == (
+        "mysql+pymysql://root:secret%40value@mysql.railway.internal:3306/railway"
+    )
+
+
 @pytest.mark.parametrize(
     ("override", "expected"),
     [
