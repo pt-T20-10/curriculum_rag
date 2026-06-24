@@ -533,6 +533,10 @@ trên. Tài khoản được cấu hình qua các biến `DEFAULT_ADMIN_*` trong
 dùng thông tin này khi chạy local; phải thay email và password/hash mặc định
 trước khi triển khai demo công khai hoặc production.
 
+Trên Railway/production, pre-deploy chạy `python -m app.bootstrap_admin` sau
+Alembic. Đặt `DEFAULT_ADMIN_ENABLED=true`, dùng email thật và một bcrypt hash
+mới; hash/mật khẩu development phía trên bị production validator từ chối.
+
 Việc cần làm đầu tiên trong Admin UI:
 
 1. Vào trang Admin System Config.
