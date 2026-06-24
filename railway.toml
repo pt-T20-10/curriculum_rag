@@ -4,6 +4,7 @@ dockerfilePath = "backend/Dockerfile"
 
 [deploy]
 preDeployCommand = "alembic upgrade head && python -m app.bootstrap_admin"
+startCommand = "sh /app/start_railway.sh"
 healthcheckPath = "/api/v1/health"
 healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"

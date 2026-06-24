@@ -2,13 +2,13 @@ import axios from './axios'
 
 export const textbooksAPI = {
   // List textbooks
-  list: (params) => axios.get('/textbooks', { params }),
+  list: (params) => axios.get('/textbooks/', { params }),
   
   // Get single textbook
   get: (id) => axios.get(`/textbooks/${id}`),
   
   // Create textbook
-  create: (data) => axios.post('/textbooks', data),
+  create: (data) => axios.post('/textbooks/', data),
   
   // Delete textbook
   delete: (id) => axios.delete(`/textbooks/${id}`),
