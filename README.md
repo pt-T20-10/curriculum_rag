@@ -537,6 +537,12 @@ Trên Railway/production, pre-deploy chạy `python -m app.bootstrap_admin` sau
 Alembic. Đặt `DEFAULT_ADMIN_ENABLED=true`, dùng email thật và một bcrypt hash
 mới; hash/mật khẩu development phía trên bị production validator từ chối.
 
+Tạo bcrypt hash mới mà không đưa plaintext password vào command history:
+
+```powershell
+.\venv\Scripts\python.exe backend\scripts\generate_admin_password_hash.py
+```
+
 Việc cần làm đầu tiên trong Admin UI:
 
 1. Vào trang Admin System Config.

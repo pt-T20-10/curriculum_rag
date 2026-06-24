@@ -1,14 +1,19 @@
 :{$PORT:8080} {
 	encode zstd gzip
 
-	@backend path /api/* /outputs/* /docs* /redoc* /openapi.json
-	reverse_proxy @backend {$BACKEND_URL} {
-		header_up Host {upstream_hostport}
-	}
-
 	root * /srv
-	try_files {path} /index.html
-	file_server
+
+	# `route` preserves this order. Without it Caddy sorts `try_files` before
+	# `reverse_proxy`, rewrites POST /api/* to /index.html, and returns 405.
+	route {
+		@backend path /api/* /outputs/* /docs* /redoc* /openapi.json
+		reverse_proxy @backend {$BACKEND_URL} {
+			header_up Host {upstream_hostport}
+		}
+
+		try_files {path} /index.html
+		file_server
+	}
 
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
@@ -18,4 +23,3 @@
 		-Server
 	}
 }
-
