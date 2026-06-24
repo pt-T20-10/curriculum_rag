@@ -12,7 +12,7 @@ from urllib.parse import quote_plus
 
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 
 
 load_dotenv()
@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     SERPER_API_KEY: str = ""  # Optional
     
     # ==================== Database ====================
+    MYSQL_URL: str = ""
     MYSQL_HOST: str = "localhost"
     MYSQL_PORT: int = 3306
     MYSQL_USER: str = "textbook_user"
@@ -45,6 +46,14 @@ class Settings(BaseSettings):
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
     REDIS_URL: str = ""
+
+    @field_validator("MYSQL_PORT", mode="before")
+    @classmethod
+    def default_empty_mysql_port(cls, value):
+        """Railway may expose an unresolved/empty optional port reference."""
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return 3306
+        return value
 
     @property
     def REDIS_CONNECTION_URL(self) -> str:
@@ -63,6 +72,10 @@ class Settings(BaseSettings):
     
     @property
     def DATABASE_URL(self) -> str:
+        if self.MYSQL_URL:
+            if self.MYSQL_URL.startswith("mysql://"):
+                return self.MYSQL_URL.replace("mysql://", "mysql+pymysql://", 1)
+            return self.MYSQL_URL.replace("mysql+aiomysql://", "mysql+pymysql://", 1)
         return (
             f"mysql+pymysql://{quote_plus(self.MYSQL_USER)}:{quote_plus(self.MYSQL_PASSWORD)}"
             f"@{self.MYSQL_HOST}:{self.MYSQL_PORT}/{self.MYSQL_DATABASE}"
@@ -351,8 +364,15 @@ class Settings(BaseSettings):
                 or self.SECRET_KEY == "your-secret-key-minimum-32-characters-long"
             ):
                 errors.append("SECRET_KEY must be a non-default value of at least 32 characters")
-            if missing(self.MYSQL_PASSWORD) or self.MYSQL_PASSWORD == "textbook_password_change_me":
+            if not self.MYSQL_URL and (
+                missing(self.MYSQL_PASSWORD)
+                or self.MYSQL_PASSWORD == "textbook_password_change_me"
+            ):
                 errors.append("MYSQL_PASSWORD must be configured")
+            if self.MYSQL_URL and not self.MYSQL_URL.startswith(
+                ("mysql://", "mysql+pymysql://", "mysql+aiomysql://")
+            ):
+                errors.append("MYSQL_URL must use a MySQL URL scheme")
             for name, value in (
                 ("FRONTEND_URL", self.FRONTEND_URL),
                 ("BACKEND_URL", self.BACKEND_URL),

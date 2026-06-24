@@ -41,6 +41,19 @@ def test_valid_production_settings_keep_single_worker_and_domain_cors() -> None:
     assert "db-password-with-special%40characters" in settings.DATABASE_URL
 
 
+def test_railway_mysql_url_is_normalized_for_sqlalchemy() -> None:
+    settings = _valid_production_settings(
+        MYSQL_URL="mysql://user:secret@mysql.railway.internal:3306/railway",
+        MYSQL_PASSWORD="",
+        MYSQL_PORT="",
+    )
+
+    assert settings.MYSQL_PORT == 3306
+    assert settings.DATABASE_URL == (
+        "mysql+pymysql://user:secret@mysql.railway.internal:3306/railway"
+    )
+
+
 @pytest.mark.parametrize(
     ("override", "expected"),
     [
