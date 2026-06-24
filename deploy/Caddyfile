@@ -18,7 +18,9 @@
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
-		X-Frame-Options "DENY"
+		# Allow the built-in same-origin PDF viewer without permitting other
+		# websites to frame the application.
+		X-Frame-Options "SAMEORIGIN"
 		Referrer-Policy "strict-origin-when-cross-origin"
 		-Server
 	}
