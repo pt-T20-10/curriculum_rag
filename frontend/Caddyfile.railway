@@ -1,0 +1,21 @@
+:{$PORT:8080} {
+	encode zstd gzip
+
+	@backend path /api/* /outputs/* /docs* /redoc* /openapi.json
+	reverse_proxy @backend {$BACKEND_URL} {
+		header_up Host {upstream_hostport}
+	}
+
+	root * /srv
+	try_files {path} /index.html
+	file_server
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}
+
