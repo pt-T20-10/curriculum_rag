@@ -10,8 +10,8 @@ load_dotenv()
 # Create Celery instance
 celery_app = Celery(
     "ai_textbook_generator",
-    broker=f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}/0",
-    backend=f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}/0",
+    broker=settings.REDIS_CONNECTION_URL,
+    backend=settings.REDIS_CONNECTION_URL,
 )
 
 # Configuration

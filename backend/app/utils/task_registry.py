@@ -11,10 +11,8 @@ def _r() -> redis.Redis:
     global _pool
     if _pool is None:
         from app.config import settings
-        _pool = ConnectionPool(
-            host=settings.REDIS_HOST,
-            port=settings.REDIS_PORT,
-            db=0,
+        _pool = ConnectionPool.from_url(
+            settings.REDIS_CONNECTION_URL,
             decode_responses=True,
             max_connections=10,
         )

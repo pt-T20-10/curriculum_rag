@@ -63,6 +63,22 @@ def test_development_cors_defaults_remain_unchanged() -> None:
     assert "http://localhost:5173" in settings.ALLOWED_CORS_ORIGINS
 
 
+def test_redis_url_supports_managed_service_credentials() -> None:
+    managed_url = "redis://default:secret@redis.railway.internal:6379"
+    settings = Settings(_env_file=None, REDIS_URL=managed_url)
+    assert settings.REDIS_CONNECTION_URL == managed_url
+
+
+def test_redis_url_falls_back_to_host_and_port() -> None:
+    settings = Settings(
+        _env_file=None,
+        REDIS_URL="",
+        REDIS_HOST="redis",
+        REDIS_PORT=6380,
+    )
+    assert settings.REDIS_CONNECTION_URL == "redis://redis:6380/0"
+
+
 def test_production_rejects_sample_default_admin() -> None:
     with pytest.raises(ValidationError, match="DEFAULT_ADMIN_EMAIL"):
         _valid_production_settings(

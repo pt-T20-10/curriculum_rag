@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     # Redis
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
+    REDIS_URL: str = ""
+
+    @property
+    def REDIS_CONNECTION_URL(self) -> str:
+        """Use a provider URL (including credentials) when one is available."""
+        return self.REDIS_URL or f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/0"
 
     # Deployment/runtime controls. Development defaults preserve existing local
     # behaviour; the production compose file overrides them explicitly.
