@@ -30,8 +30,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY requirements-prod.lock /tmp/requirements-prod.lock
-RUN python -m pip install --upgrade pip \
-    && python -m pip install -r /tmp/requirements-prod.lock
+RUN python -m pip install --disable-pip-version-check \
+    -r /tmp/requirements-prod.lock
 
 COPY backend/ /app/
 
