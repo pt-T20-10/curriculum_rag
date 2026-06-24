@@ -537,6 +537,11 @@ Trên Railway/production, pre-deploy chạy `python -m app.bootstrap_admin` sau
 Alembic. Đặt `DEFAULT_ADMIN_ENABLED=true`, dùng email thật và một bcrypt hash
 mới; hash/mật khẩu development phía trên bị production validator từ chối.
 
+Service backend cần một persistent volume mount tại `/app/outputs` để giữ
+Markdown/PDF/DOCX qua các lần deploy. Docker entrypoint tự sửa ownership của
+volume mới rồi hạ quyền về `appuser` (UID `10001`); ứng dụng không chạy bằng
+root. Cơ chế này cũng áp dụng cho các named volume trong Docker Compose.
+
 Tạo bcrypt hash mới mà không đưa plaintext password vào command history:
 
 ```powershell

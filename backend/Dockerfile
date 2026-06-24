@@ -8,7 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl fontconfig fonts-liberation2 xz-utils \
+        ca-certificates curl fontconfig fonts-liberation2 gosu xz-utils \
     && arch="$(dpkg --print-architecture)" \
     && case "$arch" in \
          amd64) typst_arch="x86_64-unknown-linux-musl"; pandoc_arch="amd64" ;; \
@@ -37,9 +37,14 @@ COPY backend/ /app/
 
 RUN useradd --create-home --uid 10001 appuser \
     && mkdir -p /app/outputs /app/logs /app/data/chroma_db \
-    && chown -R appuser:appuser /app
+    && chown -R appuser:appuser /app \
+    && chmod +x /app/docker-entrypoint.sh
 
-USER appuser
+# The image starts as root only long enough for the entrypoint to repair
+# ownership of runtime-mounted volumes. The application command itself always
+# runs as the unprivileged appuser. Platforms that enforce a non-root UID can
+# still start the image; the entrypoint simply skips the ownership repair.
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 
 EXPOSE 8000
 

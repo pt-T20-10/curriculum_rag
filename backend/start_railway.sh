@@ -1,6 +1,12 @@
 #!/bin/sh
 set -eu
 
+# Railway normally preserves the image entrypoint when overriding CMD. Keep a
+# defensive fallback for runtimes that invoke this start script directly.
+if [ "$(id -u)" = "0" ]; then
+    exec /app/docker-entrypoint.sh "$0" "$@"
+fi
+
 echo "Starting Celery worker (solo, concurrency=1)..."
 celery -A app.celery_app.celery_app worker \
     --loglevel=INFO \
@@ -14,4 +20,3 @@ exec uvicorn app.main:app \
     --workers 1 \
     --proxy-headers \
     --forwarded-allow-ips="*"
-
