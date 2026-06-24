@@ -1,6 +1,6 @@
 # Curriculum RAG - AI Textbook Generator
 
-Hệ thống web tạo giáo trình tiếng Việt hoặc tiếng Anh từ một chủ đề đầu vào. Sản phẩm hiện tại gồm frontend React song ngữ VI/EN, backend FastAPI, hàng đợi Celery/Redis, MySQL, và một workflow LangGraph nhiều tác nhân để nhận diện ngôn ngữ, lập dàn ý, cho người dùng duyệt curriculum, crawl dữ liệu song ngữ, sinh nội dung theo CRAG, kiểm duyệt, minh họa và xuất Markdown/PDF/Word.
+Hệ thống web tạo giáo trình tiếng Việt hoặc tiếng Anh từ một chủ đề đầu vào. Sản phẩm hiện tại gồm frontend React song ngữ VI/EN, backend FastAPI, hàng đợi Celery/Redis, MySQL, và một workflow LangGraph nhiều tác nhân để nhận diện ngôn ngữ, lập dàn ý, cho người dùng duyệt curriculum, crawl dữ liệu song ngữ, sinh nội dung theo CRAG, kiểm duyệt, minh họa và xuất PDF/Word.
 
 ![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)
 ![FastAPI](https://img.shields.io/badge/API-FastAPI-teal)
