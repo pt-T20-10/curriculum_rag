@@ -47,7 +47,7 @@ async def _get_or_create_google_user(db: AsyncSession, google_info: dict) -> Use
     result = await db.execute(select(User).where(User.google_id == google_id))
     user = result.scalar_one_or_none()
     if user:
-        if user.is_deleted:
+        if user.is_deleted: #type: ignore
             raise ValueError("account_deleted")
         return user
 
@@ -55,7 +55,7 @@ async def _get_or_create_google_user(db: AsyncSession, google_info: dict) -> Use
     result = await db.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
     if user:
-        if user.is_deleted:
+        if user.is_deleted: #type: ignore
             raise ValueError("account_deleted")
         if user.google_id and user.google_id != google_id: #type: ignore
             raise ValueError("Email is already linked to a different Google account")

@@ -38,6 +38,7 @@ from app.services.runtime_config import get_api_key
 from app.services.textbook.language import get_language_profile
 
 LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
+LLM_MODEL_PREMIUM =settings.LLM_MODEL_PREMIUM
 
 logger = setup_logger(name="ReviewerAgent", logfile="logs/agents.log")
 
@@ -71,7 +72,7 @@ class ReviewerAgent:
         """
 
         self.llm = ChatOpenAI(
-            model=LLM_MODEL_CHEAP,
+            model=LLM_MODEL_PREMIUM,
             api_key=get_api_key("OPENAI_API_KEY"), # type: ignore[arg-type]
             temperature=0.1,
         )
@@ -403,7 +404,7 @@ No fences, no preamble, no explanation.
             )
 
             llm_format = ChatOpenAI(
-                model=LLM_MODEL_CHEAP,
+                model=LLM_MODEL_PREMIUM,
                 api_key=get_api_key("OPENAI_API_KEY"),  # type: ignore[arg-type]
                 temperature=0.0,
             )
@@ -943,6 +944,23 @@ def review_section(state: AgentState) -> dict:
         # ------------------------------------------------------------------
         from app.schemas.curriculum import get_char_target
         char_min, _ = get_char_target(sec_type, state.get("content_level", "Trung Bình"))
+        source_audit = state.get("rag_source_audit", {}) or {}
+        if source_audit.get("context_quality") == "insufficient":
+            feedback = (
+                "RAG source audit is insufficient for this section; "
+                "retrieve more relevant external sources before approving."
+            )
+            logger.warning(feedback)
+            return {
+                "current_content":  polished,
+                "review_feedback":  feedback,
+                "revision_number":  revision_number + 1,
+                "rejection_type":   "missing_context",
+                "messages": [
+                    f"↺ Revision {revision_number + 1}/{MAX_REVISIONS} "
+                    "[missing_context]: source audit insufficient"
+                ],
+            }
 
         if revision_number < MAX_REVISIONS:
             needs_revision, feedback = agent.should_revise(

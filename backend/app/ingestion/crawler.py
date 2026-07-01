@@ -85,6 +85,18 @@ HEADERS = {
 }
 
 
+_VI_DIACRITIC_PATTERN = re.compile(
+    r'[àáảãạăắằẳẵặâấầẩẫậđèéẻẽẹêếềểễệìíỉĩị'
+    r'òóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵ]',
+    re.IGNORECASE,
+)
+
+
+def _detect_language(text: str) -> str:
+    """Fast VI/EN language marker for retrieval audit metadata."""
+    return "vi" if _VI_DIACRITIC_PATTERN.search(text[:500]) else "en"
+
+
 
 # ---------------------------------------------------------------------------
 # Quality filter helpers
@@ -1587,6 +1599,14 @@ def process_deep_crawl(
     url          = link_info["url"]
     doc_type     = link_info["type"]
     content_type = link_info.get("content_type", "technical")
+    base_metadata = {
+        "source": url,
+        "source_url": url,
+        "source_query": link_info.get("source_query", ""),
+        "search_region": link_info.get("search_region", ""),
+        "search_title": link_info.get("search_title", ""),
+        "snippet_score": link_info.get("snippet_score", ""),
+    }
     sub_link_limit = CRAWL_MAX_SUB_LINKS if crawl_max_sub_links is None else crawl_max_sub_links
     depth2_limit = CRAWL_MAX_DEPTH2_LINKS if crawl_max_depth2_links is None else crawl_max_depth2_links
     results: List[Document] = []
@@ -1601,7 +1621,7 @@ def process_deep_crawl(
             if len(text) > 300:
                 results.append(Document(
                     page_content=text,
-                    metadata={"source": url, "type": "pdf"},
+                    metadata={**base_metadata, "type": "pdf"},
                 ))
             return results
 
@@ -1621,7 +1641,7 @@ def process_deep_crawl(
             )
             results.append(Document(
                 page_content=main_text,
-                metadata={"source": url, "type": "html", "depth": 0},
+                metadata={**base_metadata, "type": "html", "depth": 0},
             ))
             root_is_nav = False
 
@@ -1667,7 +1687,9 @@ def process_deep_crawl(
                 results.append(Document(
                     page_content=sub_text,
                     metadata={
+                        **base_metadata,
                         "source": sub,
+                        "source_url": sub,
                         "type":   "html",
                         "depth":  1,
                         "parent": url,
@@ -1700,7 +1722,9 @@ def process_deep_crawl(
                             results.append(Document(
                                 page_content=d2_text,
                                 metadata={
+                                    **base_metadata,
                                     "source": d2_url,
+                                    "source_url": d2_url,
                                     "type":   "html",
                                     "depth":  2,
                                     "parent": sub,
@@ -1721,6 +1745,8 @@ def ingest_dynamic_data(
     topic: str,
     clean_links: List[Dict[str, str]],
     content_type: str = "technical",
+    collection_name: str = "dynamic_context",
+    run_id: str = "dynamic_context",
     progress_callback=None,
     runtime_config: dict[str, Any] | None = None,
 ) -> bool: #type: ignore
@@ -1814,6 +1840,12 @@ def ingest_dynamic_data(
             if docs:
                 for doc in docs:
                     doc.metadata["topic"] = topic
+                    doc.metadata["run_id"] = run_id
+                    doc.metadata["content_type"] = content_type
+                    doc.metadata["domain"] = urlparse(
+                        doc.metadata.get("source_url")
+                        or doc.metadata.get("source", "")
+                    ).netloc.lower()
                     all_docs.append(doc)
             crawled_count += 1
             if progress_callback and (crawled_count % 3 == 0 or crawled_count == total_links):
@@ -1906,6 +1938,35 @@ def ingest_dynamic_data(
         embedding_batch_size=embedding_batch_size,
     )
 
+    # A chunk should be relevant either to the whole textbook topic OR to the
+    # search query that discovered its root URL. This bridges the gap between
+    # broad corpus ingestion and subsection-specific retrieval without letting
+    # arbitrary quality-only chunks through.
+    source_query_embeddings: dict[str, np.ndarray] = {}
+    for chunk in quality_chunks:
+        source_query = (chunk.metadata.get("source_query") or "").strip()
+        if source_query and source_query not in source_query_embeddings:
+            try:
+                source_query_embeddings[source_query] = np.array(
+                    embedding_model.embed_query(source_query)
+                )
+            except Exception as e:
+                logger.debug(f"Source-query embedding failed for '{source_query[:50]}': {e}")
+
+    adjusted_scores: list[float] = []
+    for chunk, topic_score, embedding in zip(quality_chunks, scores, chunk_embeddings):
+        source_query = (chunk.metadata.get("source_query") or "").strip()
+        final_score = float(topic_score)
+        if source_query in source_query_embeddings:
+            query_emb = source_query_embeddings[source_query].reshape(1, -1)
+            chunk_emb = np.array(embedding).reshape(1, -1)
+            query_score = float(cosine_similarity(chunk_emb, query_emb)[0][0])
+            final_score = max(final_score, query_score)
+        chunk.metadata["relevance_score"] = f"{final_score:.4f}"
+        chunk.metadata["language"] = _detect_language(chunk.page_content)
+        adjusted_scores.append(final_score)
+    scores = adjusted_scores
+
     relevant_pairs = [
         (chunk, embedding) 
         for chunk, score, embedding in zip(quality_chunks, scores, chunk_embeddings)
@@ -1920,6 +1981,12 @@ def ingest_dynamic_data(
         f"({removed_irrelevant} off-topic chunks removed) "
         f"[{time.time() - t4:.1f}s]"
     )
+    if not relevant_chunks:
+        logger.error(
+            f"All chunks scored below {min_relevance} — "
+            f"aborting ingestion instead of falling back to quality-only chunks"
+        )
+        return False
     
     bilingual_stats = _compute_bilingual_stats(relevant_chunks)
     logger.info(
@@ -1951,17 +2018,6 @@ def ingest_dynamic_data(
         f"({final_stats['vi_chunks']} VI [{final_stats['vi_ratio']:.1%}], "
         f"{final_stats['en_chunks']} EN [{final_stats['en_ratio']:.1%}])"
     )
-    if not relevant_chunks:
-        logger.warning(
-            f"All chunks scored below {min_relevance} — "
-            f"consider lowering MIN_RELEVANCE_SCORE or broadening search queries"
-        )
-        # Fallback: use quality_chunks without relevance filter
-        # to avoid complete ingestion failure
-        logger.warning("Falling back to quality-only chunks (relevance filter bypassed)")
-        relevant_chunks = quality_chunks
-        capped_embeddings = chunk_embeddings
-
     logger.info(f"Relevance filter: {len(quality_chunks)} → {len(relevant_chunks)} chunks ...")
     if progress_callback:
         progress_callback(
@@ -1987,7 +2043,7 @@ def ingest_dynamic_data(
         vector_db = Chroma(
             embedding_function=embedding_model,
             persist_directory=str(CHROMA_DB_DIR),
-            collection_name="dynamic_context",
+            collection_name=collection_name,
         )
         
         # Batch insertion with pre-computed embeddings
@@ -2006,7 +2062,10 @@ def ingest_dynamic_data(
                     documents=batch_texts,
                     metadatas=batch_metas, #type: ignore
                     embeddings=batch_embs, #type: ignore
-                    ids=[f"doc_{total_saved + j}" for j in range(len(batch_texts))],
+                    ids=[
+                        f"{run_id}_{total_saved + j}"
+                        for j in range(len(batch_texts))
+                    ],
                 )
                 total_saved += len(batch_texts)
                 

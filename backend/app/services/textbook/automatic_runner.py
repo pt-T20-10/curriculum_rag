@@ -88,6 +88,21 @@ def _document_stats(markdown_path: str | None) -> dict[str, int]:
     }
 
 
+def _context_failure_error(state: dict[str, Any]) -> str:
+    chapter = int(state.get("current_chapter_index", 0) or 0) + 1
+    subsection = int(state.get("current_subsection_index", 0) or 0) + 1
+    audit = state.get("rag_source_audit") or {}
+    warnings = audit.get("warnings") if isinstance(audit, dict) else None
+    warning = ""
+    if isinstance(warnings, list) and warnings:
+        warning = f" {str(warnings[0])}"
+    return (
+        f"Insufficient RAG context for Chapter {chapter}.{subsection}; "
+        "stopped before writing to avoid unsupported content."
+        f"{warning}"
+    )
+
+
 def run_automatic_textbook_workflow(
     *,
     query: str,
@@ -165,6 +180,7 @@ def run_automatic_textbook_workflow(
                 advanced_config={},
                 export_formats=["PDF", "Word"],
             )
+            initial_state["rag_collection_name"] = f"dynamic_context_cli_{time.time_ns()}"  # type: ignore[index]
 
             if _workflow_factory is None:
                 from app.services.textbook.orchestrator import create_workflow
@@ -174,6 +190,7 @@ def run_automatic_textbook_workflow(
             workflow = _workflow_factory()
             cumulative_state: dict[str, Any] = dict(initial_state)
             all_messages: list[str] = []
+            publisher_started = False
 
             for event in workflow.stream(initial_state, {"recursion_limit": 200}):
                 for node_name, node_output in event.items():
@@ -182,6 +199,8 @@ def run_automatic_textbook_workflow(
                         messages = node_output.get("messages", [])
                         if isinstance(messages, list):
                             all_messages.extend(str(message) for message in messages)
+                    if node_name == "publisher":
+                        publisher_started = True
                     _emit(
                         progress_callback,
                         "workflow_node",
@@ -196,6 +215,17 @@ def run_automatic_textbook_workflow(
             )
             if ingestion_error:
                 result["error"] = ingestion_error.removeprefix("✗ ")
+                result["stats"] = {
+                    "elapsed_seconds": round(time.monotonic() - started, 2)
+                }
+                _emit(progress_callback, "failed", error=result["error"])
+                return result
+
+            if (
+                not publisher_started
+                and cumulative_state.get("context_quality") == "insufficient"
+            ):
+                result["error"] = _context_failure_error(cumulative_state)
                 result["stats"] = {
                     "elapsed_seconds": round(time.monotonic() - started, 2)
                 }

@@ -17,6 +17,22 @@ from app.utils.log_config import setup_logger
 logger = setup_logger(name="QueryFormulatorNode", logfile="logs/agents.log")
 
 
+def _compact_query(parts: list[str], max_terms: int = 28) -> str:
+    """Build a bounded retrieval query while preserving the section anchors."""
+    seen: set[str] = set()
+    terms: list[str] = []
+    for part in parts:
+        for token in str(part or "").replace("/", " ").split():
+            normalized = token.strip(" ,.;:()[]{}").lower()
+            if len(normalized) < 2 or normalized in seen:
+                continue
+            seen.add(normalized)
+            terms.append(token.strip(" ,.;:()[]{}"))
+            if len(terms) >= max_terms:
+                return " ".join(terms)
+    return " ".join(terms)
+
+
 def formulate_query(state: AgentState) -> dict:
     """
     QueryFormulator node: derive an enhanced ChromaDB search query.
@@ -54,6 +70,10 @@ def formulate_query(state: AgentState) -> dict:
             subsection.title if isinstance(subsection, SubSection)
             else subsection.get("title", "Unknown")
         )
+        sec_desc = (
+            subsection.description if isinstance(subsection, SubSection)
+            else subsection.get("description", "")
+        )
         base_query = (
             subsection.search_query if isinstance(subsection, SubSection)
             else subsection.get("search_query", f"{chap_title} - {sec_title}")
@@ -66,12 +86,24 @@ def formulate_query(state: AgentState) -> dict:
         # Revision mode: shift query angle away from already-tried queries
         # to avoid retrieving the same chunks that produced rejected content.
         # ----------------------------------------------------------------
-        if review_feedback and used_queries:
-            logger.info(f"Revision mode — shifting query angle (used: {len(used_queries)})")
-            # Append angle-shift suffix so MMR search returns diverse chunks
-            enhanced_query = f"{base_query} advanced concepts alternative explanation"
+        section_anchor = _compact_query([chap_title, sec_title, sec_desc], max_terms=18)
+        base_with_anchor = _compact_query([section_anchor, base_query], max_terms=28)
+
+        if used_queries:
+            logger.info(f"Retry mode — shifting query angle (used: {len(used_queries)})")
+            # Rotate the angle so repeated strict-gate retries do not ask
+            # ChromaDB for the same neighborhood again.
+            retry_angles = [
+                "definition concepts overview examples",
+                "core principles explanation textbook",
+                "applications comparison fundamentals",
+            ]
+            suffix = retry_angles[len(used_queries) % len(retry_angles)]
+            if review_feedback:
+                suffix = f"{suffix} missing details examples"
+            enhanced_query = _compact_query([base_with_anchor, suffix], max_terms=34)
         else:
-            enhanced_query = base_query
+            enhanced_query = base_with_anchor
 
         # ----------------------------------------------------------------
         # User requirements enrichment
@@ -100,7 +132,10 @@ def formulate_query(state: AgentState) -> dict:
                 logger.info("  → Adding project-focused keywords")
 
             if query_extensions:
-                enhanced_query = f"{enhanced_query} {' '.join(query_extensions[:3])}"
+                enhanced_query = _compact_query(
+                    [enhanced_query, " ".join(query_extensions[:3])],
+                    max_terms=38,
+                )
                 logger.info(f"Enhanced query: {enhanced_query}")
 
         return {

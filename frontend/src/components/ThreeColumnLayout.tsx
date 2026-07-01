@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 
 interface ThreeColumnLayoutProps {
@@ -21,50 +21,78 @@ const ThreeColumnLayout: React.FC<ThreeColumnLayoutProps> = ({
   onToggleRight,
 }) => {
   const { t } = useTranslation();
+  const [leftWidth, setLeftWidth] = useState(360);
   const [rightWidth, setRightWidth] = useState(450);
-  const [isResizing, setIsResizing] = useState(false);
-  const resizeRef = useRef<HTMLDivElement>(null);
+  const [resizingPanel, setResizingPanel] = useState<'left' | 'right' | null>(null);
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
-      if (!isResizing) return;
-      
-      const newWidth = window.innerWidth - e.clientX;
-      if (newWidth >= 300 && newWidth <= 800) {
-        setRightWidth(newWidth);
+      if (!resizingPanel) return;
+
+      if (resizingPanel === 'left') {
+        const newWidth = e.clientX;
+        if (newWidth >= 280 && newWidth <= 620) {
+          setLeftWidth(newWidth);
+        }
+        return;
+      }
+
+      if (resizingPanel === 'right') {
+        const newWidth = window.innerWidth - e.clientX;
+        if (newWidth >= 300 && newWidth <= 800) {
+          setRightWidth(newWidth);
+        }
       }
     };
 
     const handleMouseUp = () => {
-      setIsResizing(false);
+      setResizingPanel(null);
     };
 
-    if (isResizing) {
+    if (resizingPanel) {
       document.addEventListener('mousemove', handleMouseMove);
       document.addEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
     }
 
     return () => {
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
     };
-  }, [isResizing]);
+  }, [resizingPanel]);
 
   return (
     <div className="flex h-full relative">
       {/* LEFT SIDEBAR */}
       <div 
         className={`
-          transition-all duration-300 ease-in-out
-          ${leftCollapsed ? 'w-0' : 'w-[280px]'}
+          ${resizingPanel === 'left' ? 'transition-none' : 'transition-all duration-300 ease-in-out'}
+          ${leftCollapsed ? 'w-0' : ''}
           border-r border-gray-200 
           overflow-hidden
           bg-white
           flex-shrink-0
+          relative
         `}
+        style={!leftCollapsed ? { width: `${leftWidth}px` } : {}}
       >
         {!leftCollapsed && (
-          <div className="w-[280px] h-full flex flex-col">
+          <>
+          {/* Resize handle */}
+          <div
+            onMouseDown={() => setResizingPanel('left')}
+            className={`
+              absolute right-0 top-0 bottom-0 w-1 cursor-col-resize
+              hover:bg-blue-500 transition-colors z-10
+              ${resizingPanel === 'left' ? 'bg-blue-500' : 'bg-transparent'}
+            `}
+            title={t('layout.resize')}
+          />
+
+          <div className="h-full flex flex-col" style={{ width: `${leftWidth}px` }}>
             {/* Sidebar header with toggle - NO BORDER */}
             <div className="flex items-center justify-end px-2 py-2">
               <button
@@ -83,10 +111,11 @@ const ThreeColumnLayout: React.FC<ThreeColumnLayoutProps> = ({
             </div>
 
             {/* Sidebar content */}
-            <div className="flex-1 overflow-y-auto">
+            <div className="flex-1 overflow-hidden">
               {leftSidebar}
             </div>
           </div>
+          </>
         )}
       </div>
       
@@ -131,12 +160,11 @@ const ThreeColumnLayout: React.FC<ThreeColumnLayoutProps> = ({
           <>
             {/* Resize handle */}
             <div
-              ref={resizeRef}
-              onMouseDown={() => setIsResizing(true)}
+              onMouseDown={() => setResizingPanel('right')}
               className={`
                 absolute left-0 top-0 bottom-0 w-1 cursor-col-resize
                 hover:bg-blue-500 transition-colors z-10
-                ${isResizing ? 'bg-blue-500' : 'bg-transparent'}
+                ${resizingPanel === 'right' ? 'bg-blue-500' : 'bg-transparent'}
               `}
               title={t('layout.resize')}
             />

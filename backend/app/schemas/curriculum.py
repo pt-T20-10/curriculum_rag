@@ -231,6 +231,20 @@ class AgentState(TypedDict):
 
     # ---- RAG ----
     rag_context: str
+    rag_collection_name: str
+    """
+    Per-textbook ChromaDB collection name. Keeping each run in its own
+    collection prevents locked/deleted directories or prior runs from leaking
+    stale chunks into the current textbook.
+    """
+    rag_source_audit: dict[str, Any]
+    """
+    Compact source audit summary for UI progress polling. Contains source
+    URLs/domains/counts/query metadata, never full chunk content.
+    """
+    rag_best_effort_context: str
+    rag_best_effort_audit: dict[str, Any]
+    rag_best_effort_score: float
 
     # ---- CRAG Pipeline (Target 1) ----
     retrieval_query: str
@@ -292,8 +306,13 @@ class AgentState(TypedDict):
     Reset to None at each subsection checkpoint.
     """
 
-
     used_rag_queries: List[str]   # accumulate across revision attempts
+    rag_retrieval_attempts: int
+    """
+    Number of main RetrieverNode attempts for the current subsection.
+    Evaluator tool-call queries remain in used_rag_queries for audit, but
+    they should not consume the router's primary retry budget.
+    """
     # ---- Preview (Phase 5) ----
   
     section_summaries: List[str]
@@ -430,7 +449,12 @@ def build_initial_state(
         "chapter_header_written": False,
         "content_level":          content_level,
         # ---- RAG ----
-        "rag_context": "",
+        "rag_context":          "",
+        "rag_collection_name":  "dynamic_context",
+        "rag_source_audit":     {},
+        "rag_best_effort_context": "",
+        "rag_best_effort_audit": {},
+        "rag_best_effort_score": 0.0,
         # ---- CRAG Pipeline ----
         "retrieval_query":        "",
         "context_quality":        "sufficient",  # optimistic default; evaluator overwrites
@@ -452,6 +476,7 @@ def build_initial_state(
         "validation_suggestion": "",
         # ---- Progress Accumulators (fixed: were missing from previous version) ----
         "used_rag_queries":  [],
+        "rag_retrieval_attempts": 0,
         "section_summaries": section_summaries or [],
         
     }

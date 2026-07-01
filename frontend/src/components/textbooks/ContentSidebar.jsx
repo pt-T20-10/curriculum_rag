@@ -1,7 +1,8 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { StatsSection } from './StatsSection'
 import { ChapterList } from './ChapterList'
+import { SourceAuditSection } from './SourceAuditSection'
 
 /**
  * Transform flat chapter_titles array into hierarchical structure
@@ -33,11 +34,39 @@ function transformChapterData(progressData) {
 
 export function ContentSidebar({ progressData }) {
   const { t } = useTranslation()
+  const [sourceAuditHeight, setSourceAuditHeight] = useState(260)
+  const resizeStartRef = useRef(null)
   // Transform chapter data (must be before early return - hooks rule)
   const chapters = useMemo(
     () => transformChapterData(progressData),
     [progressData]
   )
+
+  useEffect(() => {
+    const handleMouseMove = (event) => {
+      if (!resizeStartRef.current) return
+
+      const { startY, startHeight } = resizeStartRef.current
+      const nextHeight = startHeight + event.clientY - startY
+      setSourceAuditHeight(Math.min(420, Math.max(160, nextHeight)))
+    }
+
+    const handleMouseUp = () => {
+      resizeStartRef.current = null
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+
+    document.addEventListener('mousemove', handleMouseMove)
+    document.addEventListener('mouseup', handleMouseUp)
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove)
+      document.removeEventListener('mouseup', handleMouseUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+  }, [])
 
   const {
     current_chapter = 0,
@@ -65,8 +94,31 @@ export function ContentSidebar({ progressData }) {
         <StatsSection progressData={progressData} />
       </div>
 
+      <div
+        className="min-h-0 flex-shrink-0 overflow-hidden"
+        style={{ height: `${sourceAuditHeight}px` }}
+      >
+        <SourceAuditSection
+          sourceAudit={progressData.source_audit}
+          className="h-full"
+        />
+      </div>
+
+      <div
+        onMouseDown={(event) => {
+          resizeStartRef.current = {
+            startY: event.clientY,
+            startHeight: sourceAuditHeight,
+          }
+          document.body.style.cursor = 'row-resize'
+          document.body.style.userSelect = 'none'
+        }}
+        className="h-1.5 flex-shrink-0 cursor-row-resize bg-gray-100 hover:bg-blue-400"
+        title={t('layout.resize')}
+      />
+
       {/* Chapter List - Scrollable */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto">
         <ChapterList
           chapters={chapters}
           currentChapter={current_chapter}

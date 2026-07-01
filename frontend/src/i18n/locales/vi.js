@@ -453,6 +453,23 @@ export const vi = {
       subsections: 'Mục',
       noChapters: 'Chưa có danh sách chương',
       chapterList: 'Danh Sách Chương',
+      sourceAudit: {
+        title: 'Nguồn RAG',
+        sources: 'Nguồn',
+        chunks: 'Chunk',
+        retrievals: 'Lượt lấy',
+        validChunks: 'Chunk hợp lệ',
+        discardedChunks: 'Đã loại',
+        discardedPreview: 'Mẫu bị loại',
+        latestQuery: 'Query gần nhất',
+        empty: 'Đang chờ dữ liệu nguồn từ RAG...',
+        quality: {
+          sufficient: 'Đủ ngữ cảnh',
+          insufficient: 'Thiếu ngữ cảnh',
+          best_effort: 'Tốt nhất hiện có',
+          unknown: 'Chưa đánh giá',
+        },
+      },
     },
     completion: {
       title: 'Tạo giáo trình thành công!',

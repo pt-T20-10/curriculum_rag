@@ -337,31 +337,39 @@ def filter_and_classify_urls(
     unique_urls = list(dict.fromkeys(urls))
     logger.info(f"Dedup: {len(urls)} → {len(unique_urls)} unique URLs")
 
-    # Step 2: Whitelist check — split into guaranteed + candidates
+    # Step 2: Trusted-domain awareness.
+    #
+    # Older behavior let whitelisted domains bypass snippet scoring entirely.
+    # That made audit claims weak: a trusted domain can still return an
+    # irrelevant page for this subsection/topic. Keep the log signal, but make
+    # every URL pass the same scoring and validation gates.
     whitelist = WHITELIST_DOMAINS.get(content_type, ())
-    whitelisted_urls: List[str] = []
-    remaining_urls:   List[str] = []
-
-    for u in unique_urls:
-        u_lower = u.lower()
-        if any(domain in u_lower for domain in whitelist):
-            whitelisted_urls.append(u)
-        else:
-            remaining_urls.append(u)
+    whitelisted_urls = [
+        u for u in unique_urls
+        if any(domain in u.lower() for domain in whitelist)
+    ]
+    remaining_urls = list(unique_urls)
 
     if whitelisted_urls:
         logger.info(
-            f"Whitelist ({content_type}): {len(whitelisted_urls)} URLs bypass "
-            f"snippet filter — {len(remaining_urls)} remain for scoring"
+            f"Trusted domains ({content_type}): {len(whitelisted_urls)} URLs "
+            f"identified — all still pass snippet/static/dynamic filters"
         )
 
     # Step 3: Snippet pre-filter on non-whitelisted URLs
+    score_map: Dict[str, float] = {}
+    meta_map: Dict[str, Dict[str, str]] = {}
     if scored_results and remaining_urls:
-        score_map: Dict[str, float] = {}
         for r in scored_results:
             href = r.get("href", "")
             if href and href not in score_map:
                 score_map[href] = score_search_result(r, topic or r.get("_topic", ""))
+                meta_map[href] = {
+                    "source_query": r.get("_query", ""),
+                    "search_region": r.get("_region", ""),
+                    "search_title": r.get("title", ""),
+                    "snippet_score": f"{score_map[href]:.4f}",
+                }
 
         before_snippet = len(remaining_urls)
         remaining_urls = [
@@ -375,8 +383,7 @@ def filter_and_classify_urls(
                 f"({removed_snippet} low-quality removed before network probe)"
             )
 
-    # Merge whitelisted + scored survivors
-    unique_urls = whitelisted_urls + remaining_urls
+    unique_urls = remaining_urls
 
     # Step 4: Static filter
     candidate_urls = [u for u in unique_urls if is_valid_url_static(u)]
@@ -397,8 +404,13 @@ def filter_and_classify_urls(
     def check_and_collect(url: str) -> None:
         doc_type = check_url_content_type(url)
         if doc_type:
+            metadata = meta_map.get(url, {})
             with lock:
-                clean_urls.append({"url": url, "type": doc_type})
+                clean_urls.append({
+                    "url": url,
+                    "type": doc_type,
+                    **metadata,
+                })
 
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=worker_count

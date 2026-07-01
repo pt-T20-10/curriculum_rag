@@ -24,6 +24,7 @@ beyond what a single unified query would achieve.
 import shutil
 import os
 import concurrent.futures
+import re
 from pathlib import Path
 
 from typing import Any
@@ -80,6 +81,12 @@ def _config_float(config: dict[str, Any], key: str, default: float) -> float:
         return default
 
 
+def _run_id_from_collection(collection_name: str) -> str:
+    """Derive a compact run id from the per-textbook Chroma collection name."""
+    match = re.match(r"^dynamic_context_(.+)$", collection_name or "")
+    return match.group(1) if match else (collection_name or "dynamic_context")
+
+
 def perform_ingestion(state: AgentState) -> dict:
     """
     Ingestion node: populate ChromaDB with topic-relevant documents.
@@ -118,6 +125,7 @@ def perform_ingestion(state: AgentState) -> dict:
     topic        = state.get("core_topic", "") or state["request"]
     content_type = state.get("content_type", "technical")
     runtime_config = state.get("advanced_config", {}) or {}
+    collection_name = state.get("rag_collection_name", "dynamic_context")
     targeted_per_chapter = _config_int(
         runtime_config,
         "TARGETED_CRAWL_QUERIES_PER_CHAPTER",
@@ -169,7 +177,11 @@ def perform_ingestion(state: AgentState) -> dict:
     logger.info("=" * 60)
 
     # ------------------------------------------------------------------
-    # Step 1 — Clear old database
+    # Step 1 — Best-effort legacy DB cleanup.
+    #
+    # Correctness now comes from per-run Chroma collections. If the directory
+    # is locked, continue with the isolated collection instead of risking stale
+    # chunks from a previous textbook run.
     # ------------------------------------------------------------------
     print(f"[DEBUG INGESTER] Step 1: clearing ChromaDB", flush=True)
     if os.path.exists(CHROMA_DB_DIR):
@@ -177,7 +189,10 @@ def perform_ingestion(state: AgentState) -> dict:
             shutil.rmtree(CHROMA_DB_DIR)
             logger.info("Cleared old ChromaDB")
         except Exception as e:
-            logger.warning(f"Could not clear DB: {e}")
+            logger.warning(
+                f"Could not clear DB ({e}); continuing with isolated "
+                f"collection '{collection_name}'"
+            )
 
     if stop_signal.is_stopped():
         print(f"[DEBUG INGESTER] STOPPED after Step 1", flush=True)
@@ -271,6 +286,9 @@ def perform_ingestion(state: AgentState) -> dict:
                 for res in results:
                     url = res.get("href", "")
                     if url and url not in seen_urls:
+                        res = dict(res)
+                        res["_query"] = q
+                        res["_region"] = r
                         seen_urls.add(url)
                         all_raw_urls.append(url)
                         all_results_with_meta.append(res)
@@ -355,6 +373,8 @@ def perform_ingestion(state: AgentState) -> dict:
     success = ingest_dynamic_data(
         topic, clean_links,
         content_type=content_type,
+        collection_name=collection_name,
+        run_id=_run_id_from_collection(collection_name),
         progress_callback=_get_ingestion_callback(),
         runtime_config=runtime_config,
     )

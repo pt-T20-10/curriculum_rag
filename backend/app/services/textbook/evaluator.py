@@ -18,7 +18,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
 
 from app.config import settings
-from app.services.runtime_config import get_api_key
+from app.services.runtime_config import get_api_key, get_runtime_config
 from app.utils import stop_signal
 from app.utils.log_config import setup_logger
 from app.schemas.curriculum import (
@@ -27,7 +27,10 @@ from app.schemas.curriculum import (
     get_chapter_and_subsection,
 )
 # retrieve_context_tool is defined in retriever.py (the ChromaDB search tool)
-from app.services.textbook.retriever import retrieve_context_tool
+from app.services.textbook.retriever import (
+    build_source_audit_summary,
+    retrieve_context_tool,
+)
 from app.services.textbook.writer import _build_prior_summary_block
 
 logger = setup_logger(name="EvaluatorAgent", logfile="logs/agents.log")
@@ -35,6 +38,34 @@ logger = setup_logger(name="EvaluatorAgent", logfile="logs/agents.log")
 LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
 LLM_MODEL_PREMIUM = settings.LLM_MODEL_PREMIUM
 _RETRIEVAL_MAX_ROUNDS: int = settings.WRITER_RETRIEVAL_MAX_ROUNDS
+
+
+def _runtime_bool(key: str, default: bool = False) -> bool:
+    value = get_runtime_config(key)
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _context_evidence_score(
+    *,
+    chars: int,
+    valid_chunks: int,
+    unique_sources: int,
+    avg_source_score: float,
+) -> float:
+    """Score context evidence for best-effort fallback selection."""
+    char_score = min(1.0, chars / max(1, settings.CRAG_CONTEXT_QUALITY_MIN_CHARS))
+    chunk_score = min(1.0, valid_chunks / 2)
+    source_score = min(1.0, unique_sources / 2)
+    return (
+        char_score * 0.25
+        + chunk_score * 0.30
+        + source_score * 0.25
+        + avg_source_score * 0.20
+    )
 
 
 # ============================================================================
@@ -71,6 +102,7 @@ class EvaluatorAgent:
         section_type: str,
         initial_context: str,
         section_summaries: list[str],
+        collection_name: str = "dynamic_context",
         revision_feedback: str = "",
         used_queries: list[str] = [],
     ) -> tuple[str, list[str]]:
@@ -114,6 +146,9 @@ class EvaluatorAgent:
                 f"{revision_block}\n"
                 f"If context is thin OR in revision mode, call retrieve_context_tool "
                 f"with specific queries targeting missing content. Max {_RETRIEVAL_MAX_ROUNDS} calls.\n"
+                f"For technical/computing topics, prefer concise English keyword queries "
+                f"or bilingual VI+EN queries; use Vietnamese-only queries only when the "
+                f"missing content is specifically about Vietnam or local terminology.\n"
                 f"If context is already sufficient, do NOT call any tool — just reply 'OK'.\n\n"
                 # Removed the instruction to return verbatim chunks — we collect them ourselves.
                 f"Your only job is to decide WHAT to fetch, not to summarize or rewrite anything."
@@ -138,11 +173,13 @@ class EvaluatorAgent:
             messages.append(response)
 
             for tc in tool_calls:
-                query = tc["args"].get("query", "")
+                tool_args = dict(tc["args"])
+                tool_args["collection_name"] = collection_name
+                query = tool_args.get("query", "")
                 logger.info(f"[Retrieval] Tool call: '{query[:60]}'")
                 _queries_this_call.append(query)
 
-                result = retrieve_context_tool.invoke(tc["args"])
+                result = retrieve_context_tool.invoke(tool_args)
                 result_str = str(result)
 
                 # Store raw chunk text directly — bypass LLM synthesis entirely.
@@ -208,6 +245,16 @@ def evaluate_context(state: AgentState) -> dict:
     section_summaries = state.get("section_summaries", [])
     review_feedback   = state.get("review_feedback", "")
     used_queries      = state.get("used_rag_queries", [])
+    collection_name   = state.get("rag_collection_name", "dynamic_context")
+    prior_source_audit = state.get("rag_source_audit", {}) or {}
+    prior_discarded_chunks = (
+        prior_source_audit.get("discarded_details", [])
+        if isinstance(prior_source_audit, dict)
+        else []
+    )
+    retrieval_attempts = int(state.get("rag_retrieval_attempts", 0) or 0)
+    max_retries = max(1, getattr(settings, "CRAG_MAX_CONTEXT_RETRIES", 2))
+    allow_best_effort = _runtime_bool("CRAG_BEST_EFFORT_AFTER_RETRIES", False)
 
     try:
         chapter, subsection = get_chapter_and_subsection(curriculum, chap_idx, sub_idx)
@@ -226,22 +273,57 @@ def evaluate_context(state: AgentState) -> dict:
             section_type        = sec_type,
             initial_context     = initial_context,
             section_summaries   = list(section_summaries),
+            collection_name     = collection_name,
             revision_feedback   = review_feedback or "",
             used_queries        = used_queries,
         )
 
-        # Determine context quality verdict
-        is_empty     = not enriched_context.strip()
-        is_too_short = (
-            len(enriched_context) < settings.CRAG_CONTEXT_QUALITY_MIN_CHARS
-            and not new_queries
+        prior_used    = list(used_queries)
+        updated_used  = prior_used + new_queries
+        source_audit_probe = build_source_audit_summary(
+            enriched_context,
+            used_queries=updated_used,
+            chapter_index=chap_idx,
+            subsection_index=sub_idx,
+            discarded_chunks=prior_discarded_chunks,
         )
 
-        if is_empty or is_too_short:
+        valid_chunks = int(source_audit_probe.get("valid_chunks", 0) or 0)
+        unique_sources = int(source_audit_probe.get("unique_sources", 0) or 0)
+        source_scores = [
+            s.get("avg_score")
+            for s in source_audit_probe.get("sources", [])
+            if isinstance(s.get("avg_score"), (int, float))
+        ]
+        avg_source_score = (
+            sum(source_scores) / len(source_scores)
+            if source_scores else 0.0
+        )
+
+        is_empty = not enriched_context.strip()
+        is_too_short = len(enriched_context) < settings.CRAG_CONTEXT_QUALITY_MIN_CHARS
+        too_few_chunks = valid_chunks < 2
+        too_few_sources = unique_sources < 2
+        low_score = bool(source_scores) and avg_source_score < 0.30
+        evidence_score = _context_evidence_score(
+            chars=len(enriched_context),
+            valid_chunks=valid_chunks,
+            unique_sources=unique_sources,
+            avg_source_score=avg_source_score,
+        )
+
+        if is_empty or is_too_short or too_few_chunks or too_few_sources or low_score:
             context_quality = "insufficient"
+            source_audit_probe.setdefault("warnings", []).append(
+                "Context did not meet strict RAG gate: "
+                f"chars={len(enriched_context)}, chunks={valid_chunks}, "
+                f"sources={unique_sources}, avg_score={avg_source_score:.2f}."
+            )
             logger.warning(
                 f"ContextEvaluator: context quality = 'insufficient' "
-                f"(len={len(enriched_context)}, new_queries={len(new_queries)})"
+                f"(len={len(enriched_context)}, chunks={valid_chunks}, "
+                f"sources={unique_sources}, avg_score={avg_source_score:.2f}, "
+                f"new_queries={len(new_queries)})"
             )
         else:
             context_quality = "sufficient"
@@ -259,14 +341,54 @@ def evaluate_context(state: AgentState) -> dict:
         elif new_queries and not initial_context:
             web_supplement = enriched_context
 
-        prior_used    = list(used_queries)
-        updated_used  = prior_used + new_queries
+        source_audit = build_source_audit_summary(
+            enriched_context,
+            used_queries=updated_used,
+            context_quality=context_quality,
+            chapter_index=chap_idx,
+            subsection_index=sub_idx,
+            discarded_chunks=prior_discarded_chunks,
+        )
+        source_audit["warnings"] = source_audit_probe.get("warnings", [])
+
+        best_context = state.get("rag_best_effort_context", "") or ""
+        best_audit = state.get("rag_best_effort_audit", {}) or {}
+        best_score = float(state.get("rag_best_effort_score", 0.0) or 0.0)
+        if valid_chunks > 0 and enriched_context.strip() and evidence_score >= best_score:
+            best_context = enriched_context
+            best_audit = source_audit
+            best_score = evidence_score
+
+        if (
+            context_quality == "insufficient"
+            and allow_best_effort
+            and retrieval_attempts >= max_retries
+            and best_context.strip()
+        ):
+            context_quality = "best_effort"
+            enriched_context = best_context
+            source_audit = dict(best_audit)
+            source_audit["context_quality"] = "best_effort"
+            source_audit.setdefault("warnings", []).append(
+                "Using best available context after retry budget was exhausted."
+            )
+            logger.warning(
+                "ContextEvaluator: using best_effort context after %s/%s "
+                "attempts (evidence_score=%.3f)",
+                retrieval_attempts,
+                max_retries,
+                best_score,
+            )
 
         return {
             "rag_context":            enriched_context,
             "context_quality":        context_quality,
             "web_supplement_context": web_supplement,
             "used_rag_queries":       updated_used,
+            "rag_source_audit":       source_audit,
+            "rag_best_effort_context": best_context,
+            "rag_best_effort_audit":   best_audit,
+            "rag_best_effort_score":   best_score,
             "messages": [
                 f"{'✓' if context_quality == 'sufficient' else '⚠️'} "
                 f"ContextEvaluator: quality='{context_quality}', "
@@ -277,10 +399,19 @@ def evaluate_context(state: AgentState) -> dict:
 
     except Exception as e:
         logger.error(f"ContextEvaluator unexpected error: {e}", exc_info=True)
-        # Fail open — pass through whatever context we have
+        # Strict gate: retrieval/evaluation errors must not be treated as
+        # sufficient source evidence.
         return {
             "rag_context":            initial_context,
-            "context_quality":        "sufficient",
+            "context_quality":        "insufficient",
             "web_supplement_context": "",
+            "rag_source_audit": build_source_audit_summary(
+                initial_context,
+                used_queries=used_queries,
+                context_quality="insufficient",
+                chapter_index=chap_idx,
+                subsection_index=sub_idx,
+                discarded_chunks=prior_discarded_chunks,
+            ),
             "messages": [f"Error in ContextEvaluator: {e}"],
         }

@@ -162,7 +162,7 @@ class IllustratorAgent:
         self.llm = (
             ChatOpenAI(
                 model=LLM_MODEL_CHEAP,
-                api_key=openai_api_key,
+                api_key=openai_api_key, #type: ignore
                 temperature=0,
             )
             if openai_api_key
@@ -197,7 +197,7 @@ class IllustratorAgent:
                 user_prompt=f"Description: {description}",
                 context_label=f"Query builder | {description[:40]}",
             )
-            response = self.llm.invoke(
+            response = self.llm.invoke( #type: ignore
                 "Convert this image description into a short, specific Google Image "
                 "search query (5-7 words max, English only, no quotes).\n"
                 "Focus on the KEY VISUAL ELEMENT only — ignore structural details.\n\n"
@@ -244,7 +244,7 @@ class IllustratorAgent:
             return caption
 
         try:
-            response = self.llm.invoke(
+            response = self.llm.invoke( #type: ignore
                 f"Translate this image caption to {profile.prompt_name}. "
                 "Return ONLY the translation, no explanation:\n\n" + caption
             )
@@ -284,7 +284,7 @@ class IllustratorAgent:
                 user_prompt=f"Original: {description}",
                 context_label=f"Sanitize | {description[:40]}",
             )
-            response = self.llm.invoke(
+            response = self.llm.invoke( #type: ignore
             "Rewrite this image description for a GPT Image API call.\n\n"
             "Output format — use EXACTLY this structure:\n"
             "Caption: [one sentence describing the overall scene and style]\n"
@@ -362,7 +362,7 @@ class IllustratorAgent:
                 user_prompt=f"Description: {description}",
                 context_label=f"Router | {description[:50]}",
             )
-            response = self.llm.invoke(prompt.format(description=description))
+            response = self.llm.invoke(prompt.format(description=description)) #type: ignore
             data   = json.loads(str(response.content).strip())
             action = data.get("action", "SEARCH").upper()
             if action not in ("SEARCH", "DRAW", "DIAGRAM"):
@@ -618,7 +618,7 @@ class IllustratorAgent:
 
             validator = ChatOpenAI(
                 model="gpt-4o-mini",
-                api_key=get_api_key("OPENAI_API_KEY"),
+                api_key=get_api_key("OPENAI_API_KEY"), #type: ignore
                 temperature=0,
             )
             response = validator.invoke([

@@ -86,7 +86,7 @@ def _sanitize_confirmed_curriculum(curriculum: dict) -> tuple[dict, list[str], i
 
 def _planning_draft_phase(textbook: Textbook) -> bool:
     progress_data = dict(textbook.progress_data or {})  # type: ignore
-    phase = progress_data.get("phase") or ""
+    phase = progress_data.get("phase") or "" #type: ignore
     credits_used = int(textbook.credits_used or 0)  # type: ignore
     return credits_used == 0 and (
         phase in {"", "planning", "reviewing"}

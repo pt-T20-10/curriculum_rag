@@ -161,3 +161,55 @@ def test_workflow_fails_when_a_required_export_is_missing(
     assert "PDF" in result["error"]
     assert result["pdf_path"] is None
     assert result["docx_path"] == str(docx)
+
+
+def test_workflow_reports_terminal_insufficient_context_before_export(
+    monkeypatch,
+) -> None:
+    class Workflow:
+        def stream(self, state, config):
+            yield {"context_evaluator": {
+                "context_quality": "insufficient",
+                "current_chapter_index": 0,
+                "current_subsection_index": 0,
+                "rag_source_audit": {
+                    "warnings": [
+                        "Context did not meet strict RAG gate: chars=1293, chunks=1."
+                    ],
+                },
+            }}
+
+    monkeypatch.setattr(
+        orchestrator,
+        "create_content_after_confirm_workflow",
+        lambda: Workflow(),
+    )
+    result = asyncio.run(workflow_runner.continue_after_curriculum_confirmation(
+        textbook_id=1,
+        confirmed_curriculum={
+            "topic": "C#",
+            "chapters": [{
+                "title": "Chapter 1",
+                "subsections": [{
+                    "title": "Section 1",
+                    "description": "Description",
+                    "search_query": "C# basics",
+                    "section_type": "medium",
+                }],
+            }],
+        },
+        initial_state={
+            "request": "C#",
+            "core_topic": "C#",
+            "user_requirements": "",
+            "language": "vi",
+            "textbook_title": "C# Basics",
+            "export_formats": ["PDF", "Word"],
+        },
+        db=None,
+    ))
+
+    assert result["success"] is False
+    assert "Insufficient RAG context for Chapter 1.1" in result["error"]
+    assert "PDF" not in result["error"]
+    assert result["source_audit"]["warnings"]

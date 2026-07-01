@@ -26,7 +26,9 @@ from pyexpat import model
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
+from collections import Counter
+from urllib.parse import urlparse
 
 
 
@@ -51,6 +53,132 @@ from app.schemas.curriculum import AgentState, Chapter, SubSection, get_chapter_
 from app.utils.log_config import setup_logger
 
 logger = setup_logger(name="Retriever", logfile="logs/agents.log")
+
+
+_SOURCE_LINE_RE = re.compile(
+    r"^Document\s+\d+\s+\(Source:\s*(?P<source>.*?)(?:\s+\|\s+Score:\s*(?P<score>[\d.]+))?(?:\s+\|\s+Status:\s*(?P<status>[\w-]+))?\):",
+    re.MULTILINE,
+)
+
+
+def build_source_audit_summary(
+    rag_context: str,
+    used_queries: list[str] | None = None,
+    context_quality: str | None = None,
+    chapter_index: int | None = None,
+    subsection_index: int | None = None,
+    discarded_chunks: list[dict[str, Any]] | None = None,
+    max_sources: int = 10,
+    max_queries: int = 5,
+) -> dict[str, Any]:
+    """
+    Build a compact, UI-safe source audit summary from formatted RAG context.
+
+    The formatted context already contains source URL headers. This helper only
+    extracts those headers and never exposes chunk body text to progress polling.
+    """
+    used_queries = list(used_queries or [])
+    discarded_chunks = list(discarded_chunks or [])
+    matches = list(_SOURCE_LINE_RE.finditer(rag_context or ""))
+    records: list[dict[str, Any]] = []
+    for idx, match in enumerate(matches):
+        source = match.group("source").strip()
+        if not source or source.lower() == "unknown":
+            continue
+        start = match.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(rag_context or "")
+        sample = re.sub(r"\s+", " ", (rag_context or "")[start:end]).strip()[:220]
+        score_text = match.group("score")
+        try:
+            score = float(score_text) if score_text else None
+        except ValueError:
+            score = None
+        records.append({
+            "url": source,
+            "score": score,
+            "status": match.group("status") or "pass",
+            "sample": sample,
+        })
+
+    counts = Counter(record["url"] for record in records)
+    first_seen = {record["url"]: idx for idx, record in enumerate(records)}
+    top_sources = sorted(
+        counts.items(),
+        key=lambda item: (-item[1], first_seen.get(item[0], 0)),
+    )[:max_sources]
+
+    summary: dict[str, Any] = {
+        "total_retrievals": len(used_queries),
+        "total_chunks": len(records),
+        "unique_sources": len(counts),
+        "valid_chunks": len(records),
+        "discarded_chunks": len(discarded_chunks),
+        "discarded_details": discarded_chunks[:max_sources],
+        "warnings": [],
+        "sources": [
+            {
+                "url": source,
+                "domain": urlparse(source).netloc or source,
+                "count": count,
+                "avg_score": _average_score_for_source(records, source),
+                "status": _status_for_source(records, source),
+                "queries": used_queries[-max_queries:],
+                "sample": next(
+                    (record["sample"] for record in records if record["url"] == source),
+                    "",
+                ),
+            }
+            for source, count in top_sources
+        ],
+        "used_queries": used_queries[-max_queries:],
+    }
+
+    if not records:
+        summary["warnings"].append("No valid source chunks were available for this section.")
+    if discarded_chunks:
+        reasons = Counter(str(item.get("reason", "unknown")) for item in discarded_chunks)
+        summary["warnings"].append(
+            "Retriever discarded candidate chunks: "
+            + ", ".join(f"{reason}={count}" for reason, count in reasons.items())
+        )
+
+    if context_quality:
+        summary["context_quality"] = context_quality
+    if chapter_index is not None and subsection_index is not None:
+        summary["current_section"] = {
+            "chapter": chapter_index + 1,
+            "subsection": subsection_index + 1,
+        }
+
+    return summary
+
+
+def _average_score_for_source(records: list[dict[str, Any]], source: str) -> float | None:
+    scores = [
+        record["score"]
+        for record in records
+        if record["url"] == source and isinstance(record.get("score"), (int, float))
+    ]
+    if not scores:
+        return None
+    return round(sum(scores) / len(scores), 3)
+
+
+def _status_for_source(records: list[dict[str, Any]], source: str) -> str:
+    statuses = [
+        record.get("status") or "pass"
+        for record in records
+        if record["url"] == source
+    ]
+    if not statuses:
+        return "unknown"
+    if any(status == "warning" for status in statuses):
+        return "warning"
+    if any(status == "verified" for status in statuses):
+        return "verified"
+    if all(status == "pass" for status in statuses):
+        return "pass"
+    return statuses[0]
 
 
 # ============================================================================
@@ -219,8 +347,13 @@ class RAGContextLogger:
         ]
 
         for i, chunk in enumerate(chunks, 1):
+            score = chunk.get("retrieval_score")
+            status = chunk.get("status", "pass")
+            reason = chunk.get("discard_reason", "")
+            score_part = f" | Score: {score:.3f}" if isinstance(score, (int, float)) else ""
+            reason_part = f" | Reason: {reason}" if reason else ""
             lines += [
-                f"[Chunk {i}/{len(chunks)}] Source: {chunk['source']}",
+                f"[Chunk {i}/{len(chunks)}] Source: {chunk['source']}{score_part} | Status: {status}{reason_part}",
                 chunk["content"],
                 divider_thin,
             ]
@@ -274,7 +407,7 @@ class Retriever:
     EvaluatorAgent which uses LLM reasoning to decide whether to fetch more context.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, collection_name: str = "dynamic_context") -> None:
         """
         Open a ChromaDB connection using the singleton embedding model.
 
@@ -282,12 +415,14 @@ class Retriever:
         embedding model is loaded once per process regardless of how many
         ResearcherAgent instances are created.
         """
+        self.collection_name = collection_name
         self.vector_db = Chroma(
             persist_directory=str(CHROMA_DB_DIR),
             embedding_function=get_embedding_model(),
-            collection_name="dynamic_context",
+            collection_name=collection_name,
         )
         self._retrieved_ids: set[str] = set()
+        self.last_retrieval_audit: dict[str, Any] = {}
 
 
     def reset_retrieved_ids(self) -> None:
@@ -297,6 +432,7 @@ class Retriever:
         cross-subsection blacklist contamination.
         """
         self._retrieved_ids.clear()
+        self.last_retrieval_audit = {}
         logger.debug("Retrieved IDs blacklist reset")
     
     
@@ -334,14 +470,20 @@ class Retriever:
         
 
         try:
+            self.last_retrieval_audit = {
+                "query": query,
+                "discarded_chunks": [],
+                "candidate_count": 0,
+                "kept_count": 0,
+            }
             results = self.vector_db.max_marginal_relevance_search(
                 query,
-                k=k + len(self._retrieved_ids),
-                fetch_k=(k + len(self._retrieved_ids)) * 4,
+                k=max(k * 3, k + len(self._retrieved_ids)),
+                fetch_k=max(k * 8, (k + len(self._retrieved_ids)) * 4),
                 lambda_mult=0.7,
             )
 
-            # Dedup: chunk-level + source-level (unchanged)
+            # Dedup: chunk-level + source-level
             fresh_results = []
             for doc in results:
                 source_url = doc.metadata.get("source", "")
@@ -385,36 +527,57 @@ class Retriever:
                 self._retrieved_ids.add(chunk_id)
                 fresh_results.append(doc)
 
-                if len(fresh_results) >= k:
+                if len(fresh_results) >= k * 3:
                     break
 
-            # ----------------------------------------------------------------
-            # Post-retrieval quality filter — two layers:
-            #   Layer 1: Structural heuristics (no API call, topic-agnostic)
-            #   Layer 2: LLM binary classifier via Groq (free tier, fast)
-            # Fails open progressively: if both layers are too aggressive,
-            # falls back to heuristic-only, then to unfiltered results.
-            # ----------------------------------------------------------------
-            substantive = []
+            kept = []
+            discarded: list[dict[str, Any]] = []
             for doc in fresh_results:
                 text = doc.page_content
 
-                # Layer 1 — fast structural heuristic (no API call)
                 if not _is_substantive_chunk(text):
+                    discarded.append({
+                        "source": doc.metadata.get("source", "Unknown"),
+                        "reason": "structural_filter",
+                        "sample": text[:120],
+                    })
                     logger.debug(f"Heuristic DISCARD: '{text[:60]}'")
                     continue
 
-                # Layer 2 — LLM binary classifier (Groq, fail-open on error)
                 if not _llm_classify_chunk(text, query=query, content_type=content_type):
+                    discarded.append({
+                        "source": doc.metadata.get("source", "Unknown"),
+                        "reason": "llm_classifier",
+                        "sample": text[:120],
+                    })
                     logger.debug(f"LLM DISCARD: '{text[:60]}'")
                     continue
 
-                substantive.append(doc)
+                retrieval_score, discard_reason = _rerank_retrieved_doc(doc, query)
+                doc.metadata["retrieval_score"] = f"{retrieval_score:.4f}"
+                if discard_reason:
+                    discarded.append({
+                        "source": doc.metadata.get("source", "Unknown"),
+                        "reason": discard_reason,
+                        "sample": text[:120],
+                    })
+                    logger.debug(
+                        f"Rerank DISCARD ({discard_reason}, score={retrieval_score:.3f}): "
+                        f"'{text[:60]}'"
+                    )
+                    continue
 
-            filtered_count = len(fresh_results) - len(substantive)
+                kept.append(doc)
+
+            filtered_count = len(fresh_results) - len(kept)
+            self.last_retrieval_audit.update({
+                "candidate_count": len(fresh_results),
+                "kept_count": len(kept),
+                "discarded_chunks": discarded,
+            })
             if filtered_count:
                 logger.info(
-                    f"Chunk quality filter: {len(fresh_results)} → {len(substantive)} "
+                    f"Chunk quality filter: {len(fresh_results)} → {len(kept)} "
                     f"({filtered_count} junk chunks removed)"
                 )
 
@@ -422,13 +585,15 @@ class Retriever:
             # Layer 3 — Semantic deduplication + quality scoring
             # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             
-            if substantive:
+            if kept:
                 # Convert to dict format for deduplication
                 chunk_dicts = []
-                for doc in substantive:
+                for doc in kept:
                     chunk_dicts.append({
                         'content': doc.page_content,
                         'source': doc.metadata.get('source', 'Unknown'),
+                        'retrieval_score': _safe_float(doc.metadata.get('retrieval_score')),
+                        'language': doc.metadata.get('language') or _detect_chunk_language(doc.page_content),
                         'doc': doc  # Keep reference to original doc
                     })
                 
@@ -439,18 +604,28 @@ class Retriever:
                     embedding_model=self.vector_db._embedding_function
                 )
                 
-                # Score quality and sort by confidence
+                # Score quality and sort by retrieval confidence
                 for chunk in deduped:
-                    chunk['quality_score'] = _score_chunk_quality(
-                        chunk['content'],
-                        chunk['source']
-                    )
+                    chunk['quality_score'] = chunk.get('retrieval_score', 0.0)
                 
-                # Sort by quality score (descending) and take top k
                 deduped.sort(key=lambda x: x['quality_score'], reverse=True)
-                
-                # Convert back to Document objects
-                substantive = [c['doc'] for c in deduped[:k]]
+
+                selected = deduped[:k]
+                if k >= 3 and not any(c.get('language') == 'en' for c in selected):
+                    english_candidate = next(
+                        (c for c in deduped[k:] if c.get('language') == 'en'),
+                        None,
+                    )
+                    if english_candidate is not None:
+                        selected = selected[:-1] + [english_candidate]
+                        selected.sort(key=lambda x: x['quality_score'], reverse=True)
+                        logger.info(
+                            "Bilingual retrieval balance: included one EN chunk "
+                            "that passed strict filters"
+                        )
+
+                kept = [c['doc'] for c in selected]
+                self.last_retrieval_audit["kept_count"] = len(kept)
                 
                 if len(deduped) > k:
                     logger.info(
@@ -458,44 +633,48 @@ class Retriever:
                         f"(avg score: {sum(c['quality_score'] for c in deduped[:k]) / k:.2f})"
                     )
 
-            filtered_count = len(fresh_results) - len(substantive)
-            if filtered_count:
-                logger.info(
-                    f"Chunk quality filter: {len(fresh_results)} → {len(substantive)} "
-                    f"({filtered_count} junk chunks removed)"
-                )
-
-                # Fail-open tier 1: if Layer 2+3 over-filtered, fall back to Layer 1 only
-            if not substantive and fresh_results:
+            if not kept and fresh_results:
                 logger.warning(
-                    "Layers 2+3 removed all chunks — "
-                    "falling back to heuristic-only (Layer 1) results"
+                    f"All candidate chunks were filtered for query '{query}'. "
+                    "Strict RAG gate returns empty context instead of unfiltered chunks."
                 )
-                substantive = [
-                    doc for doc in fresh_results
-                    if _is_substantive_chunk(doc.page_content)
-                ]
-
-            # Fail-open tier 2: if ALL layers removed everything, keep unfiltered
-            if not substantive and fresh_results:
-                logger.warning(
-                    "All 3 quality layers removed every chunk — "
-                    "falling back to completely unfiltered results"
+                _get_rag_logger().log(
+                    query=query,
+                    chunks=[
+                        {
+                            "source": item["source"],
+                            "content": item["sample"],
+                            "status": "discarded",
+                            "discard_reason": item["reason"],
+                        }
+                        for item in discarded[:k]
+                    ],
+                    context_label=f"{context_label} [DISCARDED]",
                 )
-                substantive = fresh_results
+                return ""
 
-            results = substantive
+            results = kept
     
             if not results:
                 logger.warning(f"No fresh content found for query: '{query}'")
                 return ""
 
-            # Build chunk list (unchanged from here) ─────────────────────────
             chunks: list[dict] = []
             for doc in results:
+                retrieval_score = _safe_float(doc.metadata.get("retrieval_score"))
+                query_overlap = _safe_float(doc.metadata.get("query_overlap_score"))
+                status = (
+                    "verified"
+                    if retrieval_score >= 0.55 and query_overlap >= 0.18
+                    else "pass"
+                )
                 chunks.append({
-                    "source":  doc.metadata.get("source", "Unknown"),
-                    "content": doc.page_content,
+                    "source":          doc.metadata.get("source", "Unknown"),
+                    "content":         doc.page_content,
+                    "retrieval_score": retrieval_score,
+                    "query_overlap":   query_overlap,
+                    "status":          status,
+                    "source_query":    doc.metadata.get("source_query", ""),
                 })
 
             # Compute bilingual distribution statistics
@@ -530,8 +709,13 @@ class Retriever:
             formatted_content = ""
             for i, chunk in enumerate(chunks, 1):
                 inline_content = chunk["content"].replace("\n", " ")
+                score = chunk.get("retrieval_score", 0.0)
+                status = chunk.get("status", "pass")
+                source_query = chunk.get("source_query") or query
                 formatted_content += (
-                    f"Document {i} (Source: {chunk['source']}):\n"
+                    f"Document {i} (Source: {chunk['source']} | "
+                    f"Score: {score:.3f} | Status: {status}):\n"
+                    f"Source query: {source_query}\n"
                     f"{inline_content}\n\n"
                 )
 
@@ -550,7 +734,7 @@ class Retriever:
 # is opened once and reused for the entire workflow run.
 # ---------------------------------------------------------------------------
 
-_retriever_instance: Optional[Retriever] = None
+_retriever_instances: dict[str, Retriever] = {}
 
 
 
@@ -788,6 +972,57 @@ _CHUNK_SWEET_SPOT_MAX: int   = settings.RAG_CHUNK_SWEET_SPOT_MAX
 _CHUNK_SENT_LEN_MIN:   int   = settings.RAG_CHUNK_SENT_LEN_MIN
 _CHUNK_SENT_LEN_MAX:   int   = settings.RAG_CHUNK_SENT_LEN_MAX
 
+_TRUSTED_RETRIEVAL_DOMAINS = (
+    "wikipedia.org", "britannica.com", "openstax.org", "ocw.mit.edu",
+    "stanford.edu", "mit.edu", "berkeley.edu", "cs.cmu.edu",
+    "arxiv.org", "acm.org", "ieee.org", "geeksforgeeks.org",
+    ".edu", ".gov",
+)
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _keyword_overlap_score(query: str, text: str) -> float:
+    query_terms = {
+        term
+        for term in re.findall(r"[\wÀ-ỹ]+", (query or "").lower())
+        if len(term) >= 3
+    }
+    if not query_terms:
+        return 0.0
+    text_lower = (text or "").lower()
+    hits = sum(1 for term in query_terms if term in text_lower)
+    return min(1.0, hits / max(1, min(len(query_terms), 8)))
+
+
+def _rerank_retrieved_doc(doc, query: str) -> tuple[float, str]:
+    source = doc.metadata.get("source", "")
+    domain = urlparse(source).netloc.lower()
+    ingest_relevance = _safe_float(doc.metadata.get("relevance_score"), 0.0)
+    keyword_overlap = _keyword_overlap_score(query, doc.page_content)
+    doc.metadata["query_overlap_score"] = f"{keyword_overlap:.4f}"
+    quality_score = _score_chunk_quality(doc.page_content, source)
+    trust_bonus = 0.05 if any(d in domain for d in _TRUSTED_RETRIEVAL_DOMAINS) else 0.0
+
+    score = (
+        ingest_relevance * 0.45
+        + keyword_overlap * 0.35
+        + quality_score * 0.20
+        + trust_bonus
+    )
+    if keyword_overlap < 0.05:
+        return score, "very_low_query_overlap"
+    if keyword_overlap < 0.12 and ingest_relevance < 0.40:
+        return score, "low_query_overlap"
+    if quality_score < 0.25:
+        return score, "low_chunk_quality"
+    return min(1.0, score), ""
+
 def _score_chunk_quality(chunk_text: str, source_url: str) -> float:
     """
     Compute quality confidence score for a chunk based on multiple signals.
@@ -957,7 +1192,7 @@ Reply with ONLY one word: KEEP or DISCARD"""
         return True
 
 
-def _get_retriever() -> Retriever:
+def _get_retriever(collection_name: str = "dynamic_context") -> Retriever:
     """
     Return the module-level Retriever singleton.
 
@@ -965,12 +1200,15 @@ def _get_retriever() -> Retriever:
     calls. Thread-safety is not guaranteed — safe for single-threaded
     LangGraph workflow only.
     """
-    global _retriever_instance
-    if _retriever_instance is None:
-        _retriever_instance = Retriever()
-    return _retriever_instance
+    if collection_name not in _retriever_instances:
+        _retriever_instances[collection_name] = Retriever(collection_name=collection_name)
+    return _retriever_instances[collection_name]
 @tool
-def retrieve_context_tool(query: str, content_type: str = "technical") -> str:
+def retrieve_context_tool(
+    query: str,
+    content_type: str = "technical",
+    collection_name: str = "dynamic_context",
+) -> str:
     """
     Retrieve relevant chunks from the knowledge base for a given query.
     Use this tool when you need more specific information about a topic
@@ -984,8 +1222,11 @@ def retrieve_context_tool(query: str, content_type: str = "technical") -> str:
     Returns:
         Formatted string of retrieved chunks with source metadata.
     """
-    logger.info(f"[TOOL CALL] retrieve_context_tool: '{query[:60]}' (type={content_type})")
-    return _get_retriever().retrieve_context(
+    logger.info(
+        f"[TOOL CALL] retrieve_context_tool: '{query[:60]}' "
+        f"(type={content_type}, collection={collection_name})"
+    )
+    return _get_retriever(collection_name).retrieve_context(
         query=query,
         k=RAG_TOOL_K,
         context_label="[TOOL CALL]",
@@ -1028,6 +1269,7 @@ def retriever_node(state: AgentState) -> dict:
     chap_idx     = state["current_chapter_index"]
     sub_idx      = state["current_subsection_index"]
     content_type = state.get("content_type", "technical")
+    collection_name = state.get("rag_collection_name", "dynamic_context")
 
     if not query:
         logger.warning("retrieval_query is empty — RetrieverNode skipped")
@@ -1036,7 +1278,9 @@ def retriever_node(state: AgentState) -> dict:
     context_label = f"[CRAG] Chapter {chap_idx + 1}.{sub_idx + 1}"
 
     try:
-        context = _get_retriever().retrieve_context(
+        retriever = _get_retriever(collection_name)
+        retriever.reset_retrieved_ids()
+        context = retriever.retrieve_context(
             query         = query,
             k             = RAG_INITIAL_K,
             context_label = context_label,
@@ -1044,17 +1288,42 @@ def retriever_node(state: AgentState) -> dict:
         )
 
         prior_used = list(state.get("used_rag_queries", []))
+        retrieval_attempts = int(state.get("rag_retrieval_attempts", 0) or 0) + 1
 
         if not context:
             return {
                 "rag_context":      "",
-                "used_rag_queries": prior_used + [query],  # mark as attempted → blocks retry loop
+                "used_rag_queries": prior_used + [query],
+                "rag_retrieval_attempts": retrieval_attempts,
+                "rag_source_audit": build_source_audit_summary(
+                    "",
+                    used_queries=prior_used + [query],
+                    context_quality="insufficient",
+                    chapter_index=chap_idx,
+                    subsection_index=sub_idx,
+                    discarded_chunks=retriever.last_retrieval_audit.get(
+                        "discarded_chunks",
+                        [],
+                    ),
+                ),
                 "messages": ["⚠️ RetrieverNode: no chunks found for query"],
             }
 
+        updated_used = prior_used + [query]
         return {
             "rag_context":      context,
-            "used_rag_queries": prior_used + [query],  # track all attempted retrieval queries
+            "used_rag_queries": updated_used,  # track all attempted retrieval queries
+            "rag_retrieval_attempts": retrieval_attempts,
+            "rag_source_audit": build_source_audit_summary(
+                context,
+                used_queries=updated_used,
+                chapter_index=chap_idx,
+                subsection_index=sub_idx,
+                discarded_chunks=retriever.last_retrieval_audit.get(
+                    "discarded_chunks",
+                    [],
+                ),
+            ),
             "messages": [
                 f"✓ RetrieverNode: retrieved context for Chapter {chap_idx + 1}.{sub_idx + 1} "
                 f"(query: '{query[:50]}...') — see logs/rag_context.log"

@@ -159,6 +159,32 @@ def test_runner_requires_markdown_artifact() -> None:
     assert "Markdown" in result["error"]
 
 
+def test_runner_reports_terminal_insufficient_context_before_artifacts() -> None:
+    class Workflow:
+        def stream(self, state, config):
+            yield {"planner": {"curriculum": SimpleNamespace(chapters=[])}}
+            yield {"context_evaluator": {
+                "context_quality": "insufficient",
+                "current_chapter_index": 0,
+                "current_subsection_index": 0,
+                "rag_source_audit": {
+                    "warnings": [
+                        "Context did not meet strict RAG gate: chunks=1."
+                    ],
+                },
+            }}
+
+    result = automatic_runner.run_automatic_textbook_workflow(
+        query="Python cơ bản",
+        _validator=lambda query, language: VALIDATION,
+        _workflow_factory=Workflow,
+    )
+
+    assert result["success"] is False
+    assert "Insufficient RAG context for Chapter 1.1" in result["error"]
+    assert "Markdown" not in result["error"]
+
+
 def test_runner_requires_pdf_and_docx_exports(tmp_path: Path) -> None:
     markdown = tmp_path / "book.md"
     markdown.write_text("# Python", encoding="utf-8")

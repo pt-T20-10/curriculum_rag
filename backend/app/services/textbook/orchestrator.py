@@ -7,6 +7,7 @@ from enum import Enum
 from langgraph.graph import StateGraph, END
 from langgraph.graph.state import CompiledStateGraph
 
+from app.config import settings
 from app.schemas.curriculum import AgentState
 from app.utils.log_config import setup_logger
 from app.schemas.curriculum import (
@@ -135,13 +136,10 @@ def route_after_context_evaluation(state: AgentState) -> str:
     """
     CRAG routing gate: decide whether retrieved context is sufficient to write.
 
-    Retry logic (max 1 retry per subsection, no new state field needed):
-        used_rag_queries == [] means ContextEvaluator made no supplemental
-        tool calls — the initial ChromaDB context was all there was.
-        One retry is allowed in this case (QueryFormulator shifts query angle).
-
-        used_rag_queries != [] means supplemental fetches were already attempted.
-        Proceed to ContentWriter regardless — fail open.
+    Strict RAG gate:
+        Retry while the configured retry budget remains. When the budget is
+        exhausted, stop the workflow instead of allowing Writer to synthesize a
+        section from weak or empty context.
 
     Args:
         state: Current LangGraph workflow state.
@@ -152,19 +150,24 @@ def route_after_context_evaluation(state: AgentState) -> str:
     """
     context_quality = state.get("context_quality", "sufficient")
     used_queries    = state.get("used_rag_queries", [])
+    retrieval_attempts = int(state.get("rag_retrieval_attempts", 0) or 0)
+    max_retries     = max(1, getattr(settings, "CRAG_MAX_CONTEXT_RETRIES", 2))
 
-    if context_quality == "insufficient" and len(used_queries) == 0:
+    if context_quality == "insufficient" and retrieval_attempts < max_retries:
         logger.info(
-            "Context quality: INSUFFICIENT (no supplemental fetches attempted) "
-            "— retrying via QueryFormulator"
+            f"Context quality: INSUFFICIENT — retrying via QueryFormulator "
+            f"({retrieval_attempts}/{max_retries} attempts used, "
+            f"{len(used_queries)} total RAG queries)"
         )
         return WorkflowDecision.RETRY_RETRIEVAL
 
     if context_quality == "insufficient":
-        logger.warning(
-            "Context quality: still INSUFFICIENT after supplemental fetch "
-            "— proceeding to ContentWriter (fail open)"
+        logger.error(
+            f"Context quality: still INSUFFICIENT after {retrieval_attempts} "
+            f"main retrieval attempt(s) and {len(used_queries)} total RAG "
+            "queries — stopping before ContentWriter"
         )
+        return WorkflowDecision.FINISHED
     else:
         logger.info("Context quality: SUFFICIENT — proceeding to ContentWriter")
 
@@ -222,10 +225,14 @@ def append_and_update_subsection(state: AgentState) -> dict:
         "section_summaries":        updated_summaries,
         # Reset per-subsection accumulators
         "used_rag_queries":         [],
+        "rag_retrieval_attempts":   0,
         # Reset CRAG pipeline fields for next subsection
         "retrieval_query":          "",
         "context_quality":          "sufficient",
         "web_supplement_context":   "",
+        "rag_best_effort_context":  "",
+        "rag_best_effort_audit":    {},
+        "rag_best_effort_score":    0.0,
         "rejection_type":           None,
         "messages": [
             f"✓ Completed: Chapter {current_chapter + 1}, "
@@ -276,10 +283,14 @@ def append_and_update_chapter(state: AgentState) -> dict:
         "section_summaries":        updated_summaries,
         # Reset per-subsection accumulators
         "used_rag_queries":         [],
+        "rag_retrieval_attempts":   0,
         # Reset CRAG pipeline fields for next chapter's first subsection
         "retrieval_query":          "",
         "context_quality":          "sufficient",
         "web_supplement_context":   "",
+        "rag_best_effort_context":  "",
+        "rag_best_effort_audit":    {},
+        "rag_best_effort_score":    0.0,
         "rejection_type":           None,
         "messages": [f"✓ Completed: Chapter {current_chapter + 1}"],
     }
@@ -371,6 +382,7 @@ def _define_content_edges(builder: StateGraph) -> None:
         {
             WorkflowDecision.RETRY_RETRIEVAL:     "query_formulator",
             WorkflowDecision.CONTINUE_SUBSECTION: "content_writer",
+            WorkflowDecision.FINISHED:            END,
         },
     )
 

@@ -162,15 +162,15 @@ class Settings(BaseSettings):
     CHUNK_OVERLAP: int = 300
     
     # ==================== Ingestion Speed Controls ====================
-    SEARCH_QUERIES_PER_LANGUAGE: int = 6
-    SEARCH_RESULTS_PER_QUERY: int = 30
+    SEARCH_QUERIES_PER_LANGUAGE: int = 4  #6
+    SEARCH_RESULTS_PER_QUERY: int = 15  #30
     SEARCH_MAX_WORKERS: int = 6
     CRAWL_MAX_WORKERS: int = 5
-    CRAWL_MAX_SUB_LINKS: int = 5
-    CRAWL_MAX_ROOT_URLS: int = 0
+    CRAWL_MAX_SUB_LINKS: int = 3 #5
+    CRAWL_MAX_ROOT_URLS: int = 50 #0
     URL_FILTER_MAX_WORKERS: int = 5
     INDICATE_LINKS_FOR_PICS: int = 12
-    CRAWL_MAX_DEPTH2_LINKS: int = 3
+    CRAWL_MAX_DEPTH2_LINKS: int = 1 #3
     
     # ==================== Quality Filters ====================
     MIN_CHUNK_CHARS: int = 200
@@ -218,16 +218,22 @@ class Settings(BaseSettings):
     
     
     # ==================== CRAG Pipeline ====================
-    CRAG_CONTEXT_QUALITY_MIN_CHARS: int = 3000
+    CRAG_CONTEXT_QUALITY_MIN_CHARS: int = 2500
     """
     Minimum total chars of enriched RAG context for ContextEvaluator to mark
     context_quality='sufficient'. Below this → 'insufficient' → retry or fail-open.
     CAUTION: Lowering this causes ContentWriter to write with sparse context.
     """
-    CRAG_MAX_CONTEXT_RETRIES: int = 2
+    CRAG_MAX_CONTEXT_RETRIES: int = 4
     """
     Maximum times QueryFormulator retries before ContentWriter proceeds regardless.
     CAUTION: Raising this increases per-subsection latency by ~3-5s per retry.
+    """
+    CRAG_BEST_EFFORT_AFTER_RETRIES: bool = True #False
+    """
+    If True, after CRAG_MAX_CONTEXT_RETRIES is exhausted, keep the best
+    available non-empty context for the section and continue as 'best_effort'
+    instead of stopping the whole workflow. Keep False for strict thesis runs.
     """
 
     # ==================== Content Generation ====================
@@ -277,12 +283,12 @@ class Settings(BaseSettings):
     """
 
     # ==================== Targeted Crawling (Shift 3) ====================
-    TARGETED_CRAWL_QUERIES_PER_CHAPTER: int = 2
+    TARGETED_CRAWL_QUERIES_PER_CHAPTER: int =  1 #2
     """
     Number of subsection search_query fields extracted per chapter for
     curriculum-grounded ingestion. Keeps targeted queries focused per chapter.
     """
-    TARGETED_CRAWL_MAX_QUERIES: int = 12
+    TARGETED_CRAWL_MAX_QUERIES: int = 6  #12
     """
     Hard cap on total curriculum-derived queries appended to the ingestion search.
     Prevents over-querying on textbooks with many chapters/subsections.
@@ -297,7 +303,7 @@ class Settings(BaseSettings):
     CHROMADB_BATCH_SIZE: int = 100
     
     # Maximum chunks to embed (pre-filter with heuristics to save time)
-    MAX_CHUNKS_TO_EMBED: int = 1000
+    MAX_CHUNKS_TO_EMBED: int = 500  #1000
     
     # ==================== ChromaDB ====================
     CHROMA_PERSIST_DIR: str = "data/chroma_db"
@@ -490,7 +496,7 @@ def get_embedding_model():
        
         return OpenAIEmbeddings(
             model=settings.OPENAI_EMBEDDING_MODEL,
-            api_key=openai_api_key,
+            api_key=openai_api_key, #type: ignore
             # Dimensions: 1536 for text-embedding-3-small
             # No normalization needed - OpenAI handles internally
         )

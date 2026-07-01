@@ -453,6 +453,23 @@ export const en = {
       subsections: 'Sections',
       noChapters: 'No chapter list yet',
       chapterList: 'Chapter List',
+      sourceAudit: {
+        title: 'RAG Sources',
+        sources: 'Sources',
+        chunks: 'Chunks',
+        retrievals: 'Fetches',
+        validChunks: 'Valid chunks',
+        discardedChunks: 'Discarded',
+        discardedPreview: 'Discarded preview',
+        latestQuery: 'Latest query',
+        empty: 'Waiting for RAG source data...',
+        quality: {
+          sufficient: 'Sufficient',
+          insufficient: 'Insufficient',
+          best_effort: 'Best available',
+          unknown: 'Not rated',
+        },
+      },
     },
     completion: {
       title: 'Textbook created successfully!',

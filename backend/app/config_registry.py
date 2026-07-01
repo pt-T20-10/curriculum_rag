@@ -240,6 +240,16 @@ PARAMETER_REGISTRY: Dict[str, ParameterDef] = {
         "admin_only": False,
         "sensitive": False,
     },
+    "CRAG_BEST_EFFORT_AFTER_RETRIES": {
+        "label": "Dùng Ngữ Cảnh Tốt Nhất Sau Khi Hết Retry",
+        "description": "Khi bật, nếu vẫn thiếu ngữ cảnh sau số lần thử lại tối đa, hệ thống dùng context tốt nhất tìm được thay vì dừng toàn bộ workflow.",
+        "group": "rag",
+        "type": "bool",
+        "default": False,
+        "user_editable": True,
+        "admin_only": False,
+        "sensitive": False,
+    },
     "MIN_RELEVANCE_SCORE": {
         "label": "Điểm Liên Quan Tối Thiểu",
         "description": "Ngưỡng lọc ChromaDB sau khi tìm kiếm; các chunk dưới điểm này bị loại bỏ.",
