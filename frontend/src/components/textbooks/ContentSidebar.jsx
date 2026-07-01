@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { StatsSection } from './StatsSection'
 import { ChapterList } from './ChapterList'
 import { SourceAuditSection } from './SourceAuditSection'
+import { RunningIndicator } from '../common/RunningIndicator'
 
 /**
  * Transform flat chapter_titles array into hierarchical structure
@@ -128,16 +129,15 @@ export function ContentSidebar({ progressData }) {
 
       {/* Footer - Current Status */}
       <div className="flex-shrink-0 border-t border-gray-200 px-4 py-3 bg-blue-50">
-        <div className="flex items-center gap-2 text-xs text-blue-700">
-          <span className="animate-pulse">🔄</span>
-          <span className="font-medium">
-            {current_chapter > 0 && current_subsection > 0 ? (
-              <>{t('textbook.contentSidebar.writing', { chapter: current_chapter, subsection: current_subsection })}</>
-            ) : (
-              <>{t('textbook.contentSidebar.initializing')}</>
-            )}
-          </span>
-        </div>
+        <RunningIndicator
+          className="border-0 bg-transparent p-0"
+          size="sm"
+          label={
+            current_chapter > 0 && current_subsection > 0
+              ? t('textbook.contentSidebar.writing', { chapter: current_chapter, subsection: current_subsection })
+              : t('textbook.contentSidebar.initializing')
+          }
+        />
       </div>
     </div>
   )

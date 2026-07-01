@@ -18,6 +18,10 @@ export const textbooksAPI = {
   
   // Stop generation
   stop: (id) => axios.post(`/textbooks/${id}/stop`),
+
+  // Estimate credits for the confirmed curriculum without charging
+  estimateCredits: (id, curriculum) =>
+    axios.post(`/textbooks/${id}/estimate-credits`, { curriculum }),
   
   // ⭐ Confirm curriculum (simplified - no Chapter 1 preview)
   confirmCurriculum: (id, curriculum) => 

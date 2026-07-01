@@ -39,6 +39,7 @@ from app.services.textbook.language import get_language_profile
 
 LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
 LLM_MODEL_PREMIUM =settings.LLM_MODEL_PREMIUM
+LLM_MODEL_REVIEWER_LONGFORM = settings.LLM_MODEL_REVIEWER_LONGFORM
 
 logger = setup_logger(name="ReviewerAgent", logfile="logs/agents.log")
 
@@ -72,7 +73,7 @@ class ReviewerAgent:
         """
 
         self.llm = ChatOpenAI(
-            model=LLM_MODEL_PREMIUM,
+            model=LLM_MODEL_REVIEWER_LONGFORM,
             api_key=get_api_key("OPENAI_API_KEY"), # type: ignore[arg-type]
             temperature=0.1,
         )
@@ -574,7 +575,7 @@ Output rules:
             )
 
             llm_content = ChatOpenAI(
-                model=LLM_MODEL_CHEAP,
+                model=LLM_MODEL_REVIEWER_LONGFORM,
                 api_key=get_api_key("OPENAI_API_KEY"),  # type: ignore[arg-type]
                 temperature=0.2,
             )

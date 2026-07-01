@@ -3,6 +3,7 @@ Validator Agent for AI Textbook Generator.
 """
 
 import json
+import re
 from langchain_groq import ChatGroq
 from app.services.runtime_config import get_api_key
 from app.schemas.curriculum import AgentState
@@ -17,6 +18,141 @@ from app.services.textbook.language import (
 from app.utils.log_config import setup_logger
 
 logger = setup_logger(name="ValidatorAgent", logfile="logs/agents.log")
+
+
+_TOPIC_FILLER_TOKENS = {
+    "a",
+    "an",
+    "and",
+    "anh",
+    "bang",
+    "basic",
+    "beginner",
+    "bằng",
+    "cho",
+    "co",
+    "có",
+    "course",
+    "cuốn",
+    "ebook",
+    "en",
+    "english",
+    "for",
+    "giao",
+    "giáo",
+    "in",
+    "khoa",
+    "learn",
+    "learning",
+    "môn",
+    "sach",
+    "sách",
+    "textbook",
+    "tieng",
+    "tiếng",
+    "trinh",
+    "trình",
+    "vi",
+    "viet",
+    "việt",
+    "vietnamese",
+    "về",
+    "with",
+}
+
+_KNOWN_SHORT_TECH_TOKENS = {
+    "ai",
+    "c",
+    "c#",
+    "c++",
+    "css",
+    "go",
+    "html",
+    "ip",
+    "js",
+    "ml",
+    "nlp",
+    "os",
+    "php",
+    "r",
+    "sql",
+    "ui",
+    "ux",
+}
+
+
+def _topic_tokens(text: str) -> list[str]:
+    """Tokenize topic-like text while preserving common technical tokens."""
+    return re.findall(r"[\w+#.]+", str(text or "").lower(), flags=re.UNICODE)
+
+
+def _token_counts(tokens: list[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for token in tokens:
+        counts[token] = counts.get(token, 0) + 1
+    return counts
+
+
+def _looks_like_noise_token(token: str) -> bool:
+    if not token or token in _TOPIC_FILLER_TOKENS:
+        return False
+    if token in _KNOWN_SHORT_TECH_TOKENS:
+        return False
+    if token.isdigit():
+        return len(token) >= 2
+    if re.fullmatch(r"[a-z]{3,}", token):
+        return True
+    if re.fullmatch(r"(.)\1{2,}", token):
+        return True
+    return False
+
+
+def _unexplained_topic_noise(topic: str, result: dict) -> list[str]:
+    """
+    Detect leftover junk that the validator ignored while extracting core_topic.
+
+    The LLM is allowed to normalize and translate topics, so this guard only
+    fires when the extracted core/requirements already explain most of the raw
+    input and the remaining tokens are clearly low-information noise.
+    """
+    topic_tokens = _topic_tokens(topic)
+    if not topic_tokens:
+        return []
+
+    explained_tokens = _topic_tokens(
+        " ".join([
+            str(result.get("core_topic") or ""),
+            str(result.get("user_requirements") or ""),
+        ])
+    )
+    if not explained_tokens:
+        return []
+
+    explained_counts = _token_counts(explained_tokens)
+    leftover: list[str] = []
+    explained_matches = 0
+
+    for token in topic_tokens:
+        if explained_counts.get(token, 0) > 0:
+            explained_counts[token] -= 1
+            explained_matches += 1
+        elif token not in _TOPIC_FILLER_TOKENS:
+            leftover.append(token)
+
+    if not leftover:
+        return []
+
+    coverage = explained_matches / max(len(topic_tokens), 1)
+    if coverage < 0.5:
+        return []
+
+    noisy = [token for token in leftover if _looks_like_noise_token(token)]
+    if not noisy:
+        return []
+
+    if len(noisy) == len(leftover) or any(token.isdigit() for token in noisy):
+        return noisy
+    return []
 
 
 def _parse_json_object(raw: str) -> dict:
@@ -315,6 +451,16 @@ Requirement indicators (extract these phrases):
 
 [CRITICAL RULES]
 
+Rule 0 — DO NOT IGNORE JUNK:
+  REJECT if the input contains a valid topic plus unrelated random text,
+  meaningless letters, or meaningless numbers that are not part of the subject.
+  Do not silently drop the noisy part while returning a cleaned core_topic.
+
+  Examples to REJECT:
+    ❌ "Lập trình Python abc"
+    ❌ "Lập trình Python 123"
+    ❌ "Machine Learning xyz"
+
 Rule 1 — SINGLE-WORD REJECTION:
   REJECT any topic that is 1-2 isolated words WITHOUT modifiers or context.
   
@@ -443,6 +589,15 @@ Input: "học"
                 language_info.get("unsupported_language"),
             )
             return _validation_fallback("unsupported_input_language", ui_language, language_info)
+
+        if result.get("valid", False):
+            noisy_tokens = _unexplained_topic_noise(topic, result)
+            if noisy_tokens:
+                logger.info(
+                    "[VALIDATOR] Rejected unexplained topic noise: %s",
+                    noisy_tokens,
+                )
+                return _validation_fallback("topic_contains_noise", ui_language, language_info)
         
         logger.info(
             "[VALIDATOR] Result: valid=%s, type=%s, target_language=%s",

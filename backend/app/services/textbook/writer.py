@@ -34,6 +34,8 @@ from app.services.textbook.language import get_language_profile
 
 LLM_MODEL_PREMIUM = settings.LLM_MODEL_PREMIUM
 LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
+LLM_MODEL_WRITER_LONGFORM = settings.LLM_MODEL_WRITER_LONGFORM
+
 from app.utils.log_config import setup_logger, setup_prompt_logger
 from app.schemas.curriculum import (
     AgentState,
@@ -275,7 +277,7 @@ class ContentWriter:
 
     def __init__(self) -> None:
         self._llm = ChatOpenAI(
-            model=LLM_MODEL_PREMIUM,
+            model=LLM_MODEL_WRITER_LONGFORM,
             api_key=get_api_key("OPENAI_API_KEY"), #type: ignore
             temperature=0.4,
         )

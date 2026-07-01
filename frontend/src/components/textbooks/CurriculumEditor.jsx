@@ -1,14 +1,19 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
+import { textbooksAPI } from '../../api/textbooks'
 import { Button } from '../common/Button'
 
-export function CurriculumEditor({ curriculum, onConfirm, onReset, confirming = false }) {
+export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, confirming = false }) {
   const { t } = useTranslation()
   const [editedCurriculum, setEditedCurriculum] = useState(curriculum)
   const [deletedSubs, setDeletedSubs] = useState(new Set())
   const [deletedChapters, setDeletedChapters] = useState(new Set()) // ⭐ NEW
   const [newSubs, setNewSubs] = useState({}) // { chapterIdx: [titles...] }
   const [validationError, setValidationError] = useState('')
+  const [creditEstimate, setCreditEstimate] = useState(null)
+  const [estimateError, setEstimateError] = useState('')
+  const [estimatingCredits, setEstimatingCredits] = useState(false)
+  const [pendingConfirmCurriculum, setPendingConfirmCurriculum] = useState(null)
 
   // Handle chapter title change
   const handleChapterChange = (chapterIdx, newTitle) => {
@@ -83,7 +88,7 @@ export function CurriculumEditor({ curriculum, onConfirm, onReset, confirming = 
   }
 
   // Build final curriculum for submit
-  const buildFinalCurriculum = () => {
+  const finalCurriculum = useMemo(() => {
     const finalChapters = editedCurriculum.chapters
       .map((chapter, chIdx) => {
         // ⭐ Skip deleted chapters
@@ -146,10 +151,47 @@ export function CurriculumEditor({ curriculum, onConfirm, onReset, confirming = 
       topic: editedCurriculum.topic,
       chapters: compactChapters,
     }
-  }
+  }, [deletedChapters, deletedSubs, editedCurriculum, newSubs])
+
+  useEffect(() => {
+    if (!textbookId || finalCurriculum.invalid) {
+      setCreditEstimate(null)
+      setEstimateError('')
+      return
+    }
+
+    setCreditEstimate(null)
+    setEstimateError('')
+
+    let cancelled = false
+    const timer = setTimeout(async () => {
+      setEstimatingCredits(true)
+      try {
+        const response = await textbooksAPI.estimateCredits(textbookId, finalCurriculum)
+        if (!cancelled) {
+          setCreditEstimate(response.data)
+          setEstimateError('')
+        }
+      } catch (err) {
+        console.error('Estimate credits error:', err)
+        if (!cancelled) {
+          setCreditEstimate(null)
+          setEstimateError(t('textbook.curriculum.estimateError'))
+        }
+      } finally {
+        if (!cancelled) {
+          setEstimatingCredits(false)
+        }
+      }
+    }, 400)
+
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [finalCurriculum, textbookId, t])
 
   const handleConfirm = () => {
-    const finalCurriculum = buildFinalCurriculum()
     if (finalCurriculum.invalid) {
       setValidationError(
         finalCurriculum.empty
@@ -159,7 +201,20 @@ export function CurriculumEditor({ curriculum, onConfirm, onReset, confirming = 
       return
     }
     setValidationError('')
-    onConfirm(finalCurriculum)
+    setPendingConfirmCurriculum(finalCurriculum)
+  }
+
+  const handleConfirmModalClose = () => {
+    if (!confirming) {
+      setPendingConfirmCurriculum(null)
+    }
+  }
+
+  const handleConfirmModalSubmit = () => {
+    if (!pendingConfirmCurriculum || estimatingCredits) {
+      return
+    }
+    onConfirm(pendingConfirmCurriculum)
   }
 
   const handleReset = () => {
@@ -183,6 +238,46 @@ export function CurriculumEditor({ curriculum, onConfirm, onReset, confirming = 
           <p className="text-sm font-medium text-red-700">⚠️ {validationError}</p>
         </div>
       )}
+
+      <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-semibold text-emerald-900">
+              {t('textbook.curriculum.creditEstimateTitle')}
+            </p>
+            {creditEstimate ? (
+              <p className="text-xs text-emerald-700 mt-1">
+                {t('textbook.curriculum.creditEstimateDetails', {
+                  chapters: creditEstimate.total_chapters,
+                  subsections: creditEstimate.total_subsections,
+                  images: creditEstimate.enable_images ? t('app.yes') : t('app.no'),
+                  level: creditEstimate.content_level,
+                })}
+              </p>
+            ) : (
+              <p className="text-xs text-emerald-700 mt-1">
+                {estimatingCredits
+                  ? t('textbook.curriculum.estimatingCredits')
+                  : estimateError || t('textbook.curriculum.creditEstimatePending')}
+              </p>
+            )}
+          </div>
+          <div className="text-right">
+            {creditEstimate?.is_admin_free ? (
+              <p className="text-sm font-bold text-emerald-700">
+                {t('textbook.curriculum.adminFree')}
+              </p>
+            ) : (
+              <p className="text-2xl font-bold text-emerald-800">
+                {creditEstimate ? creditEstimate.credits_required : '...'}
+              </p>
+            )}
+            {!creditEstimate?.is_admin_free && (
+              <p className="text-xs text-emerald-700">credits</p>
+            )}
+          </div>
+        </div>
+      </div>
 
       {/* Chapters */}
       {editedCurriculum.chapters.map((chapter, chIdx) => {
@@ -358,6 +453,93 @@ export function CurriculumEditor({ curriculum, onConfirm, onReset, confirming = 
           🔄 {t('textbook.curriculum.reset')}
         </Button>
       </div>
+
+      {pendingConfirmCurriculum && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+          <button
+            type="button"
+            aria-label={t('app.close')}
+            className="absolute inset-0 bg-black bg-opacity-50"
+            onClick={handleConfirmModalClose}
+            disabled={confirming}
+          />
+          <div className="relative w-full max-w-md rounded-lg bg-white p-6 shadow-2xl">
+            <h3 className="text-lg font-bold text-gray-900">
+              {t('textbook.curriculum.creditConfirmTitle')}
+            </h3>
+            <p className="mt-2 text-sm text-gray-600">
+              {creditEstimate?.is_admin_free
+                ? t('textbook.curriculum.creditConfirmAdminDescription')
+                : t('textbook.curriculum.creditConfirmDescription')}
+            </p>
+
+            <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-4">
+              <p className="text-xs font-semibold uppercase text-emerald-700">
+                {t('textbook.curriculum.creditEstimateTitle')}
+              </p>
+              <div className="mt-2 flex items-end justify-between gap-4">
+                <div className="text-xs text-emerald-700">
+                  {creditEstimate ? (
+                    <p>
+                      {t('textbook.curriculum.creditEstimateDetails', {
+                        chapters: creditEstimate.total_chapters,
+                        subsections: creditEstimate.total_subsections,
+                        images: creditEstimate.enable_images ? t('app.yes') : t('app.no'),
+                        level: creditEstimate.content_level,
+                      })}
+                    </p>
+                  ) : (
+                    <p>
+                      {estimatingCredits
+                        ? t('textbook.curriculum.estimatingCredits')
+                        : estimateError || t('textbook.curriculum.creditEstimatePending')}
+                    </p>
+                  )}
+                </div>
+                {creditEstimate?.is_admin_free ? (
+                  <p className="text-sm font-bold text-emerald-800">
+                    {t('textbook.curriculum.adminFree')}
+                  </p>
+                ) : (
+                  <div className="text-right">
+                    <p className="text-3xl font-bold text-emerald-900">
+                      {creditEstimate ? creditEstimate.credits_required : '...'}
+                    </p>
+                    <p className="text-xs text-emerald-700">credits</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {estimateError && (
+              <p className="mt-3 text-xs text-yellow-700">
+                {estimateError}
+              </p>
+            )}
+
+            <div className="mt-6 flex gap-3">
+              <button
+                type="button"
+                onClick={handleConfirmModalClose}
+                disabled={confirming}
+                className="flex-1 rounded-lg bg-gray-200 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-300 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {t('textbook.curriculum.creditConfirmCancel')}
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmModalSubmit}
+                disabled={confirming || estimatingCredits || (!creditEstimate && !estimateError)}
+                className="flex-1 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {confirming
+                  ? t('textbook.curriculum.confirming')
+                  : t('textbook.curriculum.creditConfirmProceed')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -23,9 +23,9 @@ class ValidationResult(BaseModel):
 
 class TextbookCreate(BaseModel):
     topic: str = Field(..., min_length=1, max_length=500)
-    num_chapters: int = Field(default=3, ge=1, le=20)
+    num_chapters: int = Field(default=3, ge=1, le=50)
     content_level: str = Field(default="Trung Bình")
-    max_subsections_per_chapter: int = Field(default=3, ge=2, le=10)
+    max_subsections_per_chapter: int = Field(default=3, ge=1, le=30)
     enable_images: bool = False
     ui_language: str = Field(default="vi", pattern="^(vi|en)$")
     export_formats: List[str] = Field(default_factory=lambda: ["PDF", "Word"])
@@ -100,3 +100,16 @@ class TextbookProgressResponse(BaseModel):
 
 class CurriculumConfirmRequest(BaseModel):
     curriculum: Dict[str, Any]
+
+
+class CurriculumCreditEstimateRequest(BaseModel):
+    curriculum: Dict[str, Any]
+
+
+class CurriculumCreditEstimateResponse(BaseModel):
+    credits_required: int
+    total_chapters: int
+    total_subsections: int
+    enable_images: bool
+    content_level: str
+    is_admin_free: bool

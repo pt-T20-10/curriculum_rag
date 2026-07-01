@@ -694,6 +694,10 @@ def localized_validation_fallback(key: str, language: str | None = None, **kwarg
             "vi": "Chủ đề không hợp lệ",
             "en": "The topic is not valid.",
         },
+        "topic_contains_noise": {
+            "vi": "Chủ đề có phần chữ hoặc số không liên quan. Vui lòng nhập chủ đề rõ ràng hơn.",
+            "en": "The topic contains unrelated letters or numbers. Please enter a clearer topic.",
+        },
         "validator_error": {
             "vi": "Lỗi xác thực topic - vui lòng thử lại",
             "en": "Topic validation failed. Please try again.",

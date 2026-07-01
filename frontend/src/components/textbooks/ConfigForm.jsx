@@ -21,6 +21,83 @@ const LANGUAGE_LABEL_KEYS = {
   en: 'textbook.language.en',
 }
 
+const RECOMMENDED_CONFIG = {
+  num_chapters: { min: 2, max: 12 },
+  max_subsections_per_chapter: { min: 2, max: 8 },
+}
+
+const ABSOLUTE_CONFIG_LIMITS = {
+  num_chapters: { min: 1, max: 50 },
+  max_subsections_per_chapter: { min: 1, max: 30 },
+}
+
+const VI_DIACRITIC_RE = /[ăâđêôơưáàảãạắằẳẵặấầẩẫậéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựýỳỷỹỵ]/i
+
+const UNACCENTED_VI_PATTERNS = [
+  /\bhoc\b/,
+  /\blap\s+trinh\b/,
+  /\bgiao\s+trinh\b/,
+  /\bco\s+ban\b/,
+  /\bcan\s+ban\b/,
+  /\bcao\s+cap\b/,
+  /\bnang\s+cao\b/,
+  /\bnhap\s+mon\b/,
+  /\bcho\s+nguoi\b/,
+  /\bnguoi\s+moi\b/,
+  /\bdai\s+hoc\b/,
+  /\blop\s+\d+\b/,
+  /\bung\s+dung\b/,
+  /\bthuc\s+te\b/,
+  /\bbai\s+tap\b/,
+  /\bvi\s+du\b/,
+  /\bmon\s+hoc\b/,
+  /\bkhoa\s+hoc\b/,
+  /\btoan\b/,
+  /\bvat\s+ly\b/,
+  /\bhoa\s+hoc\b/,
+  /\bsinh\s+hoc\b/,
+  /\blich\s+su\b/,
+  /\bxac\s+suat\b/,
+  /\bthong\s+ke\b/,
+  /\bdu\s+lieu\b/,
+  /\bmay\s+tinh\b/,
+  /\btri\s+tue\b/,
+  /\bnhan\s+tao\b/,
+  /\btieng\s+viet\b/,
+  /\btieng\s+anh\b/,
+]
+
+function parseIntegerInput(value) {
+  if (value === '' || value === null || value === undefined) return null
+  const parsed = Number(value)
+  return Number.isInteger(parsed) ? parsed : NaN
+}
+
+function normalizeAscii(value) {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/[^a-z0-9+#.\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function looksLikeUnaccentedVietnameseTopic(topic) {
+  const rawTopic = String(topic || '').trim()
+  if (!rawTopic || VI_DIACRITIC_RE.test(rawTopic)) {
+    return false
+  }
+
+  const normalized = normalizeAscii(rawTopic)
+  if (!normalized) {
+    return false
+  }
+
+  return UNACCENTED_VI_PATTERNS.some(pattern => pattern.test(normalized))
+}
+
 export function ConfigForm({
   onSubmit,
   loading,
@@ -32,7 +109,7 @@ export function ConfigForm({
   currentTopic = '',
   submittedConfig = null // ⭐ NEW - actual submitted config
 }) {
-  const { t } = useTranslation()
+  const { i18n, t } = useTranslation()
   const [formData, setFormData] = useState({
     topic: '',
     num_chapters: 3,
@@ -40,13 +117,95 @@ export function ConfigForm({
     max_subsections_per_chapter: 5,
     enable_images: true
   })
+  const [fieldErrors, setFieldErrors] = useState({})
+  const [confirmWarnings, setConfirmWarnings] = useState([])
+  const [pendingSubmitData, setPendingSubmitData] = useState(null)
+  const isAdmin = user?.role === 'admin'
+
+  const getConfigIssues = (data) => {
+    const errors = {}
+    const warnings = []
+
+    const numericFields = [
+      {
+        name: 'num_chapters',
+        minKey: 'textbook.form.chapterTooLow',
+        maxKey: 'textbook.form.chapterTooHigh',
+        warnLowKey: 'textbook.form.chapterLowWarning',
+        warnHighKey: 'textbook.form.chapterHighWarning',
+      },
+      {
+        name: 'max_subsections_per_chapter',
+        minKey: 'textbook.form.subsectionTooLow',
+        maxKey: 'textbook.form.subsectionTooHigh',
+        warnLowKey: 'textbook.form.subsectionLowWarning',
+        warnHighKey: 'textbook.form.subsectionHighWarning',
+      },
+    ]
+
+    numericFields.forEach(({ name, minKey, maxKey, warnLowKey, warnHighKey }) => {
+      const value = data[name]
+      const absolute = ABSOLUTE_CONFIG_LIMITS[name]
+      const recommended = RECOMMENDED_CONFIG[name]
+
+      if (value === null) {
+        errors[name] = t('textbook.form.numberRequired')
+      } else if (Number.isNaN(value)) {
+        errors[name] = t('textbook.form.numberInteger')
+      } else if (value < absolute.min) {
+        errors[name] = t(minKey, { min: absolute.min })
+      } else if (value > absolute.max) {
+        errors[name] = t(maxKey, { max: absolute.max })
+      } else if (value < recommended.min) {
+        warnings.push(t(warnLowKey, { value, min: recommended.min }))
+      } else if (value > recommended.max) {
+        warnings.push(t(warnHighKey, { value, max: recommended.max }))
+      }
+    })
+
+    return { errors, warnings }
+  }
+
+  const getTopicWarnings = (data) => {
+    const language = (i18n.resolvedLanguage || i18n.language || 'vi').split('-')[0]
+    if (language !== 'vi') {
+      return []
+    }
+
+    if (looksLikeUnaccentedVietnameseTopic(data.topic)) {
+      return [t('textbook.form.unaccentedVietnameseWarning')]
+    }
+
+    return []
+  }
 
   const handleSubmit = (e) => {
     e.preventDefault()
     if (!formData.topic.trim()) {
       return
     }
-    onSubmit(formData)
+
+    const submitData = {
+      ...formData,
+      topic: formData.topic.trim(),
+      num_chapters: parseIntegerInput(formData.num_chapters),
+      max_subsections_per_chapter: parseIntegerInput(formData.max_subsections_per_chapter),
+    }
+    const { errors, warnings } = getConfigIssues(submitData)
+    const topicWarnings = getTopicWarnings(submitData)
+
+    setFieldErrors(errors)
+    if (Object.keys(errors).length > 0) {
+      return
+    }
+
+    if (warnings.length > 0 || topicWarnings.length > 0) {
+      setConfirmWarnings([...topicWarnings, ...warnings])
+      setPendingSubmitData(submitData)
+      return
+    }
+
+    onSubmit(submitData)
   }
 
   const handleChange = (e) => {
@@ -55,6 +214,13 @@ export function ConfigForm({
       ...prev,
       [name]: type === 'checkbox' ? checked : value
     }))
+    if (fieldErrors[name]) {
+      setFieldErrors(prev => {
+        const next = { ...prev }
+        delete next[name]
+        return next
+      })
+    }
   }
 
   if (isActive) {
@@ -136,7 +302,7 @@ export function ConfigForm({
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
+    <form onSubmit={handleSubmit} className="space-y-4" noValidate>
       {/* Topic Input */}
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -187,11 +353,13 @@ export function ConfigForm({
               name="num_chapters"
               value={formData.num_chapters}
               onChange={handleChange}
-              min={2}
-              max={12}
+              step={1}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               disabled={loading}
             />
+            {fieldErrors.num_chapters && (
+              <p className="mt-1 text-xs text-red-600">{fieldErrors.num_chapters}</p>
+            )}
             <p className="mt-1 text-xs text-gray-500">
               {t('textbook.form.chaptersHint')}
             </p>
@@ -228,11 +396,13 @@ export function ConfigForm({
               name="max_subsections_per_chapter"
               value={formData.max_subsections_per_chapter}
               onChange={handleChange}
-              min={2}
-              max={8}
+              step={1}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               disabled={loading}
             />
+            {fieldErrors.max_subsections_per_chapter && (
+              <p className="mt-1 text-xs text-red-600">{fieldErrors.max_subsections_per_chapter}</p>
+            )}
             <p className="mt-1 text-xs text-gray-500">
               {t('textbook.form.maxSubsectionsHint')}
             </p>
@@ -307,7 +477,7 @@ export function ConfigForm({
       {/* Submit Button */}
       <button
         type="submit"
-        disabled={loading || !formData.topic.trim() || (user && user.credits < 1)}
+        disabled={loading || !formData.topic.trim() || (user && !isAdmin && user.credits < 1)}
         className="w-full py-3 px-4 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 focus:ring-4 focus:ring-blue-200 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
       >
         {loading ? (
@@ -322,6 +492,63 @@ export function ConfigForm({
           `🚀 ${t('textbook.form.submit')}`
         )}
       </button>
+
+      {confirmWarnings.length > 0 && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black bg-opacity-50 backdrop-blur-sm"
+            onClick={() => {
+              setConfirmWarnings([])
+              setPendingSubmitData(null)
+            }}
+          />
+          <div className="relative bg-white rounded-lg shadow-2xl max-w-lg w-full mx-4 p-6">
+            <div className="flex items-center justify-center w-12 h-12 mx-auto mb-4 bg-yellow-100 rounded-full">
+              <svg className="w-6 h-6 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+            </div>
+            <h3 className="text-xl font-bold text-gray-900 text-center mb-2">
+              {t('textbook.form.confirmBeforeCreateTitle')}
+            </h3>
+            <p className="text-sm text-gray-600 text-center mb-4">
+              {t('textbook.form.confirmBeforeCreateDescription')}
+            </p>
+            <div className="space-y-2 mb-6">
+              {confirmWarnings.map((warning, index) => (
+                <div key={index} className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-sm text-yellow-800">
+                  {warning}
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmWarnings([])
+                  setPendingSubmitData(null)
+                }}
+                className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 font-medium rounded-lg hover:bg-gray-300 transition-colors"
+              >
+                {t('textbook.form.reviewConfig')}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (pendingSubmitData) {
+                    onSubmit(pendingSubmitData)
+                  }
+                  setConfirmWarnings([])
+                  setPendingSubmitData(null)
+                }}
+                className="flex-1 px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                {t('textbook.form.confirmCreate')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </form>
   )
 }

@@ -349,7 +349,6 @@ export function CreateTextbookPage() {
               {isActive && progressData && (
                 <div className="space-y-4">
                   <ProgressBar
-                    value={progressData.progress_value || 0}
                     statusText={progressData.status_text || ''}
                   />
 
@@ -394,6 +393,7 @@ export function CreateTextbookPage() {
                 <div className="mt-4">
                   <CurriculumEditor
                     curriculum={progressData.curriculum_data}
+                    textbookId={textbookId}
                     onConfirm={handleCurriculumConfirm}
                     onReset={handlePlanningReset}
                     confirming={confirmingCurriculum}

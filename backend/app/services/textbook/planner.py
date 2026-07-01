@@ -15,6 +15,7 @@ Pipeline:
 import json
 from typing import Any, List, Dict, Optional
 
+from langchain_core.language_models import LLM
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from app.schemas.curriculum import AgentState, CurriculumOutline
@@ -25,6 +26,7 @@ from app.utils.log_config import setup_logger, setup_prompt_logger
 
 LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
 LLM_MODEL_PREMIUM = settings.LLM_MODEL_PREMIUM
+LLM_MODEL_PLANNER_LONGFORM = settings.LLM_MODEL_PLANNER_LONGFORM
 
 logger = setup_logger(name="PlannerAgent", logfile="logs/agents.log")
 
@@ -50,7 +52,7 @@ class HybridPlanner:
         No ChromaDB connection needed — planner generates curriculum from topic only.
         """
         self.llm = ChatOpenAI(
-            model=LLM_MODEL_PREMIUM,
+            model=LLM_MODEL_PLANNER_LONGFORM,
             api_key=get_api_key("OPENAI_API_KEY"),  # type: ignore[arg-type]
             temperature=0.3,
         )

@@ -2,6 +2,7 @@
 Textbook management endpoints.
 """
 
+from math import ceil
 from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,8 +11,10 @@ from sqlalchemy import select, func
 from app.database import get_async_db
 from app.models.credit_history import CreditHistory
 from app.models.textbook import Textbook, TextbookStatus
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.schemas.textbook import (
+    CurriculumCreditEstimateRequest,
+    CurriculumCreditEstimateResponse,
     TextbookCreate,
     TextbookProgressResponse,
     TextbookResponse,
@@ -31,6 +34,52 @@ router = APIRouter(prefix="/textbooks", tags=["textbooks"])
 
 def _clean_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+CONTENT_LEVEL_CREDIT_MULTIPLIERS: dict[str, float] = {
+    "Ngắn": 0.6,
+    "Trung Bình": 1.0,
+    "Dài": 1.7,
+    "Rất Dài": 2.5,
+}
+DEFAULT_CONTENT_LEVEL_CREDIT_MULTIPLIER = 1.0
+
+
+def _is_free_admin(user: User | None) -> bool:
+    if not user:
+        return False
+    return (
+        user.role == UserRole.ADMIN.value  # type: ignore
+        and not user.is_locked  # type: ignore
+        and not user.is_deleted  # type: ignore
+    )
+
+
+def estimate_textbook_credits(
+    total_subsections: int,
+    content_level: str,
+    enable_images: bool,
+) -> int:
+    safe_total = max(0, int(total_subsections or 0))
+    level_multiplier = CONTENT_LEVEL_CREDIT_MULTIPLIERS.get(
+        content_level,
+        DEFAULT_CONTENT_LEVEL_CREDIT_MULTIPLIER,
+    )
+    subsection_units = safe_total * level_multiplier
+    text_credits = ceil(subsection_units / 8)
+    image_credits = ceil(safe_total / 6) if enable_images and safe_total else 0
+    return max(1, text_credits + image_credits)
+
+
+def _insufficient_credits_detail(
+    language: str | None,
+    required_credits: int,
+    current_credits: int,
+) -> str:
+    base = localized_validation_fallback("insufficient_credits", language)
+    if normalize_language(language) == "vi":
+        return f"{base} Cần {required_credits} credits, hiện có {current_credits}."
+    return f"{base} Required: {required_credits} credits, available: {current_credits}."
 
 
 def _sanitize_confirmed_curriculum(curriculum: dict) -> tuple[dict, list[str], int]:
@@ -82,6 +131,57 @@ def _sanitize_confirmed_curriculum(curriculum: dict) -> tuple[dict, list[str], i
     chapter_titles = [chapter["title"] for chapter in sanitized_chapters]
     total_subsections = sum(len(chapter["subsections"]) for chapter in sanitized_chapters)
     return sanitized, chapter_titles, total_subsections
+
+
+def _apply_confirmed_curriculum_counts(
+    textbook: Textbook,
+    confirmed_curriculum: dict,
+    chapter_titles: list[str],
+    total_subsections: int,
+) -> int:
+    chapter_count = len(chapter_titles)
+
+    textbook.curriculum_json = confirmed_curriculum  # type: ignore
+    textbook.num_chapters = chapter_count  # type: ignore
+    textbook.total_chapters = chapter_count  # type: ignore
+    textbook.total_subsections = total_subsections  # type: ignore
+    textbook.current_chapter = 0  # type: ignore
+    textbook.current_subsection = 0  # type: ignore
+
+    return chapter_count
+
+
+def _curriculum_chapter_count(curriculum: Any) -> Optional[int]:
+    chapters = curriculum.get("chapters") if isinstance(curriculum, dict) else None
+    if not isinstance(chapters, list) or not chapters:
+        return None
+    return len(chapters)
+
+
+def _repair_textbook_chapter_count(textbook: Textbook) -> bool:
+    chapter_count = _curriculum_chapter_count(textbook.curriculum_json)  # type: ignore
+    if chapter_count is None:
+        return False
+
+    changed = False
+    if textbook.num_chapters != chapter_count:  # type: ignore
+        textbook.num_chapters = chapter_count  # type: ignore
+        changed = True
+    if textbook.total_chapters != chapter_count:  # type: ignore
+        textbook.total_chapters = chapter_count  # type: ignore
+        changed = True
+
+    progress_data = dict(textbook.progress_data or {})  # type: ignore
+    if progress_data and (
+        progress_data.get("num_chapters") != chapter_count
+        or progress_data.get("total_chapters") != chapter_count
+    ):
+        progress_data["num_chapters"] = chapter_count
+        progress_data["total_chapters"] = chapter_count
+        textbook.progress_data = progress_data  # type: ignore
+        changed = True
+
+    return changed
 
 
 def _planning_draft_phase(textbook: Textbook) -> bool:
@@ -166,7 +266,13 @@ async def create_textbook(
     result = await db.execute(select(User).where(User.id == current_user_id))
     user = result.scalar_one_or_none()
 
-    if not user or user.credits < 1:  # type: ignore
+    if not user:
+        raise HTTPException(
+            status_code=400,
+            detail=localized_validation_fallback("insufficient_credits", ui_language)
+        )
+
+    if not _is_free_admin(user) and user.credits < 1:  # type: ignore
         raise HTTPException(
             status_code=400,
             detail=localized_validation_fallback("insufficient_credits", ui_language)
@@ -234,6 +340,12 @@ async def list_textbooks(
     result = await db.execute(query)
     textbooks = result.scalars().all()
 
+    repaired_count = False
+    for textbook in textbooks:
+        repaired_count = _repair_textbook_chapter_count(textbook) or repaired_count
+    if repaired_count:
+        await db.commit()
+
     pages = (total + size - 1) // size if total > 0 else 0  # type: ignore
 
     return {
@@ -262,6 +374,9 @@ async def get_textbook(
 
     if not textbook:
         raise HTTPException(status_code=404, detail="Textbook not found")
+
+    if _repair_textbook_chapter_count(textbook):
+        await db.commit()
 
     return textbook
 
@@ -312,6 +427,8 @@ async def get_textbook_progress(
     if not textbook:
         raise HTTPException(status_code=404, detail="Textbook not found")
 
+    if _repair_textbook_chapter_count(textbook):
+        await db.commit()
 
     progress_data = dict(textbook.progress_data or {})  # type: ignore
 
@@ -358,6 +475,47 @@ async def get_textbook_progress(
     )
 
 
+@router.post("/{textbook_id}/estimate-credits", response_model=CurriculumCreditEstimateResponse)
+async def estimate_curriculum_credits(
+    textbook_id: int,
+    request: CurriculumCreditEstimateRequest,
+    current_user_id: int = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_async_db),
+):
+    result = await db.execute(
+        select(Textbook).where(
+            Textbook.id == textbook_id,
+            Textbook.user_id == current_user_id,
+        )
+    )
+    textbook = result.scalar_one_or_none()
+
+    if not textbook:
+        raise HTTPException(status_code=404, detail="Textbook not found")
+
+    user_result = await db.execute(select(User).where(User.id == current_user_id))
+    user = user_result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    is_admin_free = _is_free_admin(user)
+
+    _, chapter_titles, total_subsections = _sanitize_confirmed_curriculum(request.curriculum)
+    credits_required = estimate_textbook_credits(
+        total_subsections=total_subsections,
+        content_level=textbook.content_level,  # type: ignore
+        enable_images=bool(textbook.enable_images),  # type: ignore
+    )
+
+    return CurriculumCreditEstimateResponse(
+        credits_required=0 if is_admin_free else credits_required,
+        total_chapters=len(chapter_titles),
+        total_subsections=total_subsections,
+        enable_images=bool(textbook.enable_images),  # type: ignore
+        content_level=textbook.content_level,  # type: ignore
+        is_admin_free=is_admin_free,
+    )
+
+
 @router.post("/{textbook_id}/confirm-curriculum")
 async def confirm_curriculum(
     textbook_id: int,
@@ -382,52 +540,83 @@ async def confirm_curriculum(
     if not textbook:
         raise HTTPException(status_code=404, detail="Textbook not found")
 
+    user_result = await db.execute(
+        select(User).where(User.id == current_user_id).with_for_update()
+    )
+    user = user_result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    is_admin_free = _is_free_admin(user)
+
     progress_phase = dict(textbook.progress_data or {}).get("phase")  # type: ignore
-    if textbook.credits_used and progress_phase in {"generating", "done"}:  # type: ignore
-        return {"message": "Content generation already started", "textbook_id": textbook_id}
+    if progress_phase in {"generating", "done"}:
+        return {
+            "message": "Content generation already started",
+            "textbook_id": textbook_id,
+            "credits_required": 0 if is_admin_free else int(textbook.credits_used or 0),  # type: ignore
+            "credits_charged": 0,
+            "balance_after": user.credits,  # type: ignore
+            "is_admin_free": is_admin_free,
+        }
 
     confirmed_curriculum, chapter_titles, total_subsections = _sanitize_confirmed_curriculum(request.curriculum)
+    estimated_credits = estimate_textbook_credits(
+        total_subsections=total_subsections,
+        content_level=textbook.content_level,  # type: ignore
+        enable_images=bool(textbook.enable_images),  # type: ignore
+    )
+    credits_required = 0 if is_admin_free else estimated_credits
+    credits_charged = 0
 
-    if not textbook.credits_used:  # type: ignore
-        user_result = await db.execute(
-            select(User).where(User.id == current_user_id).with_for_update()
-        )
-        user = user_result.scalar_one_or_none()
-        if not user or user.credits < 1:  # type: ignore
+    if not is_admin_free and not textbook.credits_used:  # type: ignore
+        current_credits = int(user.credits or 0)  # type: ignore
+        if current_credits < credits_required:
             raise HTTPException(
                 status_code=400,
-                detail=localized_validation_fallback("insufficient_credits", textbook.language),  # type: ignore
+                detail=_insufficient_credits_detail(
+                    textbook.language,  # type: ignore
+                    credits_required,
+                    current_credits,
+                ),
             )
 
-        user.credits -= 1  # type: ignore
-        textbook.credits_used = 1  # type: ignore
+        user.credits = current_credits - credits_required  # type: ignore
+        textbook.credits_used = credits_required  # type: ignore
+        credits_charged = credits_required
         db.add(CreditHistory(
             user_id=current_user_id,
-            delta=-1,
+            delta=-credits_required,
             reason=f"Textbook generation #{textbook_id}",
             balance_after=user.credits,  # type: ignore
         ))
+    elif is_admin_free:
+        textbook.credits_used = 0  # type: ignore
 
     progress_data = dict(textbook.progress_data or {}) #type: ignore
+    chapter_count = len(chapter_titles)
     progress_data.update({ #type: ignore
         "phase": "generating",
         "progress_value": 0.20,
         "status_text": progress_text(textbook.language, "content_generation_started"), # type: ignore
         "curriculum_data": confirmed_curriculum,
         "chapter_titles": chapter_titles,
-        "total_chapters": len(chapter_titles),
+        "num_chapters": chapter_count,
+        "total_chapters": chapter_count,
         "total_subsections": total_subsections,
         "language": textbook.language, # type: ignore
+        "credits_required": credits_required,
+        "credits_charged": credits_charged,
+        "is_admin_free": is_admin_free,
     })
 
     textbook.progress_data = progress_data  # type: ignore
-    
-  
-    textbook.curriculum_json = confirmed_curriculum  # type: ignore
-    textbook.total_chapters = len(chapter_titles)  # type: ignore
-    textbook.total_subsections = total_subsections  # type: ignore
-    textbook.current_chapter = 0  # type: ignore
-    textbook.current_subsection = 0  # type: ignore
+    _apply_confirmed_curriculum_counts(
+        textbook,
+        confirmed_curriculum,
+        chapter_titles,
+        total_subsections,
+    )
    
     
     await db.commit()
@@ -440,7 +629,14 @@ async def confirm_curriculum(
     textbook.celery_task_id = task_result.id  # type: ignore
     await db.commit()
 
-    return {"message": "Content generation started", "textbook_id": textbook_id}
+    return {
+        "message": "Content generation started",
+        "textbook_id": textbook_id,
+        "credits_required": credits_required,
+        "credits_charged": credits_charged,
+        "balance_after": user.credits,  # type: ignore
+        "is_admin_free": is_admin_free,
+    }
 
 
 @router.post("/{textbook_id}/stop")
