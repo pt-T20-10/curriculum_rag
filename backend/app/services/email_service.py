@@ -4,6 +4,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 import aiosmtplib
+import httpx
 
 from app.services.runtime_config import get_runtime_config
 
@@ -32,6 +33,98 @@ async def _send_smtp_message(
         username=smtp_user,
         password=smtp_password,
         **_smtp_transport_options(smtp_port),
+    )
+
+
+async def _send_resend_message(
+    *,
+    to_email: str,
+    subject: str,
+    html_body: str,
+    plain_body: str | None = None,
+    reply_to: str | None = None,
+) -> None:
+    api_key = str(get_runtime_config("RESEND_API_KEY", required=False) or "")
+    if not api_key:
+        raise RuntimeError("RESEND_API_KEY is required when EMAIL_PROVIDER=resend")
+
+    email_from = str(get_runtime_config("EMAIL_FROM", required=False) or "")
+    if not email_from:
+        smtp_user = str(get_runtime_config("SMTP_USER", required=False) or "")
+        email_from = smtp_user
+    if not email_from:
+        raise RuntimeError("EMAIL_FROM is required when sending email via Resend")
+
+    payload: dict[str, object] = {
+        "from": email_from,
+        "to": [to_email],
+        "subject": subject,
+        "html": html_body,
+    }
+    if plain_body is not None:
+        payload["text"] = plain_body
+    if reply_to:
+        payload["reply_to"] = reply_to
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+    if response.status_code >= 400:
+        raise RuntimeError(f"Resend email failed: {response.status_code} {response.text[:300]}")
+
+
+async def _send_email_message(
+    *,
+    to_email: str,
+    subject: str,
+    html_body: str,
+    plain_body: str | None = None,
+    reply_to: str | None = None,
+) -> None:
+    provider = str(get_runtime_config("EMAIL_PROVIDER", required=False) or "smtp").strip().lower()
+    resend_api_key = str(get_runtime_config("RESEND_API_KEY", required=False) or "")
+    if provider == "resend" or (resend_api_key and provider in {"", "auto"}):
+        await _send_resend_message(
+            to_email=to_email,
+            subject=subject,
+            html_body=html_body,
+            plain_body=plain_body,
+            reply_to=reply_to,
+        )
+        return
+
+    smtp_user = str(get_runtime_config("SMTP_USER", required=False) or "")
+    smtp_password = str(get_runtime_config("SMTP_PASSWORD", required=False) or "")
+    if not smtp_user or not smtp_password:
+        logger.warning("SMTP not configured — skipping email send")
+        return
+
+    smtp_host = str(get_runtime_config("SMTP_HOST", required=False) or "smtp.gmail.com")
+    smtp_port = int(get_runtime_config("SMTP_PORT", required=False) or 587)
+    email_from = str(get_runtime_config("EMAIL_FROM", required=False) or smtp_user)
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = email_from
+    msg["To"] = to_email
+    if reply_to:
+        msg["Reply-To"] = reply_to
+    if plain_body is not None:
+        msg.attach(MIMEText(plain_body, "plain", "utf-8"))
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+    await _send_smtp_message(
+        msg,
+        smtp_host=smtp_host,
+        smtp_port=smtp_port,
+        smtp_user=smtp_user,
+        smtp_password=smtp_password,
     )
 
 
@@ -149,30 +242,11 @@ def _build_email_verification_html(otp_code: str) -> str:
 
 async def send_email_verification_email(to_email: str, otp_code: str) -> None:
     """Send account email verification OTP via SMTP."""
-    smtp_user = str(get_runtime_config("SMTP_USER", required=False) or "")
-    smtp_password = str(get_runtime_config("SMTP_PASSWORD", required=False) or "")
-    if not smtp_user or not smtp_password:
-        logger.warning("SMTP not configured — skipping email verification send (OTP: %s)", otp_code)
-        return
-
-    smtp_host = str(get_runtime_config("SMTP_HOST", required=False) or "smtp.gmail.com")
-    smtp_port = int(get_runtime_config("SMTP_PORT", required=False) or 587)
-    email_from = str(get_runtime_config("EMAIL_FROM", required=False) or smtp_user)
-
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = "Mã xác nhận email đăng ký"
-    msg["From"] = email_from
-    msg["To"] = to_email
-
-    msg.attach(MIMEText(_build_email_verification_html(otp_code), "html", "utf-8"))
-
     try:
-        await _send_smtp_message(
-            msg,
-            smtp_host=smtp_host,
-            smtp_port=smtp_port,
-            smtp_user=smtp_user,
-            smtp_password=smtp_password,
+        await _send_email_message(
+            to_email=to_email,
+            subject="Mã xác nhận email đăng ký",
+            html_body=_build_email_verification_html(otp_code),
         )
         logger.info("Email verification sent to %s", to_email)
     except Exception as exc:
@@ -182,30 +256,11 @@ async def send_email_verification_email(to_email: str, otp_code: str) -> None:
 
 async def send_password_reset_email(to_email: str, otp_code: str) -> None:
     """Send OTP reset code to `to_email` via SMTP."""
-    smtp_user = str(get_runtime_config("SMTP_USER", required=False) or "")
-    smtp_password = str(get_runtime_config("SMTP_PASSWORD", required=False) or "")
-    if not smtp_user or not smtp_password:
-        logger.warning("SMTP not configured — skipping email send (OTP: %s)", otp_code)
-        return
-
-    smtp_host = str(get_runtime_config("SMTP_HOST", required=False) or "smtp.gmail.com")
-    smtp_port = int(get_runtime_config("SMTP_PORT", required=False) or 587)
-    email_from = str(get_runtime_config("EMAIL_FROM", required=False) or smtp_user)
-
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = "Mã xác nhận đặt lại mật khẩu"
-    msg["From"] = email_from
-    msg["To"] = to_email
-
-    msg.attach(MIMEText(_build_otp_html(otp_code), "html", "utf-8"))
-
     try:
-        await _send_smtp_message(
-            msg,
-            smtp_host=smtp_host,
-            smtp_port=smtp_port,
-            smtp_user=smtp_user,
-            smtp_password=smtp_password,
+        await _send_email_message(
+            to_email=to_email,
+            subject="Mã xác nhận đặt lại mật khẩu",
+            html_body=_build_otp_html(otp_code),
         )
         logger.info("Password reset email sent to %s", to_email)
     except Exception as exc:
@@ -222,16 +277,6 @@ async def send_support_request_email(
     ui_language: str,
 ) -> bool:
     """Send a support request to a server-selected recipient via SMTP."""
-    smtp_user = str(get_runtime_config("SMTP_USER", required=False) or "")
-    smtp_password = str(get_runtime_config("SMTP_PASSWORD", required=False) or "")
-    if not smtp_user or not smtp_password:
-        logger.error("SMTP is not configured; support request email was not sent")
-        return False
-
-    smtp_host = str(get_runtime_config("SMTP_HOST", required=False) or "smtp.gmail.com")
-    smtp_port = int(get_runtime_config("SMTP_PORT", required=False) or 587)
-    email_from = str(get_runtime_config("EMAIL_FROM", required=False) or smtp_user)
-
     safe_name = escape(sender_name)
     safe_email = escape(sender_email)
     safe_subject = escape(subject)
@@ -277,21 +322,13 @@ async def send_support_request_email(
 </html>
 """
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"[Support] {subject}"
-    msg["From"] = email_from
-    msg["To"] = to_email
-    msg["Reply-To"] = sender_email
-    msg.attach(MIMEText(plain_body, "plain", "utf-8"))
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
-
     try:
-        await _send_smtp_message(
-            msg,
-            smtp_host=smtp_host,
-            smtp_port=smtp_port,
-            smtp_user=smtp_user,
-            smtp_password=smtp_password,
+        await _send_email_message(
+            to_email=to_email,
+            subject=f"[Support] {subject}",
+            html_body=html_body,
+            plain_body=plain_body,
+            reply_to=sender_email,
         )
         logger.info("Support request email sent to configured recipient")
         return True
@@ -310,16 +347,6 @@ async def send_account_deletion_request_email(
     authenticated: bool,
 ) -> bool:
     """Send an account deletion request to the configured privacy contact."""
-    smtp_user = str(get_runtime_config("SMTP_USER", required=False) or "")
-    smtp_password = str(get_runtime_config("SMTP_PASSWORD", required=False) or "")
-    if not smtp_user or not smtp_password:
-        logger.error("SMTP is not configured; account deletion request was not sent")
-        return False
-
-    smtp_host = str(get_runtime_config("SMTP_HOST", required=False) or "smtp.gmail.com")
-    smtp_port = int(get_runtime_config("SMTP_PORT", required=False) or 587)
-    email_from = str(get_runtime_config("EMAIL_FROM", required=False) or smtp_user)
-
     safe_email = escape(account_email)
     safe_reason = escape(reason)
     safe_notes = escape(notes or "Not provided").replace("\n", "<br>")
@@ -368,21 +395,13 @@ async def send_account_deletion_request_email(
 </html>
 """
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"[Account deletion] {account_email}"
-    msg["From"] = email_from
-    msg["To"] = to_email
-    msg["Reply-To"] = account_email
-    msg.attach(MIMEText(plain_body, "plain", "utf-8"))
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
-
     try:
-        await _send_smtp_message(
-            msg,
-            smtp_host=smtp_host,
-            smtp_port=smtp_port,
-            smtp_user=smtp_user,
-            smtp_password=smtp_password,
+        await _send_email_message(
+            to_email=to_email,
+            subject=f"[Account deletion] {account_email}",
+            html_body=html_body,
+            plain_body=plain_body,
+            reply_to=account_email,
         )
         logger.info("Account deletion request sent to configured recipient")
         return True

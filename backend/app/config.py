@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
     EMAIL_FROM: str = ""
+    EMAIL_PROVIDER: str = "smtp"
+    RESEND_API_KEY: str = ""
     
     # Redis
     REDIS_HOST: str = "localhost"
