@@ -128,7 +128,7 @@ PARAMETER_REGISTRY: Dict[str, ParameterDef] = {
     },
     "SMTP_PORT": {
         "label": "SMTP Port",
-        "description": "Cổng SMTP dùng để gửi email hệ thống.",
+        "description": "Cổng SMTP dùng để gửi email hệ thống. Dùng 587 cho STARTTLS hoặc 465 cho SSL.",
         "group": "api_keys",
         "type": "str",
         "default": "587",

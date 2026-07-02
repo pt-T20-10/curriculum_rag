@@ -10,6 +10,31 @@ from app.services.runtime_config import get_runtime_config
 logger = logging.getLogger(__name__)
 
 
+def _smtp_transport_options(smtp_port: int) -> dict:
+    """Gmail and most SMTP providers use SSL on 465, STARTTLS on 587."""
+    if int(smtp_port) == 465:
+        return {"use_tls": True, "start_tls": False, "timeout": 30}
+    return {"use_tls": False, "start_tls": True, "timeout": 30}
+
+
+async def _send_smtp_message(
+    msg: MIMEMultipart,
+    *,
+    smtp_host: str,
+    smtp_port: int,
+    smtp_user: str,
+    smtp_password: str,
+) -> None:
+    await aiosmtplib.send(
+        msg,
+        hostname=smtp_host,
+        port=smtp_port,
+        username=smtp_user,
+        password=smtp_password,
+        **_smtp_transport_options(smtp_port),
+    )
+
+
 def _build_otp_html(otp_code: str) -> str:
     return f"""
 <!DOCTYPE html>
@@ -142,13 +167,12 @@ async def send_email_verification_email(to_email: str, otp_code: str) -> None:
     msg.attach(MIMEText(_build_email_verification_html(otp_code), "html", "utf-8"))
 
     try:
-        await aiosmtplib.send(
+        await _send_smtp_message(
             msg,
-            hostname=smtp_host,
-            port=smtp_port,
-            username=smtp_user,
-            password=smtp_password,
-            start_tls=True,
+            smtp_host=smtp_host,
+            smtp_port=smtp_port,
+            smtp_user=smtp_user,
+            smtp_password=smtp_password,
         )
         logger.info("Email verification sent to %s", to_email)
     except Exception as exc:
@@ -157,7 +181,7 @@ async def send_email_verification_email(to_email: str, otp_code: str) -> None:
 
 
 async def send_password_reset_email(to_email: str, otp_code: str) -> None:
-    """Send OTP reset code to `to_email` via SMTP (TLS/STARTTLS on port 587)."""
+    """Send OTP reset code to `to_email` via SMTP."""
     smtp_user = str(get_runtime_config("SMTP_USER", required=False) or "")
     smtp_password = str(get_runtime_config("SMTP_PASSWORD", required=False) or "")
     if not smtp_user or not smtp_password:
@@ -176,13 +200,12 @@ async def send_password_reset_email(to_email: str, otp_code: str) -> None:
     msg.attach(MIMEText(_build_otp_html(otp_code), "html", "utf-8"))
 
     try:
-        await aiosmtplib.send(
+        await _send_smtp_message(
             msg,
-            hostname=smtp_host,
-            port=smtp_port,
-            username=smtp_user,
-            password=smtp_password,
-            start_tls=True,
+            smtp_host=smtp_host,
+            smtp_port=smtp_port,
+            smtp_user=smtp_user,
+            smtp_password=smtp_password,
         )
         logger.info("Password reset email sent to %s", to_email)
     except Exception as exc:
@@ -263,13 +286,12 @@ async def send_support_request_email(
     msg.attach(MIMEText(html_body, "html", "utf-8"))
 
     try:
-        await aiosmtplib.send(
+        await _send_smtp_message(
             msg,
-            hostname=smtp_host,
-            port=smtp_port,
-            username=smtp_user,
-            password=smtp_password,
-            start_tls=True,
+            smtp_host=smtp_host,
+            smtp_port=smtp_port,
+            smtp_user=smtp_user,
+            smtp_password=smtp_password,
         )
         logger.info("Support request email sent to configured recipient")
         return True
@@ -355,13 +377,12 @@ async def send_account_deletion_request_email(
     msg.attach(MIMEText(html_body, "html", "utf-8"))
 
     try:
-        await aiosmtplib.send(
+        await _send_smtp_message(
             msg,
-            hostname=smtp_host,
-            port=smtp_port,
-            username=smtp_user,
-            password=smtp_password,
-            start_tls=True,
+            smtp_host=smtp_host,
+            smtp_port=smtp_port,
+            smtp_user=smtp_user,
+            smtp_password=smtp_password,
         )
         logger.info("Account deletion request sent to configured recipient")
         return True
