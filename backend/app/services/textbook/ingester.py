@@ -5,8 +5,8 @@ This agent orchestrates the full document ingestion pipeline that populates
 ChromaDB before the Planner runs. It is the first node in the workflow graph.
 
 Pipeline:
-    1. Clear old vector database (clean slate per run — prevents topic pollution
-       across consecutive runs on different subjects)
+    1. Ensure the vector database directory exists. Per-run collections provide
+       isolation across consecutive runs on different subjects.
     2. Expand user query bilingually via QueryExpansionAgent:
          VI queries → searched on vn-vn region (Vietnamese academic sources)
          EN queries → searched on us-en region (English academic/technical sources)
@@ -21,8 +21,6 @@ beyond what a single unified query would achieve.
 """
 
 
-import shutil
-import os
 import concurrent.futures
 import re
 from pathlib import Path
@@ -177,22 +175,24 @@ def perform_ingestion(state: AgentState) -> dict:
     logger.info("=" * 60)
 
     # ------------------------------------------------------------------
-    # Step 1 — Best-effort legacy DB cleanup.
+    # Step 1 — Ensure ChromaDB directory exists.
     #
-    # Correctness now comes from per-run Chroma collections. If the directory
-    # is locked, continue with the isolated collection instead of risking stale
-    # chunks from a previous textbook run.
+    # Correctness comes from per-run Chroma collections. Deleting the persistent
+    # database directory between runs can invalidate open SQLite/Chroma handles
+    # on deployed volumes, so keep the directory and write to the isolated
+    # collection for this textbook run.
     # ------------------------------------------------------------------
-    print(f"[DEBUG INGESTER] Step 1: clearing ChromaDB", flush=True)
-    if os.path.exists(CHROMA_DB_DIR):
-        try:
-            shutil.rmtree(CHROMA_DB_DIR)
-            logger.info("Cleared old ChromaDB")
-        except Exception as e:
-            logger.warning(
-                f"Could not clear DB ({e}); continuing with isolated "
-                f"collection '{collection_name}'"
-            )
+    print(f"[DEBUG INGESTER] Step 1: preparing ChromaDB", flush=True)
+    try:
+        CHROMA_DB_DIR.mkdir(parents=True, exist_ok=True)
+        logger.info(
+            "Prepared ChromaDB directory '%s' for isolated collection '%s'",
+            CHROMA_DB_DIR,
+            collection_name,
+        )
+    except Exception as e:
+        logger.error("Could not prepare ChromaDB directory '%s': %s", CHROMA_DB_DIR, e)
+        return {"messages": ["✗ Ingestion failed: ChromaDB storage unavailable"]}
 
     if stop_signal.is_stopped():
         print(f"[DEBUG INGESTER] STOPPED after Step 1", flush=True)

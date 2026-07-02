@@ -2039,6 +2039,7 @@ def ingest_dynamic_data(
         metadatas = [chunk.metadata for chunk in relevant_chunks]
         
         # Initialize ChromaDB collection
+        CHROMA_DB_DIR.mkdir(parents=True, exist_ok=True)
         from langchain_chroma import Chroma
         vector_db = Chroma(
             embedding_function=embedding_model,
