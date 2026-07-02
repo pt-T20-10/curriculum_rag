@@ -34,7 +34,6 @@ from app.services.textbook.language import get_language_profile
 
 LLM_MODEL_PREMIUM = settings.LLM_MODEL_PREMIUM
 LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
-LLM_MODEL_WRITER_LONGFORM = settings.LLM_MODEL_WRITER_LONGFORM
 
 from app.utils.log_config import setup_logger, setup_prompt_logger
 from app.schemas.curriculum import (
@@ -277,7 +276,7 @@ class ContentWriter:
 
     def __init__(self) -> None:
         self._llm = ChatOpenAI(
-            model=LLM_MODEL_WRITER_LONGFORM,
+            model=LLM_MODEL_PREMIUM,
             api_key=get_api_key("OPENAI_API_KEY"), #type: ignore
             temperature=0.4,
         )
@@ -676,7 +675,7 @@ class WriterAgent:
 
     Pipeline per section:
         1. ContextRetrievalAgent  — enrich RAG context (gpt-4o-mini + tools)
-        2. ContentWriter          — generate prose    (gpt-5.4-mini / gpt-4o)
+        2. ContentWriter          — generate prose    (LLM_MODEL_PREMIUM)
         3. ImageDescriptionGenerator — fill image tags (gpt-4o-mini, if images enabled)
 
     Also applies deterministic post-processing (blank line enforcement,

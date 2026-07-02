@@ -19,5 +19,9 @@ export function ProtectedRoute({ children }) {
     return <Navigate to="/login" replace />
   }
 
+  if (user.auth_provider === 'local' && !user.is_verified) {
+    return <Navigate to="/verify-email" replace state={{ email: user.email }} />
+  }
+
   return children
 }

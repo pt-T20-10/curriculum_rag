@@ -151,9 +151,11 @@ class Settings(BaseSettings):
     LLM_MODEL_PREMIUM: str = "gpt-4.1"
     IMAGE_MODEL_DEFAULT: str = "gpt-image-1-mini"
     IMAGE_MODEL_PREMIUM: str = "gpt-image-1.5"
-    LLM_MODEL_WRITER_LONGFORM: str = "gpt-5.5"
-    LLM_MODEL_REVIEWER_LONGFORM: str = "gpt-5.4"
-    LLM_MODEL_PLANNER_LONGFORM: str = "gpt-5.4-mini"
+    # Deprecated compatibility aliases. Textbook agents use
+    # LLM_MODEL_PREMIUM or LLM_MODEL_CHEAP directly.
+    LLM_MODEL_WRITER_LONGFORM: str = "gpt-4.1"
+    LLM_MODEL_REVIEWER_LONGFORM: str = "gpt-4.1"
+    LLM_MODEL_PLANNER_LONGFORM: str = "gpt-4.1"
     # Embedding provider selection
     # Options:
     #   - "openai": Fast API-based, supports multilingual (VI + EN)

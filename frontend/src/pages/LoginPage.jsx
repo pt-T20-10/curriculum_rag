@@ -95,7 +95,19 @@ export function LoginPage() {
       } else if (status === 403) {
         setFormData({ identifier: savedIdentifier, password: savedPassword })
         setFormRenderKey(k => k + 1)
-        setApiError(mapLoginError(detail, status))
+        if (
+          (detail || '').toLowerCase().includes('email chưa được xác nhận') &&
+          savedIdentifier.includes('@')
+        ) {
+          navigate('/verify-email', {
+            state: {
+              email: savedIdentifier,
+              messageKey: 'auth.verify.loginBlocked',
+            },
+          })
+        } else {
+          setApiError(mapLoginError(detail, status))
+        }
       } else {
         setFormData({ identifier: savedIdentifier, password: savedPassword })
         setFormRenderKey(k => k + 1)

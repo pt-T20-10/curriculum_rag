@@ -92,7 +92,13 @@ export function RegisterPage() {
         formData.fullName,
         formData.username.trim() || undefined,
       )
-      navigate('/dashboard')
+      navigate('/verify-email', {
+        replace: true,
+        state: {
+          email: formData.email,
+          messageKey: 'auth.verify.sentAfterRegister',
+        },
+      })
     } catch (error) {
       const detail = error.response?.data?.detail || ''
       const status = error.response?.status

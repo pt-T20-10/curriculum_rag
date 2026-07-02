@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
-import { FiTrash2 } from 'react-icons/fi'
+import { FiCreditCard, FiTrash2 } from 'react-icons/fi'
 import { adminAPI } from '../../api/admin'
 import { Navbar } from '../../components/layout/Navbar'
 import { AdminNavigation } from '../../components/layout/AdminNavigation'
@@ -106,6 +106,106 @@ function DeleteModal({ user, loading, onClose, onConfirm }) {
   )
 }
 
+function CreditAdjustModal({ user, loading, onClose, onConfirm }) {
+  const { i18n, t } = useTranslation()
+  const locale = i18n.resolvedLanguage === 'en' ? 'en-US' : 'vi-VN'
+  const [delta, setDelta] = useState('')
+  const [reason, setReason] = useState('')
+  const parsedDelta = Number.parseInt(delta, 10)
+  const safeDelta = Number.isFinite(parsedDelta) ? parsedDelta : 0
+  const currentBalance = Number(user.credits || 0)
+  const nextBalance = currentBalance + safeDelta
+  const reasonLength = reason.trim().length
+  const invalidDelta = !Number.isFinite(parsedDelta) || safeDelta === 0 || Math.abs(safeDelta) > 100000
+  const invalidReason = reasonLength < 5 || reasonLength > 200
+  const invalidBalance = nextBalance < 0
+  const canSubmit = !invalidDelta && !invalidReason && !invalidBalance && !loading
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-lg rounded-lg bg-white p-6 shadow-xl">
+        <div className="flex items-start gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-blue-100 text-blue-700">
+            <FiCreditCard className="h-4 w-4" aria-hidden="true" />
+          </div>
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900">{t('admin.users.adjustCreditsTitle')}</h3>
+            <p className="mt-1 text-sm text-gray-600">
+              {user.full_name || '—'} · {user.email}
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-5 grid grid-cols-2 gap-3 rounded-lg bg-gray-50 p-3 text-sm">
+          <div>
+            <p className="text-xs text-gray-500">{t('admin.users.currentCredits')}</p>
+            <p className="font-semibold text-gray-900">{currentBalance.toLocaleString(locale)}</p>
+          </div>
+          <div>
+            <p className="text-xs text-gray-500">{t('admin.users.newCredits')}</p>
+            <p className={`font-semibold ${invalidBalance ? 'text-red-600' : 'text-gray-900'}`}>
+              {nextBalance.toLocaleString(locale)}
+            </p>
+          </div>
+        </div>
+
+        <label className="mt-4 block text-sm font-medium text-gray-800">
+          {t('admin.users.creditDelta')}
+          <input
+            type="number"
+            value={delta}
+            onChange={event => setDelta(event.target.value)}
+            className="mt-1.5 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-blue-100"
+            placeholder={t('admin.users.creditDeltaPlaceholder')}
+          />
+        </label>
+        <p className="mt-1 text-xs text-gray-500">{t('admin.users.creditDeltaHint')}</p>
+
+        <label className="mt-4 block text-sm font-medium text-gray-800">
+          {t('admin.users.adjustReason')}
+          <textarea
+            value={reason}
+            onChange={event => setReason(event.target.value)}
+            className="mt-1.5 h-24 w-full resize-none rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-blue-100"
+            placeholder={t('admin.users.adjustReasonPlaceholder')}
+          />
+        </label>
+        <div className="mt-1 flex justify-between text-xs">
+          <span className={(invalidDelta || invalidBalance || invalidReason) ? 'text-red-600' : 'text-gray-500'}>
+            {invalidBalance
+              ? t('admin.users.negativeBalanceError')
+              : invalidDelta
+                ? t('admin.users.deltaError')
+                : invalidReason
+                  ? t('admin.users.reasonError')
+                  : t('admin.users.adjustPreview', { delta: safeDelta, balance: nextBalance })}
+          </span>
+          <span className="text-gray-400">{reasonLength}/200</span>
+        </div>
+
+        <div className="mt-5 flex justify-end gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={loading}
+            className="rounded-lg border border-gray-300 px-4 py-2 text-sm hover:bg-gray-50 disabled:opacity-50"
+          >
+            {t('app.cancel')}
+          </button>
+          <button
+            type="button"
+            onClick={() => onConfirm({ delta: safeDelta, reason: reason.trim() })}
+            disabled={!canSubmit}
+            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {loading ? '...' : t('admin.users.saveCreditAdjustment')}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function AdminUsersPage() {
   const { i18n, t } = useTranslation()
   const locale = i18n.resolvedLanguage === 'en' ? 'en-US' : 'vi-VN'
@@ -118,7 +218,9 @@ export function AdminUsersPage() {
   const [error, setError] = useState(null)
   const [lockTarget, setLockTarget] = useState(null)
   const [deleteTarget, setDeleteTarget] = useState(null)
+  const [creditTarget, setCreditTarget] = useState(null)
   const [actionLoading, setActionLoading] = useState(null)
+  const [success, setSuccess] = useState(null)
 
   const PAGE_SIZE = 20
 
@@ -154,6 +256,7 @@ export function AdminUsersPage() {
   const handleLock = async (reason) => {
     if (!lockTarget) return
     setActionLoading(lockTarget.id)
+    setSuccess(null)
     try {
       await adminAPI.lockUser(lockTarget.id, reason)
       setLockTarget(null)
@@ -167,6 +270,7 @@ export function AdminUsersPage() {
 
   const handleUnlock = async (userId) => {
     setActionLoading(userId)
+    setSuccess(null)
     try {
       await adminAPI.unlockUser(userId)
       load()
@@ -181,12 +285,30 @@ export function AdminUsersPage() {
     if (!deleteTarget) return
     setActionLoading(deleteTarget.id)
     setError(null)
+    setSuccess(null)
     try {
       await adminAPI.deleteUser(deleteTarget.id)
       setDeleteTarget(null)
       await load()
     } catch (err) {
       setError(err.response?.data?.detail || t('admin.users.deleteFailed'))
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
+  const handleAdjustCredits = async ({ delta, reason }) => {
+    if (!creditTarget) return
+    setActionLoading(creditTarget.id)
+    setError(null)
+    setSuccess(null)
+    try {
+      const res = await adminAPI.adjustUserCredits(creditTarget.id, { delta, reason })
+      setCreditTarget(null)
+      setSuccess(t('admin.users.adjustSuccess', { balance: res.data.new_balance }))
+      await load()
+    } catch (err) {
+      setError(err.response?.data?.detail || t('admin.users.adjustFailed'))
     } finally {
       setActionLoading(null)
     }
@@ -211,6 +333,14 @@ export function AdminUsersPage() {
           loading={actionLoading === deleteTarget.id}
           onClose={() => setDeleteTarget(null)}
           onConfirm={handleDelete}
+        />
+      )}
+      {creditTarget && (
+        <CreditAdjustModal
+          user={creditTarget}
+          loading={actionLoading === creditTarget.id}
+          onClose={() => setCreditTarget(null)}
+          onConfirm={handleAdjustCredits}
         />
       )}
 
@@ -253,6 +383,11 @@ export function AdminUsersPage() {
         {error && (
           <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4 text-red-700 text-sm">
             {error}
+          </div>
+        )}
+        {success && (
+          <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-4 text-green-700 text-sm">
+            {success}
           </div>
         )}
 
@@ -311,6 +446,16 @@ export function AdminUsersPage() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setCreditTarget(u)}
+                          disabled={actionLoading === u.id}
+                          className="inline-flex items-center gap-1 rounded border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs text-blue-700 hover:bg-blue-100 disabled:opacity-50"
+                          title={t('admin.users.adjustCredits')}
+                        >
+                          <FiCreditCard className="h-3.5 w-3.5" aria-hidden="true" />
+                          {t('admin.users.adjustCredits')}
+                        </button>
                         {u.is_locked ? (
                           <button
                             onClick={() => handleUnlock(u.id)}

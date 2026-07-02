@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_async_db
 from app.models.bank_config import BankConfig
+from app.models.credit_history import CreditHistory
 from app.models.plan import Plan
 from app.models.transaction import Transaction, TransactionStatus
 from app.models.user import User
@@ -36,6 +37,29 @@ def _plan_to_dict(plan: Plan) -> dict:
 
 def _generate_txn_id() -> str:
     return "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
+
+
+def _credit_history_payload(history: CreditHistory) -> dict:
+    reason = str(history.reason or "")
+    history_type = "other"
+
+    if reason.startswith("Admin adjustment by "):
+        history_type = "admin_adjustment"
+        _, _, public_reason = reason.partition(": ")
+        reason = public_reason or "Admin credit adjustment"
+    elif reason.startswith("Textbook generation #"):
+        history_type = "textbook_generation"
+    elif reason.startswith("Top-up via transaction #"):
+        history_type = "topup"
+
+    return {
+        "id": history.id,
+        "delta": history.delta,
+        "balance_after": history.balance_after,
+        "reason": reason,
+        "type": history_type,
+        "created_at": history.created_at.isoformat(),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +112,27 @@ async def get_user_credits(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return {"credits": user.credits, "user_id": user_id}
+
+
+# ---------------------------------------------------------------------------
+# GET /user/credit-history — user's credit balance changes
+# ---------------------------------------------------------------------------
+
+@router.get("/user/credit-history")
+async def list_user_credit_history(
+    limit: int = 50,
+    user_id: int = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_async_db),
+):
+    safe_limit = min(max(int(limit or 50), 1), 50)
+    result = await db.execute(
+        select(CreditHistory)
+        .where(CreditHistory.user_id == user_id)
+        .order_by(CreditHistory.created_at.desc(), CreditHistory.id.desc())
+        .limit(safe_limit)
+    )
+    history = result.scalars().all()
+    return [_credit_history_payload(item) for item in history]
 
 
 # ---------------------------------------------------------------------------

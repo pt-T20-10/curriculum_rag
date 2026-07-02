@@ -21,6 +21,16 @@ from typing import Any, Dict, Optional
 
 ParameterDef = Dict[str, Any]
 
+LLM_MODEL_CHOICES = [
+    "gpt-4o-mini",
+    "gpt-4o",
+    "gpt-4.1-mini",
+    "gpt-4.1",
+    "gpt-5.4-mini",
+    "gpt-5.4",
+    "gpt-5.5",
+]
+
 PARAMETER_REGISTRY: Dict[str, ParameterDef] = {
 
     # =========================================================================
@@ -304,22 +314,22 @@ PARAMETER_REGISTRY: Dict[str, ParameterDef] = {
     # =========================================================================
     "LLM_MODEL_CHEAP": {
         "label": "Model Phụ Trợ",
-        "description": "Model LLM dùng cho reviewer, illustrator và các agent phụ trợ; ảnh hưởng tốc độ và chi phí.",
+        "description": "Model LLM dùng cho reviewer, illustrator và các agent phụ trợ; có thể chọn model cao hơn nếu chấp nhận tăng chi phí và độ trễ.",
         "group": "generation",
         "type": "str",
         "default": "gpt-4o-mini",
-        "choices": ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1"],
+        "choices": LLM_MODEL_CHOICES,
         "user_editable": True,
         "admin_only": False,
         "sensitive": False,
     },
     "LLM_MODEL_PREMIUM": {
         "label": "Model Chính",
-        "description": "Model LLM dùng cho planner và content writer; quyết định chất lượng đầu ra chính.",
+        "description": "Model LLM dùng cho planner và content writer; mặc định ổn định là gpt-4.1, Admin có thể nâng lên model cao hơn khi cần chất lượng mạnh hơn.",
         "group": "generation",
         "type": "str",
         "default": "gpt-4.1",
-        "choices": ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1"],
+        "choices": LLM_MODEL_CHOICES,
         "user_editable": True,
         "admin_only": False,
         "sensitive": False,

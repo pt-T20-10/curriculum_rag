@@ -17,6 +17,7 @@ import { AdminSystemConfigPage } from './pages/admin/AdminSystemConfigPage'
 import { GoogleCallbackPage } from './pages/GoogleCallbackPage'
 import { ForgotPasswordPage } from './pages/ForgotPasswordPage'
 import { ResetPasswordPage } from './pages/ResetPasswordPage'
+import { VerifyEmailPage } from './pages/VerifyEmailPage'
 import { LandingPage } from './pages/LandingPage'
 import { ProfilePage } from './pages/ProfilePage'
 import { PublicInfoPage } from './pages/PublicInfoPage'
@@ -31,6 +32,7 @@ function App() {
             <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
+          <Route path="/verify-email" element={<VerifyEmailPage />} />
           <Route path="/forgot-password" element={<ForgotPasswordPage />} />
           <Route path="/reset-password" element={<ResetPasswordPage />} />
           
@@ -95,6 +97,14 @@ function App() {
             element={
               <AdminRoute>
                 <AdminTextbooksPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/admin/textbooks/:id"
+            element={
+              <AdminRoute>
+                <TextbookDetailPage />
               </AdminRoute>
             }
           />

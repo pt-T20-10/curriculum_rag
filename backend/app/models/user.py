@@ -38,6 +38,8 @@ class User(Base):
     locked_by = Column(Integer, nullable=True)  # admin user_id who locked this account
     password_reset_code = Column(String(64), nullable=True)   # sha256 of OTP
     password_reset_expires = Column(DateTime, nullable=True)
+    email_verification_code = Column(String(64), nullable=True)  # sha256 of OTP
+    email_verification_expires = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 

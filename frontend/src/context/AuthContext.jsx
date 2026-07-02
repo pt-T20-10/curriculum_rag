@@ -67,29 +67,13 @@ const login = async (identifier, password, rememberMe = false) => {
 const register = async (email, password, fullName, username) => {
   console.log('🔵 AuthContext.register called')
 
-  // Step 1: Register to get token
+  // Register creates the account and sends an email verification code.
+  // The user receives a session only after verifying the email.
   const response = await authAPI.register(email, password, fullName, username)
   console.log('🔍 Register response:', response.data)
-  
-  const { access_token } = response.data
-  
-  if (!access_token) {
-    throw new Error('No token received')
-  }
-  
-  // Step 2: Save token
-  localStorage.setItem('token', access_token)
-  
-  // Step 3: Load user info
-  console.log('📡 Loading user info...')
-  const userResponse = await authAPI.me()
-  console.log('👤 User loaded:', userResponse.data)
-  
-  // Step 4: Set user
-  setUser(userResponse.data)
-  
-  console.log('✅ Register complete')
-  return userResponse.data
+
+  console.log('✅ Register complete; email verification required')
+  return response.data
 }
 
   const loginWithToken = async (token) => {

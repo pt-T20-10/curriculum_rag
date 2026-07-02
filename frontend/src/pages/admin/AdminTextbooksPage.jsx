@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { adminAPI } from '../../api/admin'
 import { Navbar } from '../../components/layout/Navbar'
@@ -28,6 +29,7 @@ const STATUS_COLOR = {
 
 export function AdminTextbooksPage() {
   const { i18n, t } = useTranslation()
+  const navigate = useNavigate()
   const locale = i18n.resolvedLanguage === 'en' ? 'en-US' : 'vi-VN'
   const [textbooks, setTextbooks] = useState([])
   const [total, setTotal] = useState(0)
@@ -180,18 +182,19 @@ export function AdminTextbooksPage() {
                 <th className="text-left px-4 py-3 text-gray-600 font-medium">{t('admin.textbooks.config')}</th>
                 <th className="text-left px-4 py-3 text-gray-600 font-medium">Credits</th>
                 <th className="text-left px-4 py-3 text-gray-600 font-medium">{t('app.createdAt')}</th>
+                <th className="text-right px-4 py-3 text-gray-600 font-medium">{t('admin.textbooks.actions')}</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={8} className="text-center py-12">
+                  <td colSpan={9} className="text-center py-12">
                     <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto" />
                   </td>
                 </tr>
               ) : textbooks.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="text-center py-12 text-gray-400">
+                  <td colSpan={9} className="text-center py-12 text-gray-400">
                     {t('admin.textbooks.noTextbooks')}
                   </td>
                 </tr>
@@ -226,6 +229,15 @@ export function AdminTextbooksPage() {
                     <td className="px-4 py-3 text-gray-700">{textbook.credits_used}</td>
                     <td className="px-4 py-3 text-gray-500 text-xs">
                       {new Date(textbook.created_at).toLocaleDateString(locale)}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <button
+                        type="button"
+                        onClick={() => navigate(`/admin/textbooks/${textbook.id}`)}
+                        className="px-3 py-1.5 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg text-xs font-medium hover:bg-blue-100"
+                      >
+                        {t('admin.textbooks.view')}
+                      </button>
                     </td>
                   </tr>
                 ))

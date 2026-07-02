@@ -48,6 +48,9 @@ function mapKnownRawMessage(detail) {
   if (text.includes('tài khoản đã bị khóa') || text.includes('account is locked')) {
     return i18nError('auth.login.locked')
   }
+  if (text.includes('email chưa được xác nhận') || text.includes('email is not verified')) {
+    return i18nError('auth.login.emailNotVerified')
+  }
   if (text.includes('chưa được kích hoạt') || text.includes('not been activated')) {
     return i18nError('auth.login.inactive')
   }
@@ -88,6 +91,9 @@ export function mapLoginError(detail, status) {
   ) {
     return i18nError('auth.login.wrongPassword')
   }
+  if (text.includes('email chưa được xác nhận') || text.includes('email is not verified')) {
+    return i18nError('auth.login.emailNotVerified')
+  }
   if (status === 403 || text.includes('khóa') || text.includes('locked') || text.includes('disabled')) {
     return i18nError('auth.login.locked')
   }
@@ -118,6 +124,9 @@ export function mapRegisterError(detail) {
 export function mapPasswordError(detail, fallbackKey = 'auth.validation.generic') {
   const text = normalizeDetail(detail)
 
+  if (text.includes('email') && (text.includes('mã xác nhận') || text.includes('verification code'))) {
+    return i18nError('auth.verify.invalidCode')
+  }
   if (text.includes('mã xác nhận') || text.includes('code') || text.includes('otp')) {
     return i18nError('auth.reset.invalidCode')
   }

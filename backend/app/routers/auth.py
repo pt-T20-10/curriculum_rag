@@ -15,8 +15,11 @@ from app.database import get_async_db
 from app.models.user import AuthProvider, User, UserRole
 from app.schemas.auth import (
     ChangePasswordRequest,
+    EmailVerificationRequest,
     ForgotPasswordRequest,
     LoginResponse,
+    RegisterResponse,
+    ResendEmailVerificationRequest,
     ResetPasswordRequest,
     Token,
     UserCreate,
@@ -26,9 +29,25 @@ from app.schemas.auth import (
 from app.security.jwt import create_access_token, get_current_user_id
 from app.security.oauth import exchange_google_code, get_google_auth_url
 from app.security.password import pwd_context, verify_password
-from app.services.email_service import send_password_reset_email
+from app.services.email_service import send_email_verification_email, send_password_reset_email
 
 router = APIRouter()
+
+_OTP_EXPIRY_MINUTES = 15
+
+
+def _new_otp() -> tuple[str, str, datetime]:
+    otp = f"{random.randint(0, 999999):06d}"
+    code_hash = hashlib.sha256(otp.encode()).hexdigest()
+    expires = datetime.utcnow() + timedelta(minutes=_OTP_EXPIRY_MINUTES)
+    return otp, code_hash, expires
+
+
+async def _send_verification_code(user: User) -> None:
+    otp, code_hash, expires = _new_otp()
+    user.email_verification_code = code_hash  # type: ignore[assignment]
+    user.email_verification_expires = expires  # type: ignore[assignment]
+    await send_email_verification_email(str(user.email), otp)
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +102,7 @@ async def _get_or_create_google_user(db: AsyncSession, google_info: dict) -> Use
     await db.refresh(user)
     return user
 
-@router.post("/register", response_model=LoginResponse)
+@router.post("/register", response_model=RegisterResponse)
 async def register(
     user_data: UserCreate,
     db: AsyncSession = Depends(get_async_db),
@@ -104,6 +123,7 @@ async def register(
             raise HTTPException(status_code=400, detail="Tên đăng nhập đã được sử dụng")
 
     hashed_password = pwd_context.hash(user_data.password)
+    otp, code_hash, expires = _new_otp()
 
     new_user = User(
         email=user_data.email,
@@ -114,27 +134,24 @@ async def register(
         is_verified=False,
         auth_provider="local",
         is_deleted=False,
+        email_verification_code=code_hash,
+        email_verification_expires=expires,
     )
 
     db.add(new_user)
     await db.commit()
     await db.refresh(new_user)
 
-    access_token = create_access_token(data={"sub": str(new_user.id)})
+    try:
+        await send_email_verification_email(user_data.email, otp)
+    except Exception:
+        # Email delivery can be retried from the verification page.
+        pass
 
     return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user": {
-            "id": new_user.id,
-            "email": new_user.email,
-            "full_name": new_user.full_name,
-            "credits": new_user.credits,
-            "is_active": new_user.is_active,
-            "is_verified": new_user.is_verified,
-            "role": new_user.role,
-            "is_locked": new_user.is_locked,
-        }
+        "message": "Tài khoản đã được tạo. Vui lòng kiểm tra email để xác nhận đăng ký.",
+        "email": new_user.email,
+        "is_verified": bool(new_user.is_verified),
     }
 
 @router.post("/login", response_model=Token)
@@ -162,6 +179,12 @@ async def login(credentials: UserLogin, db: AsyncSession = Depends(get_async_db)
         raise HTTPException(
             status_code=400,
             detail="Tài khoản này đăng ký qua Google. Vui lòng đăng nhập bằng nút Google bên dưới."
+        )
+
+    if user.auth_provider == AuthProvider.LOCAL.value and not user.is_verified:  # type: ignore[truthy-bool]
+        raise HTTPException(
+            status_code=403,
+            detail="Email chưa được xác nhận. Vui lòng nhập mã xác nhận đã gửi tới email của bạn.",
         )
 
     if not verify_password(credentials.password, user.hashed_password): # type: ignore[arg-type]
@@ -268,7 +291,6 @@ async def google_callback(
 # Password reset endpoints
 # ---------------------------------------------------------------------------
 
-_RESET_EXPIRY_MINUTES = 15
 _GENERIC_RESPONSE = {"message": "Nếu email tồn tại, mã xác nhận đã được gửi."}
 
 
@@ -290,9 +312,7 @@ async def forgot_password(
     user = result.scalar_one_or_none()
 
     if user and user.auth_provider == AuthProvider.LOCAL.value: #type: ignore
-        otp = f"{random.randint(0, 999999):06d}"
-        code_hash = hashlib.sha256(otp.encode()).hexdigest()
-        expires = datetime.utcnow() + timedelta(minutes=_RESET_EXPIRY_MINUTES)
+        otp, code_hash, expires = _new_otp()
 
         user.password_reset_code = code_hash      # type: ignore[assignment]
         user.password_reset_expires = expires     # type: ignore[assignment]
@@ -305,6 +325,92 @@ async def forgot_password(
             pass
 
     return _GENERIC_RESPONSE
+
+
+@router.post("/verify-email", response_model=LoginResponse)
+async def verify_email(
+    body: EmailVerificationRequest,
+    db: AsyncSession = Depends(get_async_db),
+):
+    """Verify a local user's email using the 6-digit OTP sent after registration."""
+    invalid_exc = HTTPException(
+        status_code=400,
+        detail="Mã xác nhận email không hợp lệ hoặc đã hết hạn.",
+    )
+
+    result = await db.execute(
+        select(User).where(
+            User.email == body.email,
+            User.is_deleted.is_(False),
+        )
+    )
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise invalid_exc
+    if user.auth_provider != AuthProvider.LOCAL.value:  # type: ignore[comparison-overlap]
+        raise HTTPException(status_code=400, detail="Tài khoản này đăng nhập qua Google.")
+    if user.is_verified:  # type: ignore[truthy-bool]
+        raise HTTPException(status_code=400, detail="Email đã được xác nhận. Vui lòng đăng nhập.")
+    if not user.email_verification_code or not user.email_verification_expires:  # type: ignore[truthy-bool]
+        raise invalid_exc
+    if datetime.utcnow() > user.email_verification_expires:  # type: ignore[operator]
+        raise invalid_exc
+
+    submitted_hash = hashlib.sha256(body.code.encode()).hexdigest()
+    if submitted_hash != user.email_verification_code:
+        raise invalid_exc
+
+    user.is_verified = True  # type: ignore[assignment]
+    user.email_verification_code = None  # type: ignore[assignment]
+    user.email_verification_expires = None  # type: ignore[assignment]
+    await db.commit()
+    await db.refresh(user)
+
+    access_token = create_access_token(data={"sub": str(user.id)})
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "full_name": user.full_name,
+            "credits": user.credits,
+            "is_active": user.is_active,
+            "is_verified": user.is_verified,
+            "role": user.role,
+            "is_locked": user.is_locked,
+        }
+    }
+
+
+@router.post("/resend-verification")
+async def resend_verification(
+    body: ResendEmailVerificationRequest,
+    db: AsyncSession = Depends(get_async_db),
+):
+    """
+    Send a fresh email verification OTP.
+    Always returns a generic response to reduce account enumeration.
+    """
+    result = await db.execute(
+        select(User).where(
+            User.email == body.email,
+            User.is_deleted.is_(False),
+        )
+    )
+    user = result.scalar_one_or_none()
+
+    if user and user.auth_provider == AuthProvider.LOCAL.value and not user.is_verified:  # type: ignore[truthy-bool]
+        try:
+            await _send_verification_code(user)
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            # Log already done inside email_service; do not leak delivery state.
+            pass
+
+    return {"message": "Nếu tài khoản cần xác nhận, mã mới đã được gửi."}
 
 
 @router.post("/reset-password")

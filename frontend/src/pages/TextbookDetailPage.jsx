@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { Navbar } from '../components/layout/Navbar'
 import { buildBackendUrl } from '../utils/apiConfig'
@@ -8,20 +8,28 @@ import { getDocxUrl, getPdfUrl } from '../utils/helpers'
 export function TextbookDetailPage() {
   const { id } = useParams()
   const navigate = useNavigate()
+  const location = useLocation()
   const { t } = useTranslation()
   const [textbook, setTextbook] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const isAdminView = location.pathname.startsWith('/admin/textbooks/')
+  const detailEndpoint = isAdminView
+    ? `/api/v1/admin/textbooks/${id}`
+    : `/api/v1/textbooks/${id}`
+  const backPath = isAdminView ? '/admin/textbooks' : '/dashboard'
+  const backLabel = isAdminView
+    ? t('textbook.detail.backAdminTextbooks')
+    : t('textbook.detail.backDashboard')
 
   useEffect(() => {
     const loadTextbook = async () => {
       try {
         setLoading(true)
         
-        // ⭐ FIX: Use direct API call to /textbooks/{id} endpoint
-        // This endpoint returns full textbook data including pdf_path and docx_path
+        // Direct API call returns full textbook data including pdf_path/docx_path.
         const response = await fetch(
-          buildBackendUrl(`/api/v1/textbooks/${id}`),
+          buildBackendUrl(detailEndpoint),
           {
             headers: {
               'Authorization': `Bearer ${localStorage.getItem('token')}`,
@@ -47,7 +55,7 @@ export function TextbookDetailPage() {
     if (id) {
       loadTextbook()
     }
-  }, [id, t])
+  }, [detailEndpoint, id, t])
 
   if (loading) {
     return (
@@ -75,10 +83,10 @@ export function TextbookDetailPage() {
             <div className="text-6xl mb-4">❌</div>
             <p className="text-gray-600 mb-4">{error || t('textbook.detail.notFound')}</p>
             <button
-              onClick={() => navigate('/dashboard')}
+              onClick={() => navigate(backPath)}
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
             >
-              ← {t('textbook.detail.backDashboard')}
+              ← {backLabel}
             </button>
           </div>
         </div>
@@ -115,10 +123,10 @@ export function TextbookDetailPage() {
             )}
             
             <button
-              onClick={() => navigate('/dashboard')}
+              onClick={() => navigate(backPath)}
               className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
             >
-              ← {t('textbook.detail.backDashboard')}
+              ← {backLabel}
             </button>
           </div>
         </div>
@@ -135,8 +143,9 @@ export function TextbookDetailPage() {
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-4">
             <button
-              onClick={() => navigate('/dashboard')}
+              onClick={() => navigate(backPath)}
               className="text-gray-600 hover:text-gray-900"
+              title={backLabel}
             >
               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
@@ -148,6 +157,17 @@ export function TextbookDetailPage() {
                 {t('textbook.detail.chapters', { count: textbook.num_chapters })}
                 {languageLabel ? ` · ${t('textbook.detail.language', { language: languageLabel })}` : ''}
               </p>
+              {isAdminView && (
+                <p className="mt-1 text-xs text-amber-700">
+                  {t('textbook.detail.adminViewing')}
+                  {textbook.owner_email
+                    ? ` · ${t('textbook.detail.owner', {
+                      name: textbook.owner_name || textbook.owner_email,
+                      email: textbook.owner_email,
+                    })}`
+                    : ''}
+                </p>
+              )}
             </div>
           </div>
           

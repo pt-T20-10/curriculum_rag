@@ -110,8 +110,40 @@ class AdminTextbookItem(BaseModel):
         from_attributes = True
 
 
+class AdminTextbookDetail(BaseModel):
+    id: int
+    title: str
+    topic: str
+    core_topic: Optional[str] = None
+    user_requirements: Optional[str] = None
+    num_chapters: int
+    content_level: str
+    max_subsections_per_chapter: int
+    enable_images: bool
+    language: str = "vi"
+    content_type: str
+    status: str
+    pdf_path: Optional[str] = None
+    docx_path: Optional[str] = None
+    error_message: Optional[str] = None
+    credits_used: int
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+    owner_id: Optional[int] = None
+    owner_email: Optional[str] = None
+    owner_name: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
 class LockRequest(BaseModel):
     reason: Optional[str] = None
+
+
+class CreditAdjustmentRequest(BaseModel):
+    delta: int
+    reason: str
 
 
 class StatsOverview(BaseModel):
@@ -121,6 +153,11 @@ class StatsOverview(BaseModel):
     active_users: int
     completed_textbooks: int
     failed_textbooks: int
+    generating_textbooks: int
+    failed_textbooks_this_month: int
+    success_rate: float
+    credits_in_circulation: int
+    credits_spent_total: int
     total_revenue: float
     revenue_this_month: float
     total_credits_sold: int
@@ -177,6 +214,42 @@ async def get_stats_overview(
         )
     ).scalar_one()
 
+    generating_textbooks = (
+        await db.execute(
+            select(func.count(Textbook.id)).where(
+                Textbook.status == TextbookStatus.GENERATING.value
+            )
+        )
+    ).scalar_one()
+
+    failed_textbooks_this_month = (
+        await db.execute(
+            select(func.count(Textbook.id)).where(
+                Textbook.status == TextbookStatus.FAILED.value,
+                Textbook.created_at >= month_start,
+            )
+        )
+    ).scalar_one()
+
+    outcome_total = int(completed_textbooks or 0) + int(failed_textbooks or 0)
+    success_rate = round((int(completed_textbooks or 0) / outcome_total) * 100, 1) if outcome_total else 0.0
+
+    credits_in_circulation = (
+        await db.execute(
+            select(func.coalesce(func.sum(User.credits), 0)).where(
+                User.is_deleted.is_(False)
+            )
+        )
+    ).scalar_one()
+
+    credits_spent_total = (
+        await db.execute(
+            select(func.coalesce(func.sum(CreditHistory.delta), 0)).where(
+                CreditHistory.delta < 0
+            )
+        )
+    ).scalar_one()
+
     # Revenue from confirmed transactions
     total_revenue = (
         await db.execute(
@@ -218,6 +291,11 @@ async def get_stats_overview(
         active_users=active_users,
         completed_textbooks=completed_textbooks,
         failed_textbooks=failed_textbooks,
+        generating_textbooks=int(generating_textbooks),
+        failed_textbooks_this_month=int(failed_textbooks_this_month),
+        success_rate=success_rate,
+        credits_in_circulation=int(credits_in_circulation or 0),
+        credits_spent_total=abs(int(credits_spent_total or 0)),
         total_revenue=float(total_revenue),
         revenue_this_month=float(revenue_this_month),
         total_credits_sold=int(total_credits_sold),
@@ -592,6 +670,65 @@ async def change_user_role(
     return {"message": f"User {target.email} role changed to {role}"}
 
 
+@router.post("/users/{user_id}/credits/adjust", status_code=200)
+async def adjust_user_credits(
+    user_id: int,
+    body: CreditAdjustmentRequest,
+    admin_id: int = Depends(require_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
+    admin = await _get_admin_user(db, admin_id)
+
+    delta = int(body.delta or 0)
+    reason = (body.reason or "").strip()
+    if delta == 0:
+        raise HTTPException(status_code=400, detail="Credit adjustment must not be zero")
+    if abs(delta) > 100000:
+        raise HTTPException(status_code=400, detail="Credit adjustment must not exceed 100000")
+    if len(reason) < 5 or len(reason) > 200:
+        raise HTTPException(status_code=400, detail="Reason must be between 5 and 200 characters")
+
+    result = await db.execute(
+        select(User).where(
+            User.id == user_id,
+            User.is_deleted.is_(False),
+        )
+    )
+    target = result.scalar_one_or_none()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target.role == UserRole.ADMIN.value:  # type: ignore
+        raise HTTPException(status_code=400, detail="Cannot adjust credits for admin accounts")
+
+    old_balance = int(target.credits or 0)  # type: ignore
+    new_balance = old_balance + delta
+    if new_balance < 0:
+        raise HTTPException(status_code=400, detail="Credit balance cannot be negative")
+
+    prefix = f"Admin adjustment by {str(admin.email)[:80]}: "
+    audit_reason = f"{prefix}{reason}"[:255]
+
+    try:
+        target.credits = new_balance  # type: ignore
+        db.add(CreditHistory(
+            user_id=target.id,
+            delta=delta,
+            reason=audit_reason,
+            balance_after=new_balance,
+        ))
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to adjust user credits")
+
+    return {
+        "user_id": target.id,
+        "old_balance": old_balance,
+        "delta": delta,
+        "new_balance": new_balance,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Textbook management
 # ---------------------------------------------------------------------------
@@ -609,19 +746,17 @@ async def list_textbooks(
 ):
     await _get_admin_user(db, admin_id)
 
-    query = select(Textbook)
+    filters = []
     if search:
         like = f"%{search}%"
-        query = query.where(
+        filters.append(
             (Textbook.title.like(like)) | (Textbook.topic.like(like))
         )
     if status_filter:
-        query = query.where(Textbook.status == status_filter)
+        filters.append(Textbook.status == status_filter)
     if date_from:
         try:
-            query = query.where(
-                Textbook.created_at >= datetime.strptime(date_from, "%Y-%m-%d")
-            )
+            filters.append(Textbook.created_at >= datetime.strptime(date_from, "%Y-%m-%d"))
         except ValueError:
             pass
     if date_to:
@@ -629,42 +764,102 @@ async def list_textbooks(
             end = datetime.strptime(date_to, "%Y-%m-%d").replace(
                 hour=23, minute=59, second=59
             )
-            query = query.where(Textbook.created_at <= end)
+            filters.append(Textbook.created_at <= end)
         except ValueError:
             pass
 
-    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
+    total_query = select(func.count(Textbook.id))
+    if filters:
+        total_query = total_query.where(*filters)
+    total = (await db.execute(total_query)).scalar_one()
 
-    query = query.order_by(Textbook.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
-    result = await db.execute(query)
-    textbooks = result.scalars().all()
-
-    owner_ids = list({t.user_id for t in textbooks})
-    owner_map: dict[int, User] = {}
-    if owner_ids:
-        owner_result = await db.execute(select(User).where(User.id.in_(owner_ids)))
-        for u in owner_result.scalars().all():
-            owner_map[u.id] = u #type: ignore
+    # Keep the admin list query lightweight. Selecting the whole Textbook row pulls
+    # large JSON/TEXT columns into MySQL's sort buffer and can fail on small Railway
+    # instances with "Out of sort memory".
+    query = (
+        select(
+            Textbook.id,
+            Textbook.title,
+            Textbook.topic,
+            Textbook.content_type,
+            Textbook.status,
+            Textbook.num_chapters,
+            Textbook.content_level,
+            Textbook.credits_used,
+            Textbook.created_at,
+            Textbook.completed_at,
+            User.email.label("owner_email"),
+            User.full_name.label("owner_name"),
+        )
+        .outerjoin(User, User.id == Textbook.user_id)
+    )
+    if filters:
+        query = query.where(*filters)
+    query = query.order_by(Textbook.id.desc()).offset((page - 1) * page_size).limit(page_size)
+    rows = (await db.execute(query)).mappings().all()
 
     items = [
         {
-            "id": t.id,
-            "title": t.title,
-            "topic": t.topic,
-            "content_type": t.content_type,
-            "status": t.status,
-            "num_chapters": t.num_chapters,
-            "content_level": t.content_level,
-            "credits_used": t.credits_used,
-            "created_at": t.created_at.isoformat(),
-            "completed_at": t.completed_at.isoformat() if t.completed_at else None, #type: ignore
-            "owner_email": owner_map[t.user_id].email if t.user_id in owner_map else None, #type: ignore
-            "owner_name": owner_map[t.user_id].full_name if t.user_id in owner_map else None, #type: ignore
+            "id": row["id"],
+            "title": row["title"],
+            "topic": row["topic"],
+            "content_type": row["content_type"],
+            "status": row["status"],
+            "num_chapters": row["num_chapters"],
+            "content_level": row["content_level"],
+            "credits_used": row["credits_used"],
+            "created_at": row["created_at"].isoformat(),
+            "completed_at": row["completed_at"].isoformat() if row["completed_at"] else None,
+            "owner_email": row["owner_email"],
+            "owner_name": row["owner_name"],
         }
-        for t in textbooks
+        for row in rows
     ]
 
     return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+@router.get("/textbooks/{textbook_id}", response_model=AdminTextbookDetail)
+async def get_textbook_detail(
+    textbook_id: int,
+    admin_id: int = Depends(require_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
+    await _get_admin_user(db, admin_id)
+
+    result = await db.execute(select(Textbook).where(Textbook.id == textbook_id))
+    textbook = result.scalar_one_or_none()
+    if not textbook:
+        raise HTTPException(status_code=404, detail="Textbook not found")
+
+    owner = None
+    if textbook.user_id:  # type: ignore[truthy-function]
+        owner_result = await db.execute(select(User).where(User.id == textbook.user_id))
+        owner = owner_result.scalar_one_or_none()
+
+    return {
+        "id": textbook.id,
+        "title": textbook.title,
+        "topic": textbook.topic,
+        "core_topic": textbook.core_topic,
+        "user_requirements": textbook.user_requirements,
+        "num_chapters": textbook.num_chapters,
+        "content_level": textbook.content_level,
+        "max_subsections_per_chapter": textbook.max_subsections_per_chapter,
+        "enable_images": textbook.enable_images,
+        "language": textbook.language,
+        "content_type": textbook.content_type,
+        "status": textbook.status,
+        "pdf_path": textbook.pdf_path,
+        "docx_path": textbook.docx_path,
+        "error_message": textbook.error_message,
+        "credits_used": textbook.credits_used,
+        "created_at": textbook.created_at,
+        "completed_at": textbook.completed_at,
+        "owner_id": textbook.user_id,
+        "owner_email": owner.email if owner else None,
+        "owner_name": owner.full_name if owner else None,
+    }
 
 
 # ---------------------------------------------------------------------------

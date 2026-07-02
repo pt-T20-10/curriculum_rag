@@ -66,6 +66,12 @@ class LoginResponse(BaseModel):
     user: UserData
 
 
+class RegisterResponse(BaseModel):
+    message: str
+    email: EmailStr
+    is_verified: bool = False
+
+
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
 
@@ -81,6 +87,22 @@ class ResetPasswordRequest(BaseModel):
         if not v.isdigit():
             raise ValueError("Mã xác nhận phải gồm 6 chữ số")
         return v
+
+
+class EmailVerificationRequest(BaseModel):
+    email: EmailStr
+    code: str = Field(..., min_length=6, max_length=6)
+
+    @field_validator("code")
+    @classmethod
+    def code_must_be_digits(cls, v: str) -> str:
+        if not v.isdigit():
+            raise ValueError("Mã xác nhận phải gồm 6 chữ số")
+        return v
+
+
+class ResendEmailVerificationRequest(BaseModel):
+    email: EmailStr
 
 
 class ChangePasswordRequest(BaseModel):

@@ -173,11 +173,11 @@ def _repair_textbook_chapter_count(textbook: Textbook) -> bool:
 
     progress_data = dict(textbook.progress_data or {})  # type: ignore
     if progress_data and (
-        progress_data.get("num_chapters") != chapter_count
-        or progress_data.get("total_chapters") != chapter_count
+        progress_data.get("num_chapters") != chapter_count #type: ignore
+        or progress_data.get("total_chapters") != chapter_count #type: ignore
     ):
-        progress_data["num_chapters"] = chapter_count
-        progress_data["total_chapters"] = chapter_count
+        progress_data["num_chapters"] = chapter_count #type: ignore
+        progress_data["total_chapters"] = chapter_count #type: ignore
         textbook.progress_data = progress_data  # type: ignore
         changed = True
 
@@ -323,28 +323,47 @@ async def list_textbooks(
     size = min(size, 50)
     offset = (page - 1) * size
 
-    query = select(Textbook).where(Textbook.user_id == current_user_id)
+    filters = [Textbook.user_id == current_user_id]
 
     if content_type:
-        query = query.where(Textbook.content_type == content_type)
+        filters.append(Textbook.content_type == content_type)
     if status:
-        query = query.where(Textbook.status == status)
+        filters.append(Textbook.status == status)
 
-    query = query.order_by(Textbook.created_at.desc())
-
-    count_query = select(func.count()).select_from(query.subquery())
+    count_query = select(func.count(Textbook.id)).where(*filters)
     total_result = await db.execute(count_query)
     total = total_result.scalar()
 
-    query = query.offset(offset).limit(size)
-    result = await db.execute(query)
-    textbooks = result.scalars().all()
-
-    repaired_count = False
-    for textbook in textbooks:
-        repaired_count = _repair_textbook_chapter_count(textbook) or repaired_count
-    if repaired_count:
-        await db.commit()
+    # Dashboard cards do not need large JSON/TEXT columns. Keep this query narrow
+    # so MySQL can sort reliably on local and small Railway instances.
+    query = (
+        select(
+            Textbook.id,
+            Textbook.title,
+            Textbook.topic,
+            Textbook.core_topic,
+            Textbook.user_requirements,
+            Textbook.num_chapters,
+            Textbook.content_level,
+            Textbook.max_subsections_per_chapter,
+            Textbook.enable_images,
+            Textbook.language,
+            Textbook.content_type,
+            Textbook.status,
+            Textbook.pdf_path,
+            Textbook.docx_path,
+            Textbook.error_message,
+            Textbook.credits_used,
+            Textbook.created_at,
+            Textbook.completed_at,
+        )
+        .where(*filters)
+        .order_by(Textbook.id.desc())
+        .offset(offset)
+        .limit(size)
+    )
+    rows = (await db.execute(query)).mappings().all()
+    textbooks = [dict(row) for row in rows]
 
     pages = (total + size - 1) // size if total > 0 else 0  # type: ignore
 

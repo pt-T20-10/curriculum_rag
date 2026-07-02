@@ -178,6 +178,7 @@ const fmtVND = v => {
   return String(v)
 }
 const toIso = d => d.toISOString().slice(0, 10)
+const fmtPercent = v => `${Number(v || 0).toFixed(1)}%`
 
 // ---------------------------------------------------------------------------
 // Page
@@ -275,6 +276,17 @@ export function AdminDashboardPage() {
               <StatCard label={t('admin.dashboard.totalRevenue')} value={`${(stats?.total_revenue || 0).toLocaleString(locale)} ₫`} color="text-green-600" icon="💰" />
               <StatCard label={t('admin.dashboard.revenueThisMonth')} value={`${(stats?.revenue_this_month || 0).toLocaleString(locale)} ₫`} color="text-green-600" icon="📈" />
               <StatCard label={t('admin.dashboard.creditsSold')} value={(stats?.total_credits_sold || 0).toLocaleString(locale)} icon="🪙" />
+            </div>
+
+            <div className="mb-4">
+              <h2 className="text-base font-semibold text-gray-700 mb-3">{t('admin.dashboard.operationsCredits')}</h2>
+              <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+                <StatCard label={t('admin.dashboard.generatingTextbooks')} value={(stats?.generating_textbooks || 0).toLocaleString(locale)} color="text-blue-600" icon="⚙️" />
+                <StatCard label={t('admin.dashboard.failedThisMonth')} value={(stats?.failed_textbooks_this_month || 0).toLocaleString(locale)} color={(stats?.failed_textbooks_this_month || 0) > 0 ? 'text-red-600' : 'text-gray-900'} icon="⚠️" />
+                <StatCard label={t('admin.dashboard.successRate')} value={fmtPercent(stats?.success_rate)} color="text-emerald-600" icon="✅" />
+                <StatCard label={t('admin.dashboard.creditsInCirculation')} value={(stats?.credits_in_circulation || 0).toLocaleString(locale)} icon="💳" />
+                <StatCard label={t('admin.dashboard.creditsSpentTotal')} value={(stats?.credits_spent_total || 0).toLocaleString(locale)} icon="📉" />
+              </div>
             </div>
 
             {/* ── Date range filter ── */}

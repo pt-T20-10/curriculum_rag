@@ -15,9 +15,11 @@ export const adminAPI = {
   unlockUser: (userId) => axios.post(`/admin/users/${userId}/unlock`),
   deleteUser: (userId) => axios.delete(`/admin/users/${userId}`),
   changeUserRole: (userId, role) => axios.put(`/admin/users/${userId}/role`, null, { params: { role } }),
+  adjustUserCredits: (userId, data) => axios.post(`/admin/users/${userId}/credits/adjust`, data),
 
   // Textbooks
   listTextbooks: (params) => axios.get('/admin/textbooks', { params }),
+  getTextbook: (id) => axios.get(`/admin/textbooks/${id}`),
 
   // Bank config
   getBankConfig: () => axios.get('/admin/bank-config'),
