@@ -23,6 +23,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 
 from app.config import settings
+from app.services.api_rate_limiter import rate_limited_invoke
 from app.services.runtime_config import get_api_key
 LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
 from app.utils.log_config import setup_logger, setup_prompt_logger
@@ -242,7 +243,7 @@ The response should be pure JSON starting with opening brace, containing "vi" an
 
         try:
             chain    = prompt | self.llm
-            response = chain.invoke({})
+            response = rate_limited_invoke(chain, {}, bucket="chat")
             content  = str(response.content).strip()  # type: ignore
 
             # Strip markdown fences if present, then fall back to bare-object

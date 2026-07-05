@@ -21,11 +21,11 @@ from app.services.textbook.query_formulator import formulate_query
 from app.services.textbook.retriever        import retriever_node
 from app.services.textbook.evaluator        import evaluate_context
 from app.services.textbook.writer           import write_section_crag, extract_section_summary
-from app.services.textbook.ingester import perform_ingestion
+from app.services.textbook.ingester import perform_ingestion, recover_rag_for_current_section
 from app.services.textbook.planner import plan_curriculum, generate_metadata_node    
 from app.services.textbook.reviewer import review_section
 from app.services.textbook.illustrator import illustrate_section
-from app.services.textbook.publisher import publish_curriculum
+from app.services.textbook.publisher import publish_curriculum, save_partial_markdown_checkpoint
 from app.services.textbook.validator import validate_topic_node
 from app.utils import stop_signal
 from app.utils.stop_signal import WorkflowStoppedException  # noqa: F401 — re-exported
@@ -59,6 +59,7 @@ class WorkflowDecision(str, Enum):
     REVISE              = "revise"
     APPROVE             = "approve"
     RETRY_RETRIEVAL     = "retry_retrieval"
+    RECOVER_CONTEXT     = "recover_context"
     """
     Route back to QueryFormulator for a fresh retrieval attempt.
     Triggered by:
@@ -162,6 +163,16 @@ def route_after_context_evaluation(state: AgentState) -> str:
         return WorkflowDecision.RETRY_RETRIEVAL
 
     if context_quality == "insufficient":
+        if (
+            getattr(settings, "CRAG_TARGETED_RECOVERY_ENABLED", True)
+            and not state.get("rag_recovery_attempted", False)
+        ):
+            logger.warning(
+                "Context quality: still INSUFFICIENT after retry budget — "
+                "running targeted RAG recovery before stopping"
+            )
+            return WorkflowDecision.RECOVER_CONTEXT
+
         logger.error(
             f"Context quality: still INSUFFICIENT after {retrieval_attempts} "
             f"main retrieval attempt(s) and {len(used_queries)} total RAG "
@@ -226,6 +237,7 @@ def append_and_update_subsection(state: AgentState) -> dict:
         # Reset per-subsection accumulators
         "used_rag_queries":         [],
         "rag_retrieval_attempts":   0,
+        "rag_recovery_attempted":   False,
         # Reset CRAG pipeline fields for next subsection
         "retrieval_query":          "",
         "context_quality":          "sufficient",
@@ -284,6 +296,7 @@ def append_and_update_chapter(state: AgentState) -> dict:
         # Reset per-subsection accumulators
         "used_rag_queries":         [],
         "rag_retrieval_attempts":   0,
+        "rag_recovery_attempted":   False,
         # Reset CRAG pipeline fields for next chapter's first subsection
         "retrieval_query":          "",
         "context_quality":          "sufficient",
@@ -296,6 +309,22 @@ def append_and_update_chapter(state: AgentState) -> dict:
     }
 
     return result
+
+
+def checkpoint_section_markdown(state: AgentState) -> dict:
+    """
+    Persist a lightweight Markdown checkpoint after reviewer/illustrator approval.
+
+    This runs before routing to the next section/chapter/publisher, so even the
+    last completed section is recoverable if a later node fails.
+    """
+    path = save_partial_markdown_checkpoint(state)
+    if not path:
+        return {}
+    return {
+        "partial_markdown_filepath": path,
+        "messages": [f"✓ Partial Markdown checkpoint saved: {path}"],
+    }
 
 
 def check_next_step(state: AgentState) -> str:
@@ -341,10 +370,12 @@ def _register_content_nodes(builder: StateGraph) -> None:
     builder.add_node("query_formulator",  _with_stop_check(formulate_query))
     builder.add_node("retriever_node",    _with_stop_check(retriever_node))
     builder.add_node("context_evaluator", _with_stop_check(evaluate_context))
+    builder.add_node("targeted_rag_recovery", _with_stop_check(recover_rag_for_current_section))
     builder.add_node("content_writer",    _with_stop_check(write_section_crag))
     # Quality + output pipeline (unchanged)
     builder.add_node("reviewer",          _with_stop_check(review_section))
     builder.add_node("illustrator",       _with_stop_check(illustrate_section))
+    builder.add_node("checkpoint_section", _with_stop_check(checkpoint_section_markdown))
     builder.add_node("publisher",         _with_stop_check(publish_curriculum))
     builder.add_node("update_subsection", _with_stop_check(append_and_update_subsection))
     builder.add_node("update_chapter",    _with_stop_check(append_and_update_chapter))
@@ -367,7 +398,7 @@ def _define_content_edges(builder: StateGraph) -> None:
                 formatting_error → content_writer   (rewrite, same context)
                 missing_context  → query_formulator  (full re-retrieval cycle)
 
-        illustrator → [check_next_step]
+        illustrator → checkpoint_section → [check_next_step]
             → update_subsection → query_formulator
             → update_chapter    → query_formulator
             → publisher         → END
@@ -381,10 +412,12 @@ def _define_content_edges(builder: StateGraph) -> None:
         "context_evaluator", route_after_context_evaluation,
         {
             WorkflowDecision.RETRY_RETRIEVAL:     "query_formulator",
+            WorkflowDecision.RECOVER_CONTEXT:      "targeted_rag_recovery",
             WorkflowDecision.CONTINUE_SUBSECTION: "content_writer",
             WorkflowDecision.FINISHED:            END,
         },
     )
+    builder.add_edge("targeted_rag_recovery", "query_formulator")
 
     builder.add_edge("content_writer", "reviewer")
 
@@ -398,9 +431,11 @@ def _define_content_edges(builder: StateGraph) -> None:
         },
     )
 
-    # Progress checkpoint routing (unchanged logic, updated target node)
+    builder.add_edge("illustrator", "checkpoint_section")
+
+    # Progress checkpoint routing (unchanged logic, updated source node)
     builder.add_conditional_edges(
-        "illustrator", check_next_step,
+        "checkpoint_section", check_next_step,
         {
             WorkflowDecision.CONTINUE_SUBSECTION: "update_subsection",
             WorkflowDecision.NEXT_CHAPTER:        "update_chapter",

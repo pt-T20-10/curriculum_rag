@@ -29,6 +29,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.config import settings
+from app.services.api_rate_limiter import rate_limited_invoke
 from app.services.runtime_config import get_api_key
 from app.services.textbook.language import get_language_profile
 
@@ -364,7 +365,13 @@ class ContentWriter:
             "English punctuation: do NOT use em dash or en dash characters "
             "(—, –). Use commas, parentheses, semicolons, or ASCII hyphen-minus (-) instead."
             if language == "en"
-            else "Use natural Vietnamese punctuation; avoid mixing English punctuation habits into Vietnamese prose."
+            else (
+                "Vietnamese punctuation: do NOT use the em dash character (—). "
+                "ASCII hyphen-minus (-) is allowed when it is genuinely part of "
+                "a term/acronym explanation, e.g. (ALU - Arithmetic and Logic Unit). "
+                "For prose explanation or assertion, rewrite naturally with "
+                "\"đây là\", \"là\", \"điều này cho thấy\", a comma, or a separate sentence."
+            )
         )
         paragraph_flow_rule = (
             "Paragraph rhythm: write cohesive prose in the target language, "
@@ -465,6 +472,10 @@ Rule 3 — BLANK LINES (PDF will break if violated):
 Blank line BEFORE and AFTER: every heading, every paragraph, every list,
 every code block, every math block. Zero exceptions.
 
+Rule 3.5 — NO HORIZONTAL RULES:
+Do NOT output standalone separator lines such as --- or ---- anywhere.
+Use headings and blank lines only to separate sections.
+
 Rule 4 — No ### heading for content that fits in 1–2 paragraphs.
 
 Rule 5 — Do NOT create a '### Kết luận' or '### Conclusion' subsection.
@@ -541,7 +552,7 @@ rich ### block, merge 1.1.3 + 1.1.4 into another.
             HumanMessage(content=user_prompt),
         ]
 
-        response = self._llm.invoke(messages)
+        response = rate_limited_invoke(self._llm, messages, bucket="chat")
         return str(response.content)
 
 
@@ -633,10 +644,10 @@ Return ONLY the formatted [IMAGE: ...] tags, one per line. No commentary."""
         )
 
         try:
-            response = self._llm.invoke([
+            response = rate_limited_invoke(self._llm, [
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=user_prompt),
-            ])
+            ], bucket="chat")
 
             generated_tags = [
                 line.strip()

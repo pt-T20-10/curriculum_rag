@@ -333,7 +333,7 @@ function AuditTable({ entries }) {
   )
 }
 
-const GROUP_ORDER = ['api_keys', 'rag', 'generation', 'ingestion', 'domain_caps']
+const GROUP_ORDER = ['api_keys', 'rate_limits', 'rag', 'generation', 'ingestion', 'domain_caps']
 
 // ---------------------------------------------------------------------------
 // Page

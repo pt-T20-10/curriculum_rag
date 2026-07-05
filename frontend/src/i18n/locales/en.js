@@ -638,6 +638,10 @@ export const en = {
         label: 'API Keys',
         description: 'Access keys and secrets for external services; only administrators can edit them.',
       },
+      rate_limits: {
+        label: 'API Rate Limit',
+        description: 'Throttle OpenAI requests when local and hosted workers share one API key.',
+      },
       rag: {
         label: 'RAG & Search',
         description: 'Controls how documents are searched and filtered from the knowledge base.',
@@ -715,6 +719,46 @@ export const en = {
       SEPAY_ACCOUNT_NUMBER: {
         label: 'SePay Account Number',
         description: 'SePay account number or receiving payment account.',
+      },
+      OPENAI_RATE_LIMIT_ENABLED: {
+        label: 'Enable OpenAI Rate Limit',
+        description: 'Enable pre-request sleep/throttle for OpenAI calls to avoid 429s when local and hosted workers share one key.',
+      },
+      OPENAI_SHARED_RATE_LIMIT_ENABLED: {
+        label: 'Use Redis Shared Rate Limit',
+        description: 'When enabled, workers using the same REDIS_URL share one rate-limit bucket.',
+      },
+      OPENAI_REQUEST_MIN_INTERVAL_SECONDS: {
+        label: 'Default OpenAI Request Interval',
+        description: 'Minimum seconds between OpenAI requests when chat/embedding/image buckets are not set separately.',
+      },
+      OPENAI_CHAT_MIN_INTERVAL_SECONDS: {
+        label: 'Chat Request Interval',
+        description: 'Minimum seconds between ChatOpenAI/LLM requests. Suggested shared-key value: 1.0-3.0 seconds.',
+      },
+      OPENAI_EMBEDDING_MIN_INTERVAL_SECONDS: {
+        label: 'Embedding Request Interval',
+        description: 'Minimum seconds between OpenAI embedding batches.',
+      },
+      OPENAI_IMAGE_MIN_INTERVAL_SECONDS: {
+        label: 'Image Request Interval',
+        description: 'Minimum seconds between OpenAI image generation requests.',
+      },
+      OPENAI_RATE_LIMIT_MAX_RETRIES: {
+        label: '429 Retry Count',
+        description: 'Number of exponential-backoff retries when OpenAI still returns rate-limit errors.',
+      },
+      OPENAI_RATE_LIMIT_BACKOFF_BASE_SECONDS: {
+        label: '429 Base Backoff',
+        description: 'Initial backoff seconds after a 429; later attempts grow exponentially.',
+      },
+      OPENAI_RATE_LIMIT_BACKOFF_MAX_SECONDS: {
+        label: '429 Max Backoff',
+        description: 'Maximum seconds to wait between rate-limit retries.',
+      },
+      OPENAI_RATE_LIMIT_JITTER_SECONDS: {
+        label: 'Sleep Jitter',
+        description: 'Random extra seconds added to sleeps so local and hosted workers do not request in the same rhythm.',
       },
       RAG_INITIAL_K: {
         label: 'Initial Retrieval K',

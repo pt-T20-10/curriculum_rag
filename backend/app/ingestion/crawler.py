@@ -31,6 +31,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from app.ingestion.query_expansion import QueryExpansionAgent
 from app.utils.log_config import setup_logger
 from app.config import settings, get_embedding_model
+from app.services.api_rate_limiter import rate_limited_call
 from app.utils import stop_signal
 
 CHROMA_DB_DIR = settings.CHROMA_DB_DIR
@@ -74,6 +75,15 @@ def _config_float(config: dict[str, Any], key: str, default: float) -> float:
         return float(config.get(key, default))
     except (TypeError, ValueError):
         return default
+
+
+def _rate_limited_embed_query(embedding_model, query: str):
+    if EMBEDDING_PROVIDER == "openai":
+        return rate_limited_call(
+            lambda: embedding_model.embed_query(query),
+            bucket="embedding",
+        )
+    return embedding_model.embed_query(query)
 
 embedding_model = get_embedding_model()
 HEADERS = {
@@ -367,7 +377,10 @@ def _embed_with_openai(
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                batch_embeddings = embedding_model.embed_documents(batch)
+                batch_embeddings = rate_limited_call(
+                    lambda: embedding_model.embed_documents(batch),
+                    bucket="embedding",
+                )
                 all_embeddings.extend(batch_embeddings)
                 break  # Success
                 
@@ -1916,8 +1929,8 @@ def ingest_dynamic_data(
         en_queries = _qe.expand_query_bilingual(topic, content_type=content_type).get("en", [])
         en_topic   = en_queries[0] if en_queries else topic
 
-        topic_emb_vi  = np.array(embedding_model.embed_query(topic))
-        topic_emb_en  = np.array(embedding_model.embed_query(en_topic))
+        topic_emb_vi  = np.array(_rate_limited_embed_query(embedding_model, topic))
+        topic_emb_en  = np.array(_rate_limited_embed_query(embedding_model, en_topic))
         combined      = (topic_emb_vi + topic_emb_en) / 2
         norm          = np.linalg.norm(combined)
         topic_emb     = combined / norm if norm > 0 else topic_emb_vi
@@ -1928,7 +1941,7 @@ def ingest_dynamic_data(
         )
     except Exception as e:
         logger.warning(f"Bilingual embedding failed ({e}) — falling back to VI only")
-        topic_emb = np.array(embedding_model.embed_query(topic))
+        topic_emb = np.array(_rate_limited_embed_query(embedding_model, topic))
 
     scores, chunk_embeddings = compute_relevance_scores(  
         quality_chunks, 
@@ -1948,7 +1961,7 @@ def ingest_dynamic_data(
         if source_query and source_query not in source_query_embeddings:
             try:
                 source_query_embeddings[source_query] = np.array(
-                    embedding_model.embed_query(source_query)
+                    _rate_limited_embed_query(embedding_model, source_query)
                 )
             except Exception as e:
                 logger.debug(f"Source-query embedding failed for '{source_query[:50]}': {e}")

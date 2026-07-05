@@ -10,6 +10,7 @@ from app.cli import cli
 from app.config import settings
 from app.services import runtime_config
 from app.services.textbook import automatic_runner
+from app.services.textbook import ingester
 
 
 VALIDATION = {
@@ -44,7 +45,10 @@ def _successful_result() -> dict:
     }
 
 
-def test_runner_passes_validator_output_and_generation_config(tmp_path: Path) -> None:
+def test_runner_passes_validator_output_and_generation_config(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     markdown = tmp_path / "book.md"
     pdf = tmp_path / "book.pdf"
     docx = tmp_path / "book.docx"
@@ -57,6 +61,12 @@ def test_runner_passes_validator_output_and_generation_config(tmp_path: Path) ->
             SimpleNamespace(subsections=[SimpleNamespace(), SimpleNamespace()]),
             SimpleNamespace(subsections=[SimpleNamespace()]),
         ]
+    )
+    cleanup_calls: list[str] = []
+    monkeypatch.setattr(
+        ingester,
+        "cleanup_rag_collection",
+        lambda collection_name: cleanup_calls.append(collection_name) or True,
     )
 
     class Workflow:
@@ -92,13 +102,16 @@ def test_runner_passes_validator_output_and_generation_config(tmp_path: Path) ->
         "pdf": str(pdf.resolve()),
         "word": str(docx.resolve()),
     }
-    assert captured["config"] == {"recursion_limit": 200}
+    assert captured["config"] == {
+        "recursion_limit": settings.CONTENT_WORKFLOW_RECURSION_LIMIT
+    }
     assert captured["state"]["request"] == "Python có bài tập"
     assert captured["state"]["core_topic"] == "Python"
     assert captured["state"]["user_requirements"] == "có bài tập"
     assert captured["state"]["content_level"] == "Dài"
     assert captured["state"]["enable_images"] is True
     assert captured["state"]["export_formats"] == ["PDF", "Word"]
+    assert cleanup_calls == [captured["state"]["rag_collection_name"]]
 
 
 def test_invalid_query_does_not_build_workflow() -> None:

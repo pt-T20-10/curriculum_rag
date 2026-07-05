@@ -40,6 +40,7 @@ from pathlib import Path
 from PIL import Image
 
 from app.config import settings
+from app.services.api_rate_limiter import rate_limited_call, rate_limited_invoke
 from app.services.runtime_config import get_api_key
 from app.services.textbook.language import get_language_profile
 from app.utils.log_config import setup_logger, setup_prompt_logger
@@ -197,7 +198,8 @@ class IllustratorAgent:
                 user_prompt=f"Description: {description}",
                 context_label=f"Query builder | {description[:40]}",
             )
-            response = self.llm.invoke( #type: ignore
+            response = rate_limited_invoke( #type: ignore
+                self.llm,
                 "Convert this image description into a short, specific Google Image "
                 "search query (5-7 words max, English only, no quotes).\n"
                 "Focus on the KEY VISUAL ELEMENT only — ignore structural details.\n\n"
@@ -244,9 +246,11 @@ class IllustratorAgent:
             return caption
 
         try:
-            response = self.llm.invoke( #type: ignore
+            response = rate_limited_invoke( #type: ignore
+                self.llm,
                 f"Translate this image caption to {profile.prompt_name}. "
-                "Return ONLY the translation, no explanation:\n\n" + caption
+                "Return ONLY the translation, no explanation:\n\n" + caption,
+                bucket="chat",
             )
             translated = str(response.content).strip()
             logger.info(f"Caption translated: '{caption[:40]}' → '{translated[:40]}'")
@@ -284,20 +288,22 @@ class IllustratorAgent:
                 user_prompt=f"Original: {description}",
                 context_label=f"Sanitize | {description[:40]}",
             )
-            response = self.llm.invoke( #type: ignore
-            "Rewrite this image description for a GPT Image API call.\n\n"
-            "Output format — use EXACTLY this structure:\n"
-            "Caption: [one sentence describing the overall scene and style]\n"
-            "Elements: [comma-separated list of key visual objects with their attributes]\n\n"
-            "Rules:\n"
-            "- Caption: focus on scene, atmosphere, composition\n"
-            "- Elements: list each object with color/size/position — NO numbered labels\n"
-            "- Remove enumeration prefixes (Step 1:, Layer A:, Phase 2:)\n"
-            "- Replace with structural counts (3 sequential steps, 4 layers)\n"
-            "- Keep proper nouns, conceptual terms, and compositional details\n"
-            "- CRITICAL: No text, words, numbers visible in the image\n\n"
-            "Original: " + description
-        )
+            response = rate_limited_invoke( #type: ignore
+                self.llm,
+                "Rewrite this image description for a GPT Image API call.\n\n"
+                "Output format — use EXACTLY this structure:\n"
+                "Caption: [one sentence describing the overall scene and style]\n"
+                "Elements: [comma-separated list of key visual objects with their attributes]\n\n"
+                "Rules:\n"
+                "- Caption: focus on scene, atmosphere, composition\n"
+                "- Elements: list each object with color/size/position — NO numbered labels\n"
+                "- Remove enumeration prefixes (Step 1:, Layer A:, Phase 2:)\n"
+                "- Replace with structural counts (3 sequential steps, 4 layers)\n"
+                "- Keep proper nouns, conceptual terms, and compositional details\n"
+                "- CRITICAL: No text, words, numbers visible in the image\n\n"
+                "Original: " + description,
+                bucket="chat",
+            )
             sanitized = str(response.content).strip()
             logger.info(f"Description sanitized: '{description[:50]}' → '{sanitized[:50]}'")
             return sanitized
@@ -362,7 +368,11 @@ class IllustratorAgent:
                 user_prompt=f"Description: {description}",
                 context_label=f"Router | {description[:50]}",
             )
-            response = self.llm.invoke(prompt.format(description=description)) #type: ignore
+            response = rate_limited_invoke( #type: ignore
+                self.llm,
+                prompt.format(description=description),
+                bucket="chat",
+            )
             data   = json.loads(str(response.content).strip())
             action = data.get("action", "SEARCH").upper()
             if action not in ("SEARCH", "DRAW", "DIAGRAM"):
@@ -443,12 +453,15 @@ class IllustratorAgent:
                     "Illustrate: " + sanitized
                 )
 
-            response = client.images.generate(
-                model=image_model,
-                prompt=dalle_prompt,
-                size="1024x1024",
-                quality="medium",
-                n=1,
+            response = rate_limited_call(
+                lambda: client.images.generate(
+                    model=image_model,
+                    prompt=dalle_prompt,
+                    size="1024x1024",
+                    quality="medium",
+                    n=1,
+                ),
+                bucket="image",
             )
 
             # gpt-image-1 returns base64 by default, not a URL.
@@ -621,26 +634,30 @@ class IllustratorAgent:
                 api_key=get_api_key("OPENAI_API_KEY"), #type: ignore
                 temperature=0,
             )
-            response = validator.invoke([
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": (
-                                f"Does this image match the following description for an "
-                                f"educational textbook?\n\nDescription: {description}\n\n"
-                                "Reply ONLY with 'PASS' if the image is relevant and appropriate, "
-                                "or 'FAIL' if it is wrong, irrelevant, or low quality."
-                            ),
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/png;base64,{img_b64}"},
-                        },
-                    ],
-                }
-            ])
+            response = rate_limited_invoke(
+                validator,
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    f"Does this image match the following description for an "
+                                    f"educational textbook?\n\nDescription: {description}\n\n"
+                                    "Reply ONLY with 'PASS' if the image is relevant and appropriate, "
+                                    "or 'FAIL' if it is wrong, irrelevant, or low quality."
+                                ),
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/png;base64,{img_b64}"},
+                            },
+                        ],
+                    }
+                ],
+                bucket="chat",
+            )
             result = str(response.content).strip().upper()
             passed = result.startswith("PASS")
             logger.info(

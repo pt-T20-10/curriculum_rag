@@ -241,8 +241,21 @@ class Settings(BaseSettings):
     available non-empty context for the section and continue as 'best_effort'
     instead of stopping the whole workflow. Keep False for strict thesis runs.
     """
+    CRAG_TARGETED_RECOVERY_ENABLED: bool = True
+    """
+    If strict retrieval still has no usable context after the retry budget,
+    crawl a small set of URLs for the current subsection and ingest them into
+    the same Chroma collection before retrying QueryFormulator once.
+    """
+    CRAG_TARGETED_RECOVERY_RESULTS_PER_QUERY: int = 4
+    CRAG_TARGETED_RECOVERY_MAX_ROOT_URLS: int = 3
 
     # ==================== Content Generation ====================
+    CHECKPOINT_MARKDOWN_AFTER_SECTION: bool = True
+    """
+    Write a recoverable .partial.md file after each reviewed/illustrated section.
+    This protects generated content if a later RAG gate or export step fails.
+    """
     WRITER_RETRIEVAL_MAX_ROUNDS: int = 3
     """Max tool-call rounds ContextRetrievalAgent may use to supplement context."""
     WRITER_SUMMARY_PREVIEW_CHARS: int = 200
@@ -310,11 +323,28 @@ class Settings(BaseSettings):
     
     # Maximum chunks to embed (pre-filter with heuristics to save time)
     MAX_CHUNKS_TO_EMBED: int = 500  #1000
+
+    # ==================== LangGraph Workflow Runtime ====================
+    PLANNING_WORKFLOW_RECURSION_LIMIT: int = 250
+    CONTENT_WORKFLOW_RECURSION_LIMIT: int = 3000
     
     # ==================== ChromaDB ====================
     CHROMA_PERSIST_DIR: str = "data/chroma_db"
     CHROMA_COLLECTION_NAME: str = "curriculum_knowledge"
-    
+    CLEANUP_RAG_COLLECTION_AFTER_EXPORT: bool = True
+
+    # ==================== Shared API Rate Limiting ====================
+    OPENAI_RATE_LIMIT_ENABLED: bool = False
+    OPENAI_SHARED_RATE_LIMIT_ENABLED: bool = True
+    OPENAI_REQUEST_MIN_INTERVAL_SECONDS: float = 0.0
+    OPENAI_CHAT_MIN_INTERVAL_SECONDS: float = 0.0
+    OPENAI_EMBEDDING_MIN_INTERVAL_SECONDS: float = 0.0
+    OPENAI_IMAGE_MIN_INTERVAL_SECONDS: float = 0.0
+    OPENAI_RATE_LIMIT_MAX_RETRIES: int = 5
+    OPENAI_RATE_LIMIT_BACKOFF_BASE_SECONDS: float = 2.0
+    OPENAI_RATE_LIMIT_BACKOFF_MAX_SECONDS: float = 60.0
+    OPENAI_RATE_LIMIT_JITTER_SECONDS: float = 0.2
+
     # ==================== Paths ====================
     @property
     def BASE_DIR(self) -> Path:
@@ -327,7 +357,7 @@ class Settings(BaseSettings):
     @property
     def CHROMA_DB_DIR(self) -> Path:
         return self.DATA_DIR / "chroma_db"
-    
+
     # Pydantic config
     model_config = SettingsConfigDict(
         env_file=str(Path(__file__).parent.parent.parent / ".env"),

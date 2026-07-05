@@ -276,6 +276,7 @@ class AgentState(TypedDict):
     final_filepath: Optional[str]
     final_markdown_filepath: Optional[str]
     final_pdf_filepath: Optional[str]
+    partial_markdown_filepath: Optional[str]
     content_level: str
 
     # ---- Export ----
@@ -308,6 +309,7 @@ class AgentState(TypedDict):
 
     used_rag_queries: List[str]   # accumulate across revision attempts
     rag_retrieval_attempts: int
+    rag_recovery_attempted: bool
     """
     Number of main RetrieverNode attempts for the current subsection.
     Evaluator tool-call queries remain in used_rag_queries for audit, but
@@ -467,6 +469,7 @@ def build_initial_state(
         "final_filepath":      None,
         "final_markdown_filepath": None,
         "final_pdf_filepath": None,
+        "partial_markdown_filepath": None,
         "export_formats":      export_formats or ["Word"],
         "final_docx_filepath": None,
         "export_errors":       {},
@@ -477,6 +480,7 @@ def build_initial_state(
         # ---- Progress Accumulators (fixed: were missing from previous version) ----
         "used_rag_queries":  [],
         "rag_retrieval_attempts": 0,
+        "rag_recovery_attempted": False,
         "section_summaries": section_summaries or [],
         
     }

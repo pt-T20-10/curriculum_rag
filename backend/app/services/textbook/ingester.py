@@ -26,7 +26,13 @@ import re
 from pathlib import Path
 
 from typing import Any
-from app.schemas.curriculum import AgentState
+from app.schemas.curriculum import (
+    AgentState,
+    Chapter,
+    SubSection,
+    clean_section_title,
+    get_chapter_and_subsection,
+)
 from app.config import settings
 
 from app.ingestion.query_expansion import QueryExpansionAgent
@@ -83,6 +89,202 @@ def _run_id_from_collection(collection_name: str) -> str:
     """Derive a compact run id from the per-textbook Chroma collection name."""
     match = re.match(r"^dynamic_context_(.+)$", collection_name or "")
     return match.group(1) if match else (collection_name or "dynamic_context")
+
+
+def cleanup_rag_collection(collection_name: str) -> bool:
+    """
+    Best-effort cleanup for a completed run's Chroma collection.
+
+    Chroma stores multiple collections inside the same persistent directory, so
+    deleting individual files is unsafe while the worker is alive. Delete only
+    the completed run's collection and leave the storage files to Chroma.
+    """
+    if not collection_name:
+        return False
+    if collection_name in {"dynamic_context", settings.CHROMA_COLLECTION_NAME}:
+        logger.warning("Refusing to cleanup shared Chroma collection: %s", collection_name)
+        return False
+
+    try:
+        from langchain_chroma import Chroma
+        from app.services.textbook.retriever import release_retriever
+
+        release_retriever(collection_name)
+        vector_db = Chroma(
+            persist_directory=str(CHROMA_DB_DIR),
+            collection_name=collection_name,
+        )
+        vector_db.delete_collection()
+        logger.info("Cleaned Chroma collection after export: %s", collection_name)
+        return True
+    except Exception as e:
+        logger.warning(
+            "Could not cleanup Chroma collection '%s' after export: %s",
+            collection_name,
+            e,
+        )
+        return False
+
+
+def recover_rag_for_current_section(state: AgentState) -> dict:
+    """
+    Targeted one-shot crawl when Chroma has no usable context for a subsection.
+
+    Normal CRAG retries only reformulate queries against the existing Chroma
+    collection. This recovery step expands the collection itself for the
+    current subsection, then routes back to QueryFormulator.
+    """
+    if not getattr(settings, "CRAG_TARGETED_RECOVERY_ENABLED", True):
+        return {
+            "rag_recovery_attempted": True,
+            "messages": ["⚠️ Targeted RAG recovery disabled"],
+        }
+
+    curriculum = state["curriculum"]
+    chap_idx = state["current_chapter_index"]
+    sub_idx = state["current_subsection_index"]
+    content_type = state.get("content_type", "technical")
+    collection_name = state.get("rag_collection_name", "dynamic_context")
+    runtime_config = state.get("advanced_config", {}) or {}
+
+    try:
+        chapter, subsection = get_chapter_and_subsection(curriculum, chap_idx, sub_idx)
+        chap_title = chapter.title if isinstance(chapter, Chapter) else chapter.get("title", "")
+        sec_title = subsection.title if isinstance(subsection, SubSection) else subsection.get("title", "")
+        sec_desc = subsection.description if isinstance(subsection, SubSection) else subsection.get("description", "")
+        sec_query = subsection.search_query if isinstance(subsection, SubSection) else subsection.get("search_query", "")
+        sec_title = clean_section_title(sec_title)
+    except Exception as e:
+        logger.warning("Targeted RAG recovery could not read curriculum section: %s", e)
+        chap_title = state.get("core_topic", "") or state.get("request", "")
+        sec_title = f"Chapter {chap_idx + 1}.{sub_idx + 1}"
+        sec_desc = ""
+        sec_query = state.get("retrieval_query", "")
+
+    recovery_query = " ".join(
+        part.strip()
+        for part in [
+            state.get("core_topic", "") or state.get("request", ""),
+            chap_title,
+            sec_title,
+            sec_query,
+            sec_desc,
+        ]
+        if str(part or "").strip()
+    )
+    recovery_query = re.sub(r"\s+", " ", recovery_query).strip()
+    if not recovery_query:
+        return {
+            "rag_recovery_attempted": True,
+            "messages": ["⚠️ Targeted RAG recovery skipped: empty query"],
+        }
+
+    results_per_query = _config_int(
+        runtime_config,
+        "CRAG_TARGETED_RECOVERY_RESULTS_PER_QUERY",
+        getattr(settings, "CRAG_TARGETED_RECOVERY_RESULTS_PER_QUERY", 4),
+        minimum=1,
+    )
+    max_root_urls = _config_int(
+        runtime_config,
+        "CRAG_TARGETED_RECOVERY_MAX_ROOT_URLS",
+        getattr(settings, "CRAG_TARGETED_RECOVERY_MAX_ROOT_URLS", 3),
+        minimum=1,
+    )
+    min_snippet_score = _config_float(
+        runtime_config,
+        "MIN_SNIPPET_SCORE",
+        settings.MIN_SNIPPET_SCORE,
+    )
+    url_filter_max_workers = _config_int(
+        runtime_config,
+        "URL_FILTER_MAX_WORKERS",
+        settings.URL_FILTER_MAX_WORKERS,
+        minimum=1,
+    )
+
+    logger.warning(
+        "Targeted RAG recovery: Chapter %s.%s query='%s'",
+        chap_idx + 1,
+        sub_idx + 1,
+        recovery_query[:160],
+    )
+
+    all_urls: list[str] = []
+    scored_results: list[dict] = []
+    seen: set[str] = set()
+    for region in ("us-en", "vn-vn"):
+        if stop_signal.is_stopped():
+            break
+        try:
+            for result in search_web(
+                recovery_query,
+                results_per_query,
+                region,
+                min_snippet_score=min_snippet_score,
+            ):
+                url = result.get("href", "")
+                if not url or url in seen:
+                    continue
+                item = dict(result)
+                item["_query"] = recovery_query
+                item["_region"] = region
+                seen.add(url)
+                all_urls.append(url)
+                scored_results.append(item)
+        except Exception as e:
+            logger.warning("Targeted RAG recovery search failed [%s]: %s", region, e)
+
+    if not all_urls:
+        return {
+            "rag_recovery_attempted": True,
+            "rag_retrieval_attempts": 0,
+            "messages": ["⚠️ Targeted RAG recovery found no search results"],
+        }
+
+    clean_links = filter_and_classify_urls(
+        all_urls,
+        scored_results=scored_results,
+        topic=recovery_query,
+        content_type=content_type,
+        min_snippet_score=min_snippet_score,
+        max_workers=url_filter_max_workers,
+    )
+    clean_links = clean_links[:max_root_urls]
+    if not clean_links:
+        return {
+            "rag_recovery_attempted": True,
+            "rag_retrieval_attempts": 0,
+            "messages": ["⚠️ Targeted RAG recovery found no valid URLs"],
+        }
+
+    success = ingest_dynamic_data(
+        recovery_query,
+        clean_links,
+        content_type=content_type,
+        collection_name=collection_name,
+        run_id=_run_id_from_collection(collection_name),
+        progress_callback=_get_ingestion_callback(),
+        runtime_config=runtime_config,
+    )
+
+    return {
+        "rag_recovery_attempted": True,
+        "rag_retrieval_attempts": 0,
+        "retrieval_query": "",
+        "context_quality": "sufficient",
+        "messages": [
+            (
+                f"✓ Targeted RAG recovery ingested {len(clean_links)} source(s) "
+                f"for Chapter {chap_idx + 1}.{sub_idx + 1}"
+            )
+            if success
+            else (
+                f"⚠️ Targeted RAG recovery failed for "
+                f"Chapter {chap_idx + 1}.{sub_idx + 1}"
+            )
+        ],
+    }
 
 
 def perform_ingestion(state: AgentState) -> dict:

@@ -638,6 +638,10 @@ export const vi = {
         label: 'API Keys',
         description: 'Khóa truy cập và secret cho các dịch vụ ngoài; chỉ quản trị viên được chỉnh.',
       },
+      rate_limits: {
+        label: 'API Rate Limit',
+        description: 'Điều tiết request OpenAI khi local và host dùng chung API key.',
+      },
       rag: {
         label: 'RAG & Tìm Kiếm',
         description: 'Kiểm soát cách tài liệu được tìm kiếm và lọc từ cơ sở tri thức.',
@@ -715,6 +719,46 @@ export const vi = {
       SEPAY_ACCOUNT_NUMBER: {
         label: 'SePay Account Number',
         description: 'Số tài khoản SePay hoặc tài khoản nhận thanh toán.',
+      },
+      OPENAI_RATE_LIMIT_ENABLED: {
+        label: 'Bật Rate Limit OpenAI',
+        description: 'Bật sleep/throttle trước các request OpenAI để tránh 429 khi local và host dùng chung key.',
+      },
+      OPENAI_SHARED_RATE_LIMIT_ENABLED: {
+        label: 'Dùng Redis Để Chia Sẻ Rate Limit',
+        description: 'Khi bật, các worker cùng REDIS_URL sẽ dùng chung bucket rate limit; cần local và host trỏ cùng Redis để phối hợp thật sự.',
+      },
+      OPENAI_REQUEST_MIN_INTERVAL_SECONDS: {
+        label: 'Khoảng Cách Mặc Định Giữa Request OpenAI',
+        description: 'Số giây tối thiểu giữa hai request OpenAI nếu bucket chat/embedding/image không đặt riêng.',
+      },
+      OPENAI_CHAT_MIN_INTERVAL_SECONDS: {
+        label: 'Khoảng Cách Request Chat',
+        description: 'Số giây tối thiểu giữa hai request ChatOpenAI/LLM. Gợi ý khi chạy local + host chung key: 1.0-3.0 giây.',
+      },
+      OPENAI_EMBEDDING_MIN_INTERVAL_SECONDS: {
+        label: 'Khoảng Cách Request Embedding',
+        description: 'Số giây tối thiểu giữa các batch embedding OpenAI.',
+      },
+      OPENAI_IMAGE_MIN_INTERVAL_SECONDS: {
+        label: 'Khoảng Cách Request Image',
+        description: 'Số giây tối thiểu giữa các request tạo ảnh OpenAI.',
+      },
+      OPENAI_RATE_LIMIT_MAX_RETRIES: {
+        label: 'Số Lần Retry Khi Bị 429',
+        description: 'Số lần retry với exponential backoff khi OpenAI vẫn trả rate limit.',
+      },
+      OPENAI_RATE_LIMIT_BACKOFF_BASE_SECONDS: {
+        label: 'Backoff Cơ Sở Khi Bị 429',
+        description: 'Số giây backoff ban đầu khi bị 429; các lần sau tăng theo cấp số nhân.',
+      },
+      OPENAI_RATE_LIMIT_BACKOFF_MAX_SECONDS: {
+        label: 'Backoff Tối Đa Khi Bị 429',
+        description: 'Trần số giây chờ giữa các lần retry khi bị rate limit.',
+      },
+      OPENAI_RATE_LIMIT_JITTER_SECONDS: {
+        label: 'Jitter Cho Sleep',
+        description: 'Số giây jitter ngẫu nhiên cộng thêm để tránh local và host đánh request cùng một nhịp.',
       },
       RAG_INITIAL_K: {
         label: 'K Lấy Kết Quả Ban Đầu',

@@ -18,6 +18,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
 
 from app.config import settings
+from app.services.api_rate_limiter import rate_limited_invoke
 from app.services.runtime_config import get_api_key, get_runtime_config
 from app.utils import stop_signal
 from app.utils.log_config import setup_logger
@@ -163,7 +164,7 @@ class EvaluatorAgent:
             if stop_signal.is_stopped():
                 break
 
-            response = self._llm_with_tools.invoke(messages)
+            response = rate_limited_invoke(self._llm_with_tools, messages, bucket="chat")
             tool_calls = getattr(response, "tool_calls", [])
 
             if not tool_calls:

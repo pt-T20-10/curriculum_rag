@@ -34,6 +34,7 @@ from app.schemas.curriculum import (
     clean_section_title,
 )
 from app.config import settings
+from app.services.api_rate_limiter import rate_limited_invoke
 from app.services.runtime_config import get_api_key
 from app.services.textbook.language import get_language_profile
 
@@ -179,7 +180,11 @@ class ReviewerAgent:
 
         try:
             chain = prompt | self.llm
-            response = chain.invoke({"content": content, "char_min": char_min})
+            response = rate_limited_invoke(
+                chain,
+                {"content": content, "char_min": char_min},
+                bucket="chat",
+            )
 
             raw = response.content.strip()  # type: ignore
             if "```json" in raw:
@@ -352,10 +357,14 @@ Rule 8 — Blank lines: every #, ##, ### heading MUST have a blank line immediat
   BEFORE it AND immediately AFTER it.
   Fix missing blank lines — do NOT add blank lines elsewhere.
 
-Rule 9 — Code blocks: must have a language identifier.
+Rule 9 — Horizontal rules:
+  Remove standalone separator lines such as --- or ----.
+  Do NOT add horizontal rules anywhere; headings and blank lines are sufficient.
+
+Rule 10 — Code blocks: must have a language identifier.
   ``` →  ```python  (or ```bash, ```sql, ```json depending on content)
 
-Rule 10 — Inline programming code:
+Rule 11 — Inline programming code:
   Programming identifiers, keywords, function names, method names, operators,
   and code expressions MUST use Markdown backticks, not $...$ math.
   Fix: $student\\_scores["Alice"]$ → `student_scores["Alice"]`
@@ -364,7 +373,7 @@ Rule 10 — Inline programming code:
   Do NOT wrap Python keywords, variables, string literals, list/dict indexing,
   or methods in math delimiters.
 
-Rule 11 — Language-specific punctuation:
+Rule 12 — Language-specific punctuation:
   {format_style_rule}
 
 --- ABSOLUTE PROHIBITION ---
@@ -413,14 +422,14 @@ No fences, no preamble, no explanation.
                 ("user", "Apply format rules to this draft:\n\n{draft}"),
             ])
             chain = prompt | llm_format
-            response = chain.invoke({
+            response = rate_limited_invoke(chain, {
                 "section_num":   section_num,
                 "section_title": section_title,
                 "chap_cmd":      chapter_cmd,
                 "language_math_rule": language_math_rule,
                 "format_style_rule": format_style_rule,
                 "draft":         draft,
-            })
+            }, bucket="chat")
             return str(response.content)
 
         except Exception as e:
@@ -474,7 +483,13 @@ No fences, no preamble, no explanation.
             "Do NOT use em dash or en dash characters (—, –) in English output. "
             "Use commas, parentheses, semicolons, or ASCII hyphen-minus (-) instead."
             if profile.code == "en"
-            else "Use natural Vietnamese punctuation."
+            else (
+                "Do NOT leave the em dash character (—) in Vietnamese output. "
+                "Choose the replacement by context: use ASCII hyphen-minus (-) "
+                "inside acronym/term explanations such as (ALU - Arithmetic and Logic Unit); "
+                "rewrite prose explanations with natural Vietnamese connectors such as "
+                "\"đây là\", \"là\", \"điều này cho thấy\", a comma, or a separate sentence."
+            )
         )
         content_system = """
 [CONTEXT]
@@ -548,6 +563,7 @@ Output rules:
   - Return ONLY the final polished Markdown
   - NO conversational preamble or meta-commentary
   - NO outer markdown fences wrapping the entire output
+  - NO standalone separator lines such as --- or ----
 [/FORMAT]
 """
 
@@ -583,7 +599,7 @@ Output rules:
                 ("user", "Here is the draft to improve:\n\n{draft}"),
             ])
             chain = prompt | llm_content
-            response = chain.invoke({
+            response = rate_limited_invoke(chain, {
                 "course_topic":        course_topic,
                 "chapter_num":         chapter_num,
                 "chapter_title":       chapter_title,
@@ -594,13 +610,97 @@ Output rules:
                 "tone_rule":           profile.tone_rule,
                 "content_style_rule":  content_style_rule,
                 "draft":               draft,
-            })
+            }, bucket="chat")
             return str(response.content)
 
         except Exception as e:
             logger.error(
                 f"Pass B (_content_pass) error — returning format-fixed draft: {e}",
                 exc_info=True,
+            )
+            return draft
+
+    @staticmethod
+    def _needs_em_dash_cleanup(content: str, language: str = "vi") -> bool:
+        """Return True when a Vietnamese section still needs contextual dash cleanup."""
+        return get_language_profile(language).code == "vi" and "—" in content
+
+    def _em_dash_cleanup_pass(
+        self,
+        draft: str,
+        section_num: str,
+        section_title: str,
+        language: str = "vi",
+    ) -> str:
+        """
+        Contextual cleanup pass for Vietnamese em dashes.
+
+        This intentionally uses the LLM instead of a regex because an em dash may
+        need either a plain hyphen inside acronym explanations or a Vietnamese
+        connective phrase in ordinary prose.
+        """
+        if not self._needs_em_dash_cleanup(draft, language):
+            return draft
+
+        cleanup_system = """
+[CONTEXT]
+You are a Vietnamese academic copy editor. Your only task is to remove the
+em dash character (—) from the draft while preserving meaning and structure.
+[/CONTEXT]
+
+[TASK]
+Edit the draft so the final output contains ZERO em dash characters (—).
+Do not rewrite anything unrelated to em dash cleanup.
+[/TASK]
+
+[CONSTRAINT]
+- Preserve all Markdown headings, heading numbers, math notation, code blocks,
+  image tags, lists, and paragraph order.
+- If the em dash appears inside an acronym or term explanation, replace it with
+  ASCII hyphen-minus (-). Example: (ALU — Arithmetic and Logic Unit) becomes
+  (ALU - Arithmetic and Logic Unit).
+- If the em dash introduces an explanation or assertion in prose, rewrite the
+  sentence naturally with Vietnamese connectors such as "đây là", "là",
+  "điều này cho thấy", a comma, or a separate sentence.
+- Do NOT use en dash (–) as a substitute.
+- The final output must not contain the character —.
+[/CONSTRAINT]
+
+[FORMAT]
+Return raw Markdown only. No preamble, no explanation, no fences.
+[/FORMAT]
+"""
+
+        try:
+            self.prompt_logger.log(
+                system_prompt=cleanup_system,
+                user_prompt=f"Clean em dashes in draft (first 200 chars):\n{draft[:200]}...",
+                context_label=f"{section_num} {section_title} [EM-DASH-CLEANUP]",
+            )
+            llm_cleanup = ChatOpenAI(
+                model=LLM_MODEL_PREMIUM,
+                api_key=get_api_key("OPENAI_API_KEY"),  # type: ignore[arg-type]
+                temperature=0.0,
+            )
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", cleanup_system),
+                ("user", "Clean em dashes in this draft:\n\n{draft}"),
+            ])
+            response = rate_limited_invoke(prompt | llm_cleanup, {"draft": draft}, bucket="chat")
+            cleaned = str(response.content)
+            if "—" in cleaned:
+                logger.warning(
+                    "Em dash cleanup pass left em dash characters in %s %s",
+                    section_num,
+                    section_title,
+                )
+            return cleaned
+        except Exception as e:
+            logger.warning(
+                "Em dash cleanup pass failed for %s %s — returning prior draft: %s",
+                section_num,
+                section_title,
+                e,
             )
             return draft
 
@@ -695,6 +795,15 @@ Output rules:
 
         # Apply deterministic heading level fix (existing logic — keep unchanged).
         polished = self._fix_heading_levels(polished, section_num, section_title)
+        if self._needs_em_dash_cleanup(polished, language):
+            logger.info("  Em dash cleanup required: %s %s", section_num, section_title)
+            cleaned = self._em_dash_cleanup_pass(
+                draft=polished,
+                section_num=section_num,
+                section_title=section_title,
+                language=language,
+            )
+            polished = self._fix_heading_levels(cleaned, section_num, section_title)
 
         logger.info("✓ Review complete")
         return polished

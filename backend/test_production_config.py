@@ -107,6 +107,18 @@ def test_redis_url_falls_back_to_host_and_port() -> None:
     assert settings.REDIS_CONNECTION_URL == "redis://redis:6380/0"
 
 
+def test_openai_rate_limit_settings_are_admin_configurable() -> None:
+    from app.config_registry import PARAMETER_GROUPS, get_admin_registry
+
+    registry = get_admin_registry()
+
+    assert "rate_limits" in PARAMETER_GROUPS
+    assert "OPENAI_RATE_LIMIT_ENABLED" in registry
+    assert registry["OPENAI_RATE_LIMIT_ENABLED"]["group"] == "rate_limits"
+    assert "OPENAI_CHAT_MIN_INTERVAL_SECONDS" in registry
+    assert "OPENAI_IMAGE_MIN_INTERVAL_SECONDS" in registry
+
+
 def test_production_rejects_sample_default_admin() -> None:
     with pytest.raises(ValidationError, match="DEFAULT_ADMIN_EMAIL"):
         _valid_production_settings(

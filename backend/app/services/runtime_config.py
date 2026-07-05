@@ -87,7 +87,7 @@ def invalidate_runtime_config_cache() -> None:
         from app.services.textbook import retriever
 
         retriever._chunk_classifier = None
-        retriever._retriever_instance = None
+        retriever._retriever_instances.clear()
     except Exception as exc:
         logger.debug("Could not clear retriever runtime caches: %s", exc)
 

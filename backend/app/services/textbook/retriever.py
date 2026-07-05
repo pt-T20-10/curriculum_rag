@@ -36,6 +36,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 import re
 from app.config import settings, get_embedding_model
+from app.services.api_rate_limiter import rate_limited_call, rate_limited_invoke
 from app.services.runtime_config import get_api_key
 
 LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
@@ -53,6 +54,35 @@ from app.schemas.curriculum import AgentState, Chapter, SubSection, get_chapter_
 from app.utils.log_config import setup_logger
 
 logger = setup_logger(name="Retriever", logfile="logs/agents.log")
+
+
+class _RateLimitedEmbeddingFunction:
+    """Wrap OpenAI embeddings so Chroma query embeddings share the API limiter."""
+
+    def __init__(self, base: Any) -> None:
+        self._base = base
+
+    def embed_query(self, text: str) -> list[float]:
+        return rate_limited_call(
+            lambda: self._base.embed_query(text),
+            bucket="embedding",
+        )
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return rate_limited_call(
+            lambda: self._base.embed_documents(texts),
+            bucket="embedding",
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._base, name)
+
+
+def _get_rate_limited_embedding_model() -> Any:
+    model = get_embedding_model()
+    if settings.EMBEDDING_PROVIDER == "openai":
+        return _RateLimitedEmbeddingFunction(model)
+    return model
 
 
 _SOURCE_LINE_RE = re.compile(
@@ -418,7 +448,7 @@ class Retriever:
         self.collection_name = collection_name
         self.vector_db = Chroma(
             persist_directory=str(CHROMA_DB_DIR),
-            embedding_function=get_embedding_model(),
+            embedding_function=_get_rate_limited_embedding_model(),
             collection_name=collection_name,
         )
         self._retrieved_ids: set[str] = set()
@@ -932,7 +962,13 @@ def _deduplicate_chunks_semantic(
     
     # Batch encode all chunks
     texts = [c['content'][:500] for c in chunks]  # First 500 chars for speed
-    embeddings = embedding_model.embed_documents(texts)
+    if settings.EMBEDDING_PROVIDER == "openai":
+        embeddings = rate_limited_call(
+            lambda: embedding_model.embed_documents(texts),
+            bucket="embedding",
+        )
+    else:
+        embeddings = embedding_model.embed_documents(texts)
     embeddings_np = np.array(embeddings)
     
     # Track which chunks to keep
@@ -1173,7 +1209,7 @@ Reply with ONLY one word: KEEP or DISCARD"""
     
     try:
         llm = _get_chunk_classifier()
-        response = llm.invoke(prompt)
+        response = rate_limited_invoke(llm, prompt, bucket="chat")
         result = response.content.strip().upper() #type: ignore[attr-defined]
         
         # Extract decision from response (may include reasoning)
@@ -1203,6 +1239,13 @@ def _get_retriever(collection_name: str = "dynamic_context") -> Retriever:
     if collection_name not in _retriever_instances:
         _retriever_instances[collection_name] = Retriever(collection_name=collection_name)
     return _retriever_instances[collection_name]
+
+
+def release_retriever(collection_name: str = "dynamic_context") -> None:
+    """Drop the cached retriever for a finished run's collection."""
+    _retriever_instances.pop(collection_name, None)
+
+
 @tool
 def retrieve_context_tool(
     query: str,

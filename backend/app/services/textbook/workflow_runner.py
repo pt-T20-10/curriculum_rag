@@ -12,12 +12,29 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.models.textbook import Textbook
+from app.config import settings
 from app.schemas.curriculum import AgentState, build_initial_state
 from app.services.textbook.language import get_language_profile, progress_text
 from app.utils.log_config import setup_logger
 from app.utils.stop_signal import WorkflowStoppedException
 
 logger = setup_logger(name="WorkflowRunner", logfile="logs/workflow_runner.log")
+
+
+def _cleanup_rag_after_export(state: Dict[str, Any]) -> None:
+    if not getattr(settings, "CLEANUP_RAG_COLLECTION_AFTER_EXPORT", True):
+        return
+
+    collection_name = str(state.get("rag_collection_name") or "")
+    if not collection_name:
+        return
+
+    try:
+        from app.services.textbook.ingester import cleanup_rag_collection
+
+        cleanup_rag_collection(collection_name)
+    except Exception as e:
+        logger.warning("RAG cleanup after export failed: %s", e)
 
 
 def _validated_artifact_path(value: Any, suffix: str) -> str | None:
@@ -135,7 +152,10 @@ async def run_textbook_workflow(
 
         cumulative_state: Dict[str, Any] = dict(initial_state)
 
-        for event in app.stream(initial_state, {"recursion_limit": 150}):
+        for event in app.stream(
+            initial_state,
+            {"recursion_limit": settings.PLANNING_WORKFLOW_RECURSION_LIMIT},
+        ):
             for node_name, node_output in event.items():
                 if isinstance(node_output, dict):
                     cumulative_state.update(node_output)
@@ -253,7 +273,7 @@ async def continue_after_curriculum_confirmation(
          # CRAG pipeline nodes replace the old researcher/writer pair
     _CRAG_NODES = (
                         "query_formulator", "retriever_node",
-                        "context_evaluator", "content_writer",
+                        "context_evaluator", "targeted_rag_recovery", "content_writer",
                         "reviewer", "illustrator",
                     )
 
@@ -280,6 +300,7 @@ async def continue_after_curriculum_confirmation(
         "final_filepath":           None,
         "final_markdown_filepath":  None,
         "final_pdf_filepath":       None,
+        "partial_markdown_filepath": None,
         "final_docx_filepath":      None,
         "export_errors":            {},
         # CRAG pipeline fields — reset for clean start
@@ -289,6 +310,7 @@ async def continue_after_curriculum_confirmation(
         "rejection_type":           None,
         "used_rag_queries":         [],
         "rag_retrieval_attempts":   0,
+        "rag_recovery_attempted":    False,
         "curriculum_confirmed":     True,
     }
 
@@ -330,7 +352,10 @@ async def continue_after_curriculum_confirmation(
             source_audit = cumulative_state.get("rag_source_audit")
             return {"source_audit": source_audit} if source_audit else {}
 
-        for event in app.stream(content_state, {"recursion_limit": 200}):
+        for event in app.stream(
+            content_state,
+            {"recursion_limit": settings.CONTENT_WORKFLOW_RECURSION_LIMIT},
+        ):
             for node_name, node_output in event.items():
                 if isinstance(node_output, dict):
                     cumulative_state.update(node_output)
@@ -433,7 +458,12 @@ async def continue_after_curriculum_confirmation(
         # Do NOT overwrite it with a success state.
         if _ingestion_failed:
             logger.error("[Workflow] Aborting post-loop: ingestion failed, no content generated")
-            return {"success": False, "error": "Ingestion failed: no search results found"}
+            _cleanup_rag_after_export(cumulative_state)
+            return {
+                "success": False,
+                "error": "Ingestion failed: no search results found",
+                "partial_markdown_path": cumulative_state.get("partial_markdown_filepath"),
+            }
 
         if (
             not _publisher_started
@@ -449,15 +479,18 @@ async def continue_after_curriculum_confirmation(
                     "ingestion_status": "completed",
                     "publisher_status": "pending",
                     "error_message": error,
+                    "partial_markdown_filepath": cumulative_state.get("partial_markdown_filepath"),
                     "topic": topic,
                     "language": initial_state.get("language", "vi"),
                     **_source_audit_progress(),
                 })
             logger.error("[Workflow] Content generation stopped: %s", error)
+            _cleanup_rag_after_export(cumulative_state)
             return {
                 "success": False,
                 "error": error,
                 "title": cumulative_state.get("textbook_title", topic),
+                "partial_markdown_path": cumulative_state.get("partial_markdown_filepath"),
                 "source_audit": cumulative_state.get("rag_source_audit") or {},
             }
 
@@ -496,17 +529,20 @@ async def continue_after_curriculum_confirmation(
                     "ingestion_status": "completed",
                     "publisher_status": "error",
                     "error_message": error,
+                    "partial_markdown_filepath": cumulative_state.get("partial_markdown_filepath"),
                     "topic": topic,
                     "language": initial_state.get("language", "vi"),
                     **_source_audit_progress(),
                 })
             logger.error("[Workflow] Content export failed: %s", error)
+            _cleanup_rag_after_export(cumulative_state)
             return {
                 "success": False,
                 "error": error,
                 "title": title,
                 "pdf_path": pdf_path,
                 "docx_path": docx_path,
+                "partial_markdown_path": cumulative_state.get("partial_markdown_filepath"),
             }
 
         if db:
@@ -524,6 +560,8 @@ async def continue_after_curriculum_confirmation(
 
         logger.info(f"[Workflow] Content generation complete: {title}")
 
+        _cleanup_rag_after_export(cumulative_state)
+
         return {
             "success": True,
             "title": title,
@@ -534,10 +572,23 @@ async def continue_after_curriculum_confirmation(
     except WorkflowStoppedException:
         logger.info("[Workflow] Content generation stopped by user request")
         # Stop endpoint already updated DB status to 'failed' — don't overwrite
-        return {"success": False, "error": "stopped_by_user"}
+        cleanup_state = locals().get("cumulative_state") or locals().get("content_state") or {}
+        _cleanup_rag_after_export(cleanup_state)
+        partial_path = None
+        try:
+            partial_path = locals().get("cumulative_state", {}).get("partial_markdown_filepath")
+        except Exception:
+            partial_path = None
+        return {
+            "success": False,
+            "error": "stopped_by_user",
+            "partial_markdown_path": partial_path,
+        }
 
     except Exception as e:
         logger.error(f"[Workflow] Content generation error: {e}", exc_info=True)
+        cleanup_state = locals().get("cumulative_state") or locals().get("content_state") or {}
+        _cleanup_rag_after_export(cleanup_state)
 
         if db:
             await update_progress(db, textbook_id, {
@@ -547,4 +598,13 @@ async def continue_after_curriculum_confirmation(
                 "language": initial_state.get("language", "vi"),
             })
 
-        return {"success": False, "error": str(e)}
+        partial_path = None
+        try:
+            partial_path = locals().get("cumulative_state", {}).get("partial_markdown_filepath")
+        except Exception:
+            partial_path = None
+        return {
+            "success": False,
+            "error": str(e),
+            "partial_markdown_path": partial_path,
+        }

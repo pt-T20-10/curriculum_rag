@@ -20,6 +20,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from app.schemas.curriculum import AgentState, CurriculumOutline
 from app.config import settings
+from app.services.api_rate_limiter import rate_limited_invoke
 from app.services.runtime_config import get_api_key
 from app.services.textbook.language import get_language_profile
 from app.utils.log_config import setup_logger, setup_prompt_logger
@@ -151,7 +152,7 @@ class HybridPlanner:
                     ),
                 )
             try:
-                response = chain.invoke({})
+                response = rate_limited_invoke(chain, {}, bucket="chat")
                 raw      = str(response.content).strip()  # type: ignore
 
                 start = raw.find("[")
@@ -284,7 +285,7 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
                     context_label=f"Ch{chapter_index+1} subsections | {chapter_title[:40]}",
                 )
             try:
-                response = chain.invoke({})
+                response = rate_limited_invoke(chain, {}, bucket="chat")
                 raw      = str(response.content).strip()  # type: ignore
 
                 start = raw.find("[")
@@ -419,7 +420,7 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
                 user_prompt=user_prompt,
                 context_label=f"Title generation | {topic[:40]}",
             )
-            response = (prompt | self.llm).invoke({})
+            response = rate_limited_invoke(prompt | self.llm, {}, bucket="chat")
             title    = str(response.content).strip().strip('"').strip("'")  # type: ignore
             logger.info(f"✓ Textbook title: {title}")
             return title
@@ -523,7 +524,7 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
                 user_prompt=user_prompt,
                 context_label=f"Preface | {title[:40]}",
             )
-            response = (prompt | self.llm).invoke({})
+            response = rate_limited_invoke(prompt | self.llm, {}, bucket="chat")
             preface  = str(response.content).strip()  # type: ignore
             logger.info("✓ Preface generated")
             return preface

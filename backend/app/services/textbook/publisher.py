@@ -25,6 +25,7 @@ import textwrap
 import json
 import os
 import shutil
+import copy
 from datetime import datetime
 from pathlib import Path
 import re
@@ -92,10 +93,63 @@ def sanitize_filename(name: str, max_length: int = 50) -> str:
     Returns:
         Safe filename string suitable for use in Path construction.
     """
-    safe = re.sub(r'[^\w\s\-]', '', name)
-    safe = safe.strip().replace(' ', '_')
+    safe = re.sub(r'[^\w\s\-]', '', name or "")
+    safe = re.sub(r'\s+', '_', safe.strip())
+    safe = re.sub(r'_+', '_', safe)
+    safe = safe.strip('._-')
     safe = safe[:max_length]
     return safe if safe else "Textbook"
+
+
+def save_partial_markdown_checkpoint(state: dict) -> str | None:
+    """
+    Save a recoverable Markdown checkpoint after a section has been approved.
+
+    This is intentionally lighter than publish_curriculum(): it avoids Pandoc
+    and expensive formatting passes so checkpointing cannot become another
+    failure point. The file is overwritten for the same run.
+    """
+    if not getattr(settings, "CHECKPOINT_MARKDOWN_AFTER_SECTION", True):
+        return None
+
+    current = state.get("current_content", "")
+    final = state.get("final_content", "")
+    body = final + "\n\n" + current if (final and current) else (final or current)
+    if not body.strip():
+        return None
+
+    language = state.get("language", "vi")
+    profile = get_language_profile(language)
+    title = state.get("textbook_title") or state.get("request", profile.default_title_prefix)
+    preface = state.get("preface_content", "")
+    if preface:
+        body = f"# {profile.preface_heading}\n\n{preface.strip()}\n\n{body}"
+
+    checkpoint_dir = BASE_DIR / "outputs" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    topic_part = sanitize_filename(state.get("request", title), max_length=36)
+    run_part = sanitize_filename(
+        state.get("rag_collection_name", "") or title,
+        max_length=72,
+    )
+    path = checkpoint_dir / f"{topic_part}_{run_part}.partial.md"
+
+    chapter = int(state.get("current_chapter_index", 0) or 0) + 1
+    subsection = int(state.get("current_subsection_index", 0) or 0) + 1
+    header = (
+        "<!-- Auto-saved checkpoint. "
+        f"Last completed/polished section: {chapter}.{subsection}. "
+        "Final PDF/DOCX export may not have completed yet. -->\n\n"
+        f"# {title}\n\n"
+    )
+
+    try:
+        path.write_text(header + body.strip() + "\n", encoding="utf-8")
+        logger.info("✓ Partial Markdown checkpoint saved: %s", path)
+        return str(path)
+    except Exception as e:
+        logger.warning("Could not save partial Markdown checkpoint: %s", e, exc_info=True)
+        return None
 
 
 def _typst_string_literal(value: str) -> str:
@@ -106,6 +160,292 @@ def _typst_string_literal(value: str) -> str:
 def _valid_artifact(path: Path, suffix: str) -> bool:
     """Return True only for a non-empty file with the expected extension."""
     return path.suffix.lower() == suffix and path.is_file() and path.stat().st_size > 0
+
+
+_WORD_FONT_STYLE_IDS = {
+    "Normal",
+    "Title",
+    "TOCHeading",
+    "TOC1",
+    "TOC2",
+    "TOC3",
+    "Heading1",
+    "Heading2",
+    "Heading3",
+}
+
+
+def _set_style_font(style, font_name: str, size_pt: int | None = None) -> None:
+    """Force a python-docx style to use a concrete font, not a theme font."""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Pt
+
+    if size_pt is not None:
+        style.font.size = Pt(size_pt)
+    style.font.name = font_name
+
+    rpr = style.element.get_or_add_rPr()
+    rfonts = rpr.find(qn("w:rFonts"))
+    if rfonts is None:
+        rfonts = OxmlElement("w:rFonts")
+        rpr.insert(0, rfonts)
+
+    for attr in ("w:ascii", "w:hAnsi", "w:cs", "w:eastAsia"):
+        rfonts.set(qn(attr), font_name)
+    for attr in ("w:asciiTheme", "w:hAnsiTheme", "w:cstheme", "w:eastAsiaTheme"):
+        if rfonts.get(qn(attr)) is not None:
+            del rfonts.attrib[qn(attr)]
+
+
+def _set_paragraph_alignment_xml(paragraph_element, alignment: str) -> None:
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    ppr = paragraph_element.get_or_add_pPr()
+    jc = ppr.find(qn("w:jc"))
+    if jc is None:
+        jc = OxmlElement("w:jc")
+        ppr.append(jc)
+    jc.set(qn("w:val"), alignment)
+
+
+def _set_ppr_alignment_xml(ppr_element, alignment: str) -> None:
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    jc = ppr_element.find(qn("w:jc"))
+    if jc is None:
+        jc = OxmlElement("w:jc")
+        ppr_element.append(jc)
+    jc.set(qn("w:val"), alignment)
+
+
+def _paragraph_text_xml(paragraph_element) -> str:
+    from docx.oxml.ns import qn
+
+    return "".join(t.text or "" for t in paragraph_element.iter(qn("w:t")))
+
+
+def _replace_paragraph_text_xml(paragraph_element, text: str) -> None:
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    for child in list(paragraph_element):
+        paragraph_element.remove(child)
+    ppr = OxmlElement("w:pPr")
+    pstyle = OxmlElement("w:pStyle")
+    pstyle.set(qn("w:val"), "TOCHeading")
+    ppr.append(pstyle)
+    jc = OxmlElement("w:jc")
+    jc.set(qn("w:val"), "center")
+    ppr.append(jc)
+    paragraph_element.append(ppr)
+
+    run = OxmlElement("w:r")
+    rpr = OxmlElement("w:rPr")
+    rfonts = OxmlElement("w:rFonts")
+    for attr in ("w:ascii", "w:hAnsi", "w:cs", "w:eastAsia"):
+        rfonts.set(qn(attr), _document_font())
+    rpr.append(rfonts)
+    bold = OxmlElement("w:b")
+    rpr.append(bold)
+    run.append(rpr)
+    t = OxmlElement("w:t")
+    t.text = text
+    run.append(t)
+    paragraph_element.append(run)
+
+
+def _patch_word_document_styles(doc) -> None:
+    font_name = _document_font()
+    for style in doc.styles:
+        style_id = getattr(style, "style_id", "")
+        if style_id in _WORD_FONT_STYLE_IDS:
+            _set_style_font(style, font_name, size_pt=12 if style_id == "Normal" else None)
+            if style_id == "TOCHeading":
+                _set_ppr_alignment_xml(style.element.get_or_add_pPr(), "center")
+
+
+def _patch_word_toc_heading(doc, toc_label: str) -> None:
+    from docx.oxml.ns import qn
+
+    for paragraph_element in doc.element.body.iter(qn("w:p")):
+        ppr = paragraph_element.find(qn("w:pPr"))
+        pstyle = ppr.find(qn("w:pStyle")) if ppr is not None else None
+        style_val = pstyle.get(qn("w:val")) if pstyle is not None else ""
+        text = _paragraph_text_xml(paragraph_element).strip()
+        if style_val == "TOCHeading" or text == "Table of Contents":
+            _replace_paragraph_text_xml(paragraph_element, toc_label)
+            return
+
+
+def _remove_section_footer_refs(sect_pr) -> None:
+    from docx.oxml.ns import qn
+
+    for child in list(sect_pr):
+        if child.tag == qn("w:footerReference"):
+            sect_pr.remove(child)
+
+
+def _set_section_page_number_start(sect_pr, start: int = 1) -> None:
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    pg_num = sect_pr.find(qn("w:pgNumType"))
+    if pg_num is None:
+        pg_num = OxmlElement("w:pgNumType")
+        sect_pr.append(pg_num)
+    pg_num.set(qn("w:start"), str(start))
+
+
+def _insert_body_section_break(doc, start_heading: str) -> bool:
+    """
+    Split front matter from body before the configured body start heading.
+
+    The Markdown already inserts page breaks before the body. A continuous
+    section break here avoids adding another blank page while allowing the
+    body section to restart page numbers at 1 and own the footer.
+    """
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    body = doc.element.body
+    children = list(body)
+    body_sect_pr = body.find(qn("w:sectPr"))
+    if body_sect_pr is None:
+        return False
+
+    target_index = None
+    for i, child in enumerate(children):
+        if child.tag != qn("w:p"):
+            continue
+        text = _paragraph_text_xml(child).strip()
+        ppr = child.find(qn("w:pPr"))
+        pstyle = ppr.find(qn("w:pStyle")) if ppr is not None else None
+        style_val = pstyle.get(qn("w:val")) if pstyle is not None else ""
+        if text == start_heading and style_val in {"Heading1", ""}:
+            target_index = i
+            break
+
+    if target_index is None or target_index == 0:
+        return False
+
+    previous_paragraph = None
+    for child in reversed(children[:target_index]):
+        if child.tag == qn("w:p"):
+            previous_paragraph = child
+            break
+    if previous_paragraph is None:
+        return False
+
+    front_sect_pr = copy.deepcopy(body_sect_pr)
+    _remove_section_footer_refs(front_sect_pr)
+    pg_num = front_sect_pr.find(qn("w:pgNumType"))
+    if pg_num is not None:
+        front_sect_pr.remove(pg_num)
+
+    sect_type = front_sect_pr.find(qn("w:type"))
+    if sect_type is None:
+        sect_type = OxmlElement("w:type")
+        front_sect_pr.insert(0, sect_type)
+    sect_type.set(qn("w:val"), "continuous")
+
+    ppr = previous_paragraph.find(qn("w:pPr"))
+    if ppr is None:
+        ppr = OxmlElement("w:pPr")
+        previous_paragraph.insert(0, ppr)
+    existing = ppr.find(qn("w:sectPr"))
+    if existing is not None:
+        ppr.remove(existing)
+    ppr.append(front_sect_pr)
+    return True
+
+
+def _mark_word_fields_for_update(doc) -> None:
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    settings = doc.settings.element
+    update_fields = settings.find(qn("w:updateFields"))
+    if update_fields is None:
+        update_fields = OxmlElement("w:updateFields")
+        settings.append(update_fields)
+    update_fields.set(qn("w:val"), "true")
+
+    for fld_char in doc.element.iter(qn("w:fldChar")):
+        if fld_char.get(qn("w:fldCharType")) == "begin":
+            fld_char.set(qn("w:dirty"), "true")
+            if fld_char.get(qn("w:fldLock")) is not None:
+                del fld_char.attrib[qn("w:fldLock")]
+
+
+def _add_centered_page_footer(doc, body_only: bool = False) -> None:
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    sections = list(doc.sections)
+    if body_only and len(sections) > 1:
+        for section in sections[:-1]:
+            _remove_section_footer_refs(section._sectPr)
+        sections = [sections[-1]]
+
+    for section in sections:
+        _set_section_page_number_start(section._sectPr, 1)
+        footer = section.footer
+        footer.is_linked_to_previous = False
+        paragraph = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
+        paragraph.clear()
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = paragraph.add_run()
+        run.font.name = _document_font()
+
+        begin = OxmlElement("w:fldChar")
+        begin.set(qn("w:fldCharType"), "begin")
+        instr = OxmlElement("w:instrText")
+        instr.set(qn("xml:space"), "preserve")
+        instr.text = "PAGE"
+        separate = OxmlElement("w:fldChar")
+        separate.set(qn("w:fldCharType"), "separate")
+        text = OxmlElement("w:t")
+        text.text = "1"
+        end = OxmlElement("w:fldChar")
+        end.set(qn("w:fldCharType"), "end")
+
+        run._r.extend([begin, instr, separate, text, end])
+
+
+def finalize_word_docx(
+    docx_path: Path,
+    toc_label: str,
+    page_start_heading: str | None = None,
+) -> bool:
+    """
+    Best-effort Word finishing pass for Pandoc DOCX output.
+
+    Applies presentation-only fixes: localized TOC heading, heading/TOC fonts,
+    TOC heading alignment, a body-only centered PAGE footer, and dirty field
+    flags so Word refreshes TOC page numbers on open. It deliberately does not
+    rewrite prose content, including em dash usage.
+    """
+    try:
+        from docx import Document as DocxDocument
+
+        doc = DocxDocument(docx_path)  # type: ignore
+        _patch_word_document_styles(doc)
+        _patch_word_toc_heading(doc, toc_label)
+        has_body_section = False
+        if page_start_heading:
+            has_body_section = _insert_body_section_break(doc, page_start_heading)
+        _add_centered_page_footer(doc, body_only=has_body_section)
+        _mark_word_fields_for_update(doc)
+        doc.save(docx_path)  # type: ignore
+        logger.info("✓ Word finishing pass applied: %s", docx_path)
+        return True
+    except Exception as e:
+        logger.warning("Word finishing pass skipped for %s: %s", docx_path, e)
+        return False
 # ---------------------------------------------------------------------------
 # Unicode → math conversion maps
 #
@@ -465,6 +805,33 @@ def fix_markdown_headings(content: str) -> str:
     return content
 
 
+def remove_markdown_horizontal_rules(content: str) -> str:
+    """
+    Remove standalone Markdown horizontal rules from generated body content.
+
+    The publisher adds YAML front matter separately, so this pass is applied
+    only to body Markdown before YAML assembly. Lines inside fenced code blocks
+    are preserved because they may be teaching examples.
+    """
+    lines = content.split('\n')
+    cleaned: list[str] = []
+    in_fence = False
+
+    for line in lines:
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            cleaned.append(line)
+            continue
+
+        if not in_fence and re.fullmatch(r'\s*-{3,}\s*', line):
+            continue
+
+        cleaned.append(line)
+
+    result = '\n'.join(cleaned)
+    return re.sub(r'\n{3,}', '\n\n', result)
+
+
 def fix_chapter_pagebreaks(content: str, language: str = "vi") -> str:
     """
     Insert a Typst #pagebreak() immediately before each `# CHƯƠNG N` heading.
@@ -694,14 +1061,8 @@ def _get_word_reference_doc(pandoc_tmp: Path) -> Path | None:
             for attr in ("w:ascii", "w:hAnsi", "w:cs", "w:eastAsia"):
                 rfonts.set(qn(attr), _document_font())
 
-        # 2. Patch Normal style explicitly as a safety net
-        for style in ref_doc.styles:
-            if style.name == "Normal":
-                from docx.styles.style import _ParagraphStyle
-                if isinstance(style, _ParagraphStyle):
-                    style.font.name = _document_font()
-                    style.font.size = Pt(12)
-                break
+        # 2. Patch Word styles that Pandoc emits with explicit theme fonts.
+        _patch_word_document_styles(ref_doc)
 
         # 3. Set "TOC Heading" style to page-break-before.
         # Pandoc renders: Title paragraph → TOC Heading → TOC entries → $body$.
@@ -943,7 +1304,7 @@ def publish_curriculum(state: AgentState) -> dict:
     request_topic = sanitize_filename(raw_topic)
     output_dir    = BASE_DIR / "outputs"
     output_dir.mkdir(parents=True, exist_ok=True)
-    timestamp     = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp     = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     file_base     = f"{request_topic}_{timestamp}"
     md_filename   = output_dir / f"{file_base}.md"
     pdf_filename  = output_dir / f"{file_base}.pdf"
@@ -978,6 +1339,7 @@ def publish_curriculum(state: AgentState) -> dict:
     if language == "en":
         full_content = normalize_english_dashes(full_content)
     full_content = fix_markdown_headings(full_content)
+    full_content = remove_markdown_horizontal_rules(full_content)
     full_content = fix_inline_display_math(full_content)
     full_content = fix_math_formatting(full_content)
     full_content = fix_typst_deprecated_symbols(full_content)
@@ -1158,6 +1520,11 @@ def publish_curriculum(state: AgentState) -> dict:
                     )
                     if not _valid_artifact(docx_filename, ".docx"):
                         raise RuntimeError("Pandoc returned without creating a valid DOCX file")
+                    finalize_word_docx(
+                        docx_filename,
+                        profile.toc_label,
+                        page_start_heading=profile.preface_heading,
+                    )
                     logger.info(f"✓ Word saved: {docx_filename}")
                     final_docx_filepath = str(docx_filename)
 

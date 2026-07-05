@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from app.config import settings
 from app.schemas.curriculum import AgentState, build_initial_state
 from app.services.runtime_config import environment_only_runtime_config
 
@@ -86,6 +87,22 @@ def _document_stats(markdown_path: str | None) -> dict[str, int]:
         "character_count": len(content),
         "image_count": len(re.findall(r"!\[[^\]]*\]\([^\)]+\)", content)),
     }
+
+
+def _cleanup_rag_after_export(state: dict[str, Any]) -> None:
+    if not getattr(settings, "CLEANUP_RAG_COLLECTION_AFTER_EXPORT", True):
+        return
+
+    collection_name = str(state.get("rag_collection_name") or "")
+    if not collection_name:
+        return
+
+    try:
+        from app.services.textbook.ingester import cleanup_rag_collection
+
+        cleanup_rag_collection(collection_name)
+    except Exception:
+        pass
 
 
 def _context_failure_error(state: dict[str, Any]) -> str:
@@ -192,7 +209,10 @@ def run_automatic_textbook_workflow(
             all_messages: list[str] = []
             publisher_started = False
 
-            for event in workflow.stream(initial_state, {"recursion_limit": 200}):
+            for event in workflow.stream(
+                initial_state,
+                {"recursion_limit": settings.CONTENT_WORKFLOW_RECURSION_LIMIT},
+            ):
                 for node_name, node_output in event.items():
                     if isinstance(node_output, dict):
                         cumulative_state.update(node_output)
@@ -219,6 +239,7 @@ def run_automatic_textbook_workflow(
                     "elapsed_seconds": round(time.monotonic() - started, 2)
                 }
                 _emit(progress_callback, "failed", error=result["error"])
+                _cleanup_rag_after_export(cumulative_state)
                 return result
 
             if (
@@ -230,6 +251,7 @@ def run_automatic_textbook_workflow(
                     "elapsed_seconds": round(time.monotonic() - started, 2)
                 }
                 _emit(progress_callback, "failed", error=result["error"])
+                _cleanup_rag_after_export(cumulative_state)
                 return result
 
             artifacts = _find_artifacts(cumulative_state)
@@ -239,6 +261,7 @@ def run_automatic_textbook_workflow(
                     "elapsed_seconds": round(time.monotonic() - started, 2)
                 }
                 _emit(progress_callback, "failed", error=result["error"])
+                _cleanup_rag_after_export(cumulative_state)
                 return result
 
             missing_exports = [
@@ -256,6 +279,7 @@ def run_automatic_textbook_workflow(
                     "elapsed_seconds": round(time.monotonic() - started, 2)
                 }
                 _emit(progress_callback, "failed", error=result["error"])
+                _cleanup_rag_after_export(cumulative_state)
                 return result
 
             curriculum = cumulative_state.get("curriculum")
@@ -275,6 +299,7 @@ def run_automatic_textbook_workflow(
                 "artifacts": artifacts,
                 "error": None,
             })
+            _cleanup_rag_after_export(cumulative_state)
             _emit(progress_callback, "completed", title=result["title"], stats=stats)
             return result
 
@@ -282,4 +307,6 @@ def run_automatic_textbook_workflow(
         result["error"] = str(exc) or exc.__class__.__name__
         result["stats"] = {"elapsed_seconds": round(time.monotonic() - started, 2)}
         _emit(progress_callback, "failed", error=result["error"])
+        cleanup_state = locals().get("cumulative_state") or locals().get("initial_state") or {}
+        _cleanup_rag_after_export(cleanup_state)
         return result
