@@ -816,6 +816,46 @@ export const en = {
         label: 'Prior Summaries in Prompt',
         description: 'Maximum previous-section summaries included in the writer prompt; higher values can exceed the token budget.',
       },
+      CONTENT_LEVEL_SHORT_MIN_WORDS: {
+        label: 'Minimum Words - Short',
+        description: 'Minimum words per section for Short mode; the backend converts this to a character floor for Writer/Reviewer.',
+      },
+      CONTENT_LEVEL_SHORT_MAX_WORDS: {
+        label: 'Maximum Words - Short',
+        description: 'Target maximum words per section for Short mode; Reviewer asks Writer to condense if content exceeds it too much.',
+      },
+      CONTENT_LEVEL_MEDIUM_MIN_WORDS: {
+        label: 'Minimum Words - Medium',
+        description: 'Minimum words per section for Medium mode.',
+      },
+      CONTENT_LEVEL_MEDIUM_MAX_WORDS: {
+        label: 'Maximum Words - Medium',
+        description: 'Target maximum words per section for Medium mode.',
+      },
+      CONTENT_LEVEL_LONG_MIN_WORDS: {
+        label: 'Minimum Words - Long',
+        description: 'Minimum words per section for Long mode.',
+      },
+      CONTENT_LEVEL_LONG_MAX_WORDS: {
+        label: 'Maximum Words - Long',
+        description: 'Target maximum words per section for Long mode.',
+      },
+      CONTENT_LEVEL_VERY_LONG_MIN_WORDS: {
+        label: 'Minimum Words - Very Long',
+        description: 'Minimum words per section for Very Long mode.',
+      },
+      CONTENT_LEVEL_VERY_LONG_MAX_WORDS: {
+        label: 'Maximum Words - Very Long',
+        description: 'Target maximum words per section for Very Long mode.',
+      },
+      CONTENT_WORD_TO_CHAR_RATIO_VI: {
+        label: 'Characters per Word - Vietnamese',
+        description: 'Word-to-character conversion ratio for Vietnamese textbooks, used to calculate min/max character targets.',
+      },
+      CONTENT_WORD_TO_CHAR_RATIO_EN: {
+        label: 'Characters per Word - English',
+        description: 'Word-to-character conversion ratio for English textbooks, usually higher than Vietnamese.',
+      },
       CHUNK_SIZE: {
         label: 'Chunk Size (chars)',
         description: 'Text length of each chunk before embedding; changes affect overall RAG quality.',

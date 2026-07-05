@@ -816,6 +816,46 @@ export const vi = {
         label: 'Số Tóm Tắt Trước Đưa Vào Prompt',
         description: 'Số tóm tắt mục trước tối đa được đưa vào prompt của writer; tăng cao có thể vượt ngân sách token.',
       },
+      CONTENT_LEVEL_SHORT_MIN_WORDS: {
+        label: 'Số Từ Tối Thiểu - Ngắn',
+        description: 'Số từ tối thiểu mỗi mục khi chọn chế độ Ngắn; backend quy đổi sang ngưỡng ký tự cho Writer/Reviewer.',
+      },
+      CONTENT_LEVEL_SHORT_MAX_WORDS: {
+        label: 'Số Từ Tối Đa - Ngắn',
+        description: 'Số từ tối đa mục tiêu mỗi mục khi chọn chế độ Ngắn; Reviewer sẽ yêu cầu cô đọng nếu vượt quá nhiều.',
+      },
+      CONTENT_LEVEL_MEDIUM_MIN_WORDS: {
+        label: 'Số Từ Tối Thiểu - Trung Bình',
+        description: 'Số từ tối thiểu mỗi mục khi chọn chế độ Trung Bình.',
+      },
+      CONTENT_LEVEL_MEDIUM_MAX_WORDS: {
+        label: 'Số Từ Tối Đa - Trung Bình',
+        description: 'Số từ tối đa mục tiêu mỗi mục khi chọn chế độ Trung Bình.',
+      },
+      CONTENT_LEVEL_LONG_MIN_WORDS: {
+        label: 'Số Từ Tối Thiểu - Dài',
+        description: 'Số từ tối thiểu mỗi mục khi chọn chế độ Dài.',
+      },
+      CONTENT_LEVEL_LONG_MAX_WORDS: {
+        label: 'Số Từ Tối Đa - Dài',
+        description: 'Số từ tối đa mục tiêu mỗi mục khi chọn chế độ Dài.',
+      },
+      CONTENT_LEVEL_VERY_LONG_MIN_WORDS: {
+        label: 'Số Từ Tối Thiểu - Rất Dài',
+        description: 'Số từ tối thiểu mỗi mục khi chọn chế độ Rất Dài.',
+      },
+      CONTENT_LEVEL_VERY_LONG_MAX_WORDS: {
+        label: 'Số Từ Tối Đa - Rất Dài',
+        description: 'Số từ tối đa mục tiêu mỗi mục khi chọn chế độ Rất Dài.',
+      },
+      CONTENT_WORD_TO_CHAR_RATIO_VI: {
+        label: 'Ký Tự Mỗi Từ - Tiếng Việt',
+        description: 'Hệ số quy đổi số từ sang ký tự cho giáo trình tiếng Việt; dùng để tính dải min/max ký tự.',
+      },
+      CONTENT_WORD_TO_CHAR_RATIO_EN: {
+        label: 'Ký Tự Mỗi Từ - Tiếng Anh',
+        description: 'Hệ số quy đổi số từ sang ký tự cho giáo trình tiếng Anh; thường cao hơn tiếng Việt.',
+      },
       CHUNK_SIZE: {
         label: 'Kích Thước Chunk (ký tự)',
         description: 'Độ dài mỗi chunk văn bản trước khi embedding; thay đổi ảnh hưởng đến toàn bộ chất lượng RAG.',

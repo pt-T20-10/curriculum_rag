@@ -119,6 +119,34 @@ def test_openai_rate_limit_settings_are_admin_configurable() -> None:
     assert "OPENAI_IMAGE_MIN_INTERVAL_SECONDS" in registry
 
 
+def test_content_level_word_targets_are_configurable() -> None:
+    from app.config_registry import get_admin_registry
+
+    registry = get_admin_registry()
+
+    for key in (
+        "CONTENT_LEVEL_SHORT_MIN_WORDS",
+        "CONTENT_LEVEL_SHORT_MAX_WORDS",
+        "CONTENT_LEVEL_MEDIUM_MIN_WORDS",
+        "CONTENT_LEVEL_MEDIUM_MAX_WORDS",
+        "CONTENT_LEVEL_LONG_MIN_WORDS",
+        "CONTENT_LEVEL_LONG_MAX_WORDS",
+        "CONTENT_LEVEL_VERY_LONG_MIN_WORDS",
+        "CONTENT_LEVEL_VERY_LONG_MAX_WORDS",
+    ):
+        assert key in registry
+        assert registry[key]["group"] == "generation"
+        assert registry[key]["type"] == "int"
+
+    for key in (
+        "CONTENT_WORD_TO_CHAR_RATIO_VI",
+        "CONTENT_WORD_TO_CHAR_RATIO_EN",
+    ):
+        assert key in registry
+        assert registry[key]["group"] == "generation"
+        assert registry[key]["type"] == "float"
+
+
 def test_production_rejects_sample_default_admin() -> None:
     with pytest.raises(ValidationError, match="DEFAULT_ADMIN_EMAIL"):
         _valid_production_settings(

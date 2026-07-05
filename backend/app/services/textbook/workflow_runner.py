@@ -63,6 +63,69 @@ def _context_failure_error(state: Dict[str, Any]) -> str:
     )
 
 
+def _has_publishable_content(state: Dict[str, Any]) -> bool:
+    return bool(
+        str(state.get("final_content") or "").strip()
+        or str(state.get("current_content") or "").strip()
+    )
+
+
+def _publish_recoverable_content(
+    state: Dict[str, Any],
+    reason: str,
+) -> Dict[str, Any]:
+    """
+    Best-effort export for interrupted runs.
+
+    If the workflow stops after at least one section has been written, preserve
+    that content by running the same Publisher used by the normal final node.
+    """
+    if not _has_publishable_content(state):
+        return {}
+
+    try:
+        from app.services.textbook.publisher import publish_curriculum
+
+        logger.warning("Emergency publishing partial textbook after interruption: %s", reason)
+        publish_state: Dict[str, Any] = {
+            **state,
+            "messages": [],
+            "emergency_publish_reason": reason,
+        }
+        update = publish_curriculum(publish_state)  # type: ignore[arg-type]
+        if isinstance(update, dict):
+            state.update(update)
+    except Exception as exc:
+        logger.warning("Emergency publish failed: %s", exc, exc_info=True)
+        state.setdefault("export_errors", {})
+        if isinstance(state["export_errors"], dict):
+            state["export_errors"]["emergency_publish"] = str(exc)
+
+    return {
+        "markdown_path": _validated_artifact_path(
+            state.get("final_markdown_filepath"),
+            ".md",
+        ),
+        "pdf_path": _validated_artifact_path(
+            state.get("final_pdf_filepath") or state.get("final_filepath"),
+            ".pdf",
+        ),
+        "docx_path": _validated_artifact_path(
+            state.get("final_docx_filepath"),
+            ".docx",
+        ),
+        "export_errors": state.get("export_errors") or {},
+    }
+
+
+def _has_emergency_artifact(artifacts: Dict[str, Any]) -> bool:
+    return bool(
+        artifacts.get("markdown_path")
+        or artifacts.get("pdf_path")
+        or artifacts.get("docx_path")
+    )
+
+
 async def update_progress(
     db: AsyncSession,
     textbook_id: int,
@@ -470,22 +533,43 @@ async def continue_after_curriculum_confirmation(
             and cumulative_state.get("context_quality") == "insufficient"
         ):
             error = _context_failure_error(cumulative_state)
+            emergency = _publish_recoverable_content(cumulative_state, error)
             if db:
                 await update_progress(db, textbook_id, {
-                    "phase": "idle",
-                    "progress_value": 30.0,
-                    "status_text": error,
+                    "phase": "done" if _has_emergency_artifact(emergency) else "idle",
+                    "progress_value": 100.0 if _has_emergency_artifact(emergency) else 30.0,
+                    "status_text": (
+                        f"{error} Đã xuất bản phần nội dung đã tạo."
+                        if _has_emergency_artifact(emergency)
+                        else error
+                    ),
                     "planner_status": "completed",
                     "ingestion_status": "completed",
-                    "publisher_status": "pending",
+                    "publisher_status": "completed" if _has_emergency_artifact(emergency) else "pending",
                     "error_message": error,
                     "partial_markdown_filepath": cumulative_state.get("partial_markdown_filepath"),
+                    "pdf_path": emergency.get("pdf_path"),
+                    "docx_path": emergency.get("docx_path"),
+                    "markdown_path": emergency.get("markdown_path"),
+                    "stopped_early": True,
                     "topic": topic,
                     "language": initial_state.get("language", "vi"),
                     **_source_audit_progress(),
                 })
             logger.error("[Workflow] Content generation stopped: %s", error)
             _cleanup_rag_after_export(cumulative_state)
+            if _has_emergency_artifact(emergency):
+                return {
+                    "success": True,
+                    "stopped_early": True,
+                    "error": error,
+                    "title": cumulative_state.get("textbook_title", topic),
+                    "pdf_path": emergency.get("pdf_path"),
+                    "docx_path": emergency.get("docx_path"),
+                    "markdown_path": emergency.get("markdown_path"),
+                    "partial_markdown_path": cumulative_state.get("partial_markdown_filepath"),
+                    "source_audit": cumulative_state.get("rag_source_audit") or {},
+                }
             return {
                 "success": False,
                 "error": error,
@@ -571,14 +655,40 @@ async def continue_after_curriculum_confirmation(
 
     except WorkflowStoppedException:
         logger.info("[Workflow] Content generation stopped by user request")
-        # Stop endpoint already updated DB status to 'failed' — don't overwrite
         cleanup_state = locals().get("cumulative_state") or locals().get("content_state") or {}
+        emergency = _publish_recoverable_content(cleanup_state, "stopped_by_user")
+        if db and _has_emergency_artifact(emergency):
+            await update_progress(db, textbook_id, {
+                "phase": "done",
+                "progress_value": 100.0,
+                "status_text": "Đã dừng và xuất bản phần nội dung đã tạo.",
+                "planner_status": "completed",
+                "ingestion_status": "completed",
+                "publisher_status": "completed",
+                "pdf_path": emergency.get("pdf_path"),
+                "docx_path": emergency.get("docx_path"),
+                "markdown_path": emergency.get("markdown_path"),
+                "stopped_early": True,
+                "topic": topic,
+                "language": initial_state.get("language", "vi"),
+            })
         _cleanup_rag_after_export(cleanup_state)
         partial_path = None
         try:
             partial_path = locals().get("cumulative_state", {}).get("partial_markdown_filepath")
         except Exception:
             partial_path = None
+        if _has_emergency_artifact(emergency):
+            return {
+                "success": True,
+                "stopped_early": True,
+                "error": "stopped_by_user",
+                "title": cleanup_state.get("textbook_title", topic),
+                "pdf_path": emergency.get("pdf_path"),
+                "docx_path": emergency.get("docx_path"),
+                "markdown_path": emergency.get("markdown_path"),
+                "partial_markdown_path": partial_path,
+            }
         return {
             "success": False,
             "error": "stopped_by_user",
@@ -588,12 +698,24 @@ async def continue_after_curriculum_confirmation(
     except Exception as e:
         logger.error(f"[Workflow] Content generation error: {e}", exc_info=True)
         cleanup_state = locals().get("cumulative_state") or locals().get("content_state") or {}
+        emergency = _publish_recoverable_content(cleanup_state, str(e))
         _cleanup_rag_after_export(cleanup_state)
 
         if db:
             await update_progress(db, textbook_id, {
-                "phase": "idle",
+                "phase": "done" if _has_emergency_artifact(emergency) else "idle",
+                "progress_value": 100.0 if _has_emergency_artifact(emergency) else 0.0,
+                "status_text": (
+                    "Pipeline gặp lỗi, nhưng đã xuất bản phần nội dung đã tạo."
+                    if _has_emergency_artifact(emergency)
+                    else str(e)
+                ),
                 "error_message": str(e),
+                "publisher_status": "completed" if _has_emergency_artifact(emergency) else "error",
+                "pdf_path": emergency.get("pdf_path"),
+                "docx_path": emergency.get("docx_path"),
+                "markdown_path": emergency.get("markdown_path"),
+                "partial_export": _has_emergency_artifact(emergency),
                 "topic": topic,
                 "language": initial_state.get("language", "vi"),
             })
@@ -603,6 +725,17 @@ async def continue_after_curriculum_confirmation(
             partial_path = locals().get("cumulative_state", {}).get("partial_markdown_filepath")
         except Exception:
             partial_path = None
+        if _has_emergency_artifact(emergency):
+            return {
+                "success": True,
+                "partial_export": True,
+                "error": str(e),
+                "title": cleanup_state.get("textbook_title", topic),
+                "pdf_path": emergency.get("pdf_path"),
+                "docx_path": emergency.get("docx_path"),
+                "markdown_path": emergency.get("markdown_path"),
+                "partial_markdown_path": partial_path,
+            }
         return {
             "success": False,
             "error": str(e),

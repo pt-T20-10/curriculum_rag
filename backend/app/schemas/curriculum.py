@@ -119,11 +119,115 @@ CONTENT_LEVEL_SCALES: dict[str, float] = {
 }
 
 DEFAULT_CONTENT_LEVEL = "Trung Bình"
+CONTENT_LEVEL_MIN_WORD_DEFAULTS: dict[str, int] = {
+    "Ngắn": 300,
+    "Trung Bình": 500,
+    "Dài": 800,
+    "Rất Dài": 1200,
+}
+CONTENT_LEVEL_MAX_WORD_DEFAULTS: dict[str, int] = {
+    "Ngắn": 500,
+    "Trung Bình": 800,
+    "Dài": 1200,
+    "Rất Dài": 1500,
+}
+CONTENT_LEVEL_MIN_WORD_KEYS: dict[str, str] = {
+    "Ngắn": "CONTENT_LEVEL_SHORT_MIN_WORDS",
+    "Trung Bình": "CONTENT_LEVEL_MEDIUM_MIN_WORDS",
+    "Dài": "CONTENT_LEVEL_LONG_MIN_WORDS",
+    "Rất Dài": "CONTENT_LEVEL_VERY_LONG_MIN_WORDS",
+}
+CONTENT_LEVEL_MAX_WORD_KEYS: dict[str, str] = {
+    "Ngắn": "CONTENT_LEVEL_SHORT_MAX_WORDS",
+    "Trung Bình": "CONTENT_LEVEL_MEDIUM_MAX_WORDS",
+    "Dài": "CONTENT_LEVEL_LONG_MAX_WORDS",
+    "Rất Dài": "CONTENT_LEVEL_VERY_LONG_MAX_WORDS",
+}
+CONTENT_WORD_TO_CHAR_RATIO_DEFAULTS: dict[str, float] = {
+    "vi": 5.0,
+    "en": 6.0,
+}
+CONTENT_WORD_TO_CHAR_RATIO_KEYS: dict[str, str] = {
+    "vi": "CONTENT_WORD_TO_CHAR_RATIO_VI",
+    "en": "CONTENT_WORD_TO_CHAR_RATIO_EN",
+}
+
+
+def _runtime_config_value(
+    key: str,
+    default: Any,
+    advanced_config: dict[str, Any] | None = None,
+) -> Any:
+    if advanced_config and key in advanced_config:
+        return advanced_config[key]
+    try:
+        from app.services.runtime_config import get_runtime_config
+
+        value = get_runtime_config(key, required=False)
+    except Exception:
+        value = None
+    return default if value is None else value
+
+
+def _runtime_int(
+    key: str,
+    default: int,
+    advanced_config: dict[str, Any] | None = None,
+) -> int:
+    try:
+        return max(0, int(_runtime_config_value(key, default, advanced_config)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _runtime_float(
+    key: str,
+    default: float,
+    advanced_config: dict[str, Any] | None = None,
+) -> float:
+    try:
+        value = float(_runtime_config_value(key, default, advanced_config))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def _runtime_content_level_words(
+    content_level: str,
+    word_keys: dict[str, str],
+    word_defaults: dict[str, int],
+    advanced_config: dict[str, Any] | None = None,
+) -> int:
+    key = word_keys.get(content_level)
+    default = word_defaults.get(content_level, 0)
+    if not key:
+        return default
+    return _runtime_int(key, default, advanced_config)
+
+
+def _runtime_word_to_char_ratio(
+    language: str,
+    advanced_config: dict[str, Any] | None = None,
+) -> float:
+    lang = (language or "vi").lower()
+    if lang.startswith("en"):
+        lang = "en"
+    else:
+        lang = "vi"
+    key = CONTENT_WORD_TO_CHAR_RATIO_KEYS[lang]
+    default = CONTENT_WORD_TO_CHAR_RATIO_DEFAULTS[lang]
+    return _runtime_float(key, default, advanced_config)
+
+
+def _words_to_chars(words: int, ratio: float) -> int:
+    return int(round((words * ratio) / 50) * 50)
 
 
 def get_char_target(
     section_type: str,
     content_level: str = DEFAULT_CONTENT_LEVEL,
+    advanced_config: dict[str, Any] | None = None,
+    language: str = "vi",
 ) -> tuple[int, int]:
     """
     Return (min_chars, max_chars) scaled by content_level.
@@ -131,6 +235,7 @@ def get_char_target(
     Args:
         section_type:  One of 'light', 'medium', 'deep', 'applied'.
         content_level: One of 'Ngắn', 'Trung Bình', 'Dài', 'Rất Dài'.
+        language:      'vi' or 'en'; controls word-to-character conversion.
 
     Returns:
         (min_chars, max_chars) tuple, rounded to nearest 50.
@@ -142,8 +247,31 @@ def get_char_target(
 
     scaled_min = int(round(base_min * scale / 50) * 50)
     scaled_max = int(round(base_max * scale / 50) * 50)
+    ratio = _runtime_word_to_char_ratio(language, advanced_config)
+    min_words = _runtime_content_level_words(
+        content_level,
+        CONTENT_LEVEL_MIN_WORD_KEYS,
+        CONTENT_LEVEL_MIN_WORD_DEFAULTS,
+        advanced_config,
+    )
+    max_words = _runtime_content_level_words(
+        content_level,
+        CONTENT_LEVEL_MAX_WORD_KEYS,
+        CONTENT_LEVEL_MAX_WORD_DEFAULTS,
+        advanced_config,
+    )
 
-    scaled_max = max(scaled_max, scaled_min + 500)
+    if min_words:
+        word_floor_chars = _words_to_chars(min_words, ratio)
+        scaled_min = max(scaled_min, word_floor_chars)
+
+    if max_words:
+        if min_words and max_words < min_words:
+            max_words = min_words
+        word_ceiling_chars = _words_to_chars(max_words, ratio)
+        scaled_max = min(scaled_max, max(word_ceiling_chars, scaled_min + 250))
+
+    scaled_max = max(scaled_max, scaled_min + 250)
     return scaled_min, scaled_max
 
 
@@ -470,7 +598,7 @@ def build_initial_state(
         "final_markdown_filepath": None,
         "final_pdf_filepath": None,
         "partial_markdown_filepath": None,
-        "export_formats":      export_formats or ["Word"],
+        "export_formats":      export_formats or ["PDF", "Word"],
         "final_docx_filepath": None,
         "export_errors":       {},
         # ---- Validation ----

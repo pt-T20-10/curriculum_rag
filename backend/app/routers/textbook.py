@@ -664,7 +664,7 @@ async def stop_generation(
     current_user_id: int = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_async_db),
 ):
-    """Stop textbook generation — signals the Celery task and revokes it."""
+    """Stop textbook generation gracefully and preserve generated content."""
     result = await db.execute(
         select(Textbook).where(
             Textbook.id == textbook_id,
@@ -680,23 +680,26 @@ async def stop_generation(
     from app.utils import stop_signal
     stop_signal.request_stop_for(textbook_id)
 
-    # 2. Revoke the Celery task — prefer DB-stored ID, fall back to registry
-    _revoke_textbook_task(textbook, textbook_id)
-
     if _planning_draft_phase(textbook):
+        # Planning has not spent credits or produced useful content, so it is
+        # still safe to revoke and delete immediately.
+        _revoke_textbook_task(textbook, textbook_id)
         await db.delete(textbook)
         await db.commit()
         return {"message": "Planning draft deleted", "deleted": True}
 
-    # 3. Update DB status
-    textbook.status = "failed"  # type: ignore
-    textbook.error_message = "Generation stopped by user"  # type: ignore
-    textbook.progress_data = {  # type: ignore
-        "phase": "idle",
-        "progress_value": 0.0,
-        "status_text": progress_text(textbook.language, "stopped"),  # type: ignore
+    # Do not terminate the running Celery task here. The worker checks the stop
+    # flag before each graph node, then runs Publisher on any accumulated
+    # content so the user can download a partial textbook.
+    progress_data = dict(textbook.progress_data or {})  # type: ignore
+    progress_data.update({  # type: ignore
+        "phase": "stopping",
+        "progress_value": max(float(progress_data.get("progress_value") or 0.0), 90.0),
+        "status_text": "Đang dừng và xuất bản phần nội dung đã tạo...",
+        "publisher_status": "active",
         "language": textbook.language,  # type: ignore
-    }
+    })
+    textbook.progress_data = progress_data  # type: ignore
 
     await db.commit()
-    return {"message": "Generation stopped", "deleted": False}
+    return {"message": "Stopping generation and publishing partial content", "deleted": False}

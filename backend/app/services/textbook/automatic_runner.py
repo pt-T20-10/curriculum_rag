@@ -105,6 +105,31 @@ def _cleanup_rag_after_export(state: dict[str, Any]) -> None:
         pass
 
 
+def _has_publishable_content(state: dict[str, Any]) -> bool:
+    return bool(
+        str(state.get("final_content") or "").strip()
+        or str(state.get("current_content") or "").strip()
+    )
+
+
+def _publish_recoverable_content(state: dict[str, Any], reason: str) -> dict[str, str]:
+    if not _has_publishable_content(state):
+        return {}
+    try:
+        from app.services.textbook.publisher import publish_curriculum
+
+        update = publish_curriculum({
+            **state,
+            "messages": [],
+            "emergency_publish_reason": reason,
+        })  # type: ignore[arg-type]
+        if isinstance(update, dict):
+            state.update(update)
+    except Exception:
+        return {}
+    return _find_artifacts(state)
+
+
 def _context_failure_error(state: dict[str, Any]) -> str:
     chapter = int(state.get("current_chapter_index", 0) or 0) + 1
     subsection = int(state.get("current_subsection_index", 0) or 0) + 1
@@ -247,6 +272,19 @@ def run_automatic_textbook_workflow(
                 and cumulative_state.get("context_quality") == "insufficient"
             ):
                 result["error"] = _context_failure_error(cumulative_state)
+                artifacts = _publish_recoverable_content(cumulative_state, result["error"])
+                if artifacts:
+                    stats = _document_stats(artifacts.get("markdown"))
+                    stats["elapsed_seconds"] = round(time.monotonic() - started, 2)
+                    result.update({
+                        "success": True,
+                        "status": "partial_export",
+                        "artifacts": artifacts,
+                        "stats": stats,
+                    })
+                    _emit(progress_callback, "completed", title=result["title"], stats=stats)
+                    _cleanup_rag_after_export(cumulative_state)
+                    return result
                 result["stats"] = {
                     "elapsed_seconds": round(time.monotonic() - started, 2)
                 }
@@ -255,6 +293,11 @@ def run_automatic_textbook_workflow(
                 return result
 
             artifacts = _find_artifacts(cumulative_state)
+            if "markdown" not in artifacts:
+                artifacts = _publish_recoverable_content(
+                    cumulative_state,
+                    "Publisher did not create a Markdown output file",
+                )
             if "markdown" not in artifacts:
                 result["error"] = "Publisher did not create a Markdown output file"
                 result["stats"] = {
@@ -305,8 +348,21 @@ def run_automatic_textbook_workflow(
 
     except Exception as exc:
         result["error"] = str(exc) or exc.__class__.__name__
+        cleanup_state = locals().get("cumulative_state") or locals().get("initial_state") or {}
+        artifacts = _publish_recoverable_content(cleanup_state, result["error"])
+        if artifacts:
+            stats = _document_stats(artifacts.get("markdown"))
+            stats["elapsed_seconds"] = round(time.monotonic() - started, 2)
+            result.update({
+                "success": True,
+                "status": "partial_export",
+                "artifacts": artifacts,
+                "stats": stats,
+            })
+            _emit(progress_callback, "completed", title=result["title"], stats=stats)
+            _cleanup_rag_after_export(cleanup_state)
+            return result
         result["stats"] = {"elapsed_seconds": round(time.monotonic() - started, 2)}
         _emit(progress_callback, "failed", error=result["error"])
-        cleanup_state = locals().get("cumulative_state") or locals().get("initial_state") or {}
         _cleanup_rag_after_export(cleanup_state)
         return result

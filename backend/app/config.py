@@ -262,6 +262,26 @@ class Settings(BaseSettings):
     """Chars truncated per section summary entry stored in section_summaries."""
     WRITER_MAX_PRIOR_SUMMARIES: int = 6
     """Max prior section summaries injected into Writer prompt (token budget guard)."""
+    CONTENT_LEVEL_SHORT_MIN_WORDS: int = 300
+    """Minimum target words per section for content_level='Ngắn'."""
+    CONTENT_LEVEL_SHORT_MAX_WORDS: int = 500
+    """Maximum target words per section for content_level='Ngắn'."""
+    CONTENT_LEVEL_MEDIUM_MIN_WORDS: int = 500
+    """Minimum target words per section for content_level='Trung Bình'."""
+    CONTENT_LEVEL_MEDIUM_MAX_WORDS: int = 800
+    """Maximum target words per section for content_level='Trung Bình'."""
+    CONTENT_LEVEL_LONG_MIN_WORDS: int = 800
+    """Minimum target words per section for content_level='Dài'."""
+    CONTENT_LEVEL_LONG_MAX_WORDS: int = 1200
+    """Maximum target words per section for content_level='Dài'."""
+    CONTENT_LEVEL_VERY_LONG_MIN_WORDS: int = 1200
+    """Minimum target words per section for content_level='Rất Dài'."""
+    CONTENT_LEVEL_VERY_LONG_MAX_WORDS: int = 1500
+    """Maximum target words per section for content_level='Rất Dài'."""
+    CONTENT_WORD_TO_CHAR_RATIO_VI: float = 5.0
+    """Approximate Vietnamese characters per whitespace word, including spacing."""
+    CONTENT_WORD_TO_CHAR_RATIO_EN: float = 6.0
+    """Approximate English characters per whitespace word, including spacing."""
 
     # ==================== Quality Control ====================
     REVIEWER_MAX_REVISIONS: int = 2

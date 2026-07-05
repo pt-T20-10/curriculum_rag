@@ -258,15 +258,22 @@ def continue_textbook_generation_task(self, textbook_id: int, confirmed_curricul
                     textbook.pdf_path = result.get("pdf_path") #type: ignore
                     textbook.docx_path = result.get("docx_path") #type: ignore
                     textbook.completed_at = datetime.utcnow() #type: ignore
-                    textbook.error_message = None #type: ignore
+                    if result.get("stopped_early"):
+                        textbook.error_message = "Generation stopped by user; partial export saved" #type: ignore
+                    elif result.get("partial_export"):
+                        textbook.error_message = str(result.get("error") or "Partial export saved after pipeline error") #type: ignore
+                    else:
+                        textbook.error_message = None #type: ignore
 
                     await db.commit()
 
                     logger.info(f"[TASK] ✓ Content generation complete")
                     return {
-                        "status": "success",
+                        "status": "stopped_published" if result.get("stopped_early") else "success",
                         "title": textbook.title,
                         "pdf_path": textbook.pdf_path,
+                        "docx_path": textbook.docx_path,
+                        "partial_export": bool(result.get("partial_export") or result.get("stopped_early")),
                     }
                 else:
                     error_msg = result.get("error", "Unknown error")

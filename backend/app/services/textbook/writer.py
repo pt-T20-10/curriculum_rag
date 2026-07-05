@@ -165,20 +165,22 @@ def _build_length_rule(
 
     if type_key == "applied":
         calibration_line = (
-            f"- applied  (~{char_min} chars min): "
+            f"- applied  (~{char_min}-{char_max} chars): "
             f"{blocks} ### blocks with {paras}"
         )
     else:
         calibration_line = (
-            f"- {type_key:<8} (~{char_min} chars min): "
+            f"- {type_key:<8} (~{char_min}-{char_max} chars): "
             f"{blocks} ### blocks, with about {paras} cohesive paragraph groups; "
             f"most body paragraphs should fully develop an idea across {sents}+ sentences"
         )
 
     return (
-        f"RULE 2.5 — LENGTH ENFORCEMENT (NON-NEGOTIABLE):\n"
+        f"RULE 2.5 — LENGTH TARGET (NON-NEGOTIABLE FLOOR, SOFT CEILING):\n"
         f"Your output MUST contain at least {char_min} characters. "
-        f"This is a hard floor — do NOT stop before reaching it.\n\n"
+        f"This is a hard floor — do NOT stop before reaching it.\n"
+        f"Target ceiling: keep the section at or below {char_max} characters "
+        f"unless a required example or explanation genuinely needs more space.\n\n"
         f"Calibration for this section ({section_type} / {content_level}):\n"
         f"{calibration_line}\n\n"
         f"CRITICAL — HOW to reach the character target:\n"
@@ -186,10 +188,13 @@ def _build_length_rule(
         f"worked illustrations, and fuller paragraphs. Do NOT add extra ### blocks.\n"
         f"Rule 6 sets the ### block ceiling. This rule sets the depth inside each block.\n"
         f"If short: expand the shallowest ### block by deepening existing paragraphs "
-        f"or adding one substantial paragraph where the idea genuinely needs it.\n\n"
+        f"or adding one substantial paragraph where the idea genuinely needs it.\n"
+        f"If long: condense repetition, merge overlapping sentences, and keep the "
+        f"same heading structure rather than deleting essential examples.\n\n"
         f"Self-check before finishing: mentally estimate flow and character count.\n"
         f"If you have not reached {char_min} characters, continue writing —\n"
-        f"add more depth to existing blocks. Do NOT create many short paragraphs."
+        f"add more depth to existing blocks. If you are above {char_max}, tighten "
+        f"wording and remove redundancy. Do NOT create many short paragraphs."
     )
 
 
@@ -529,7 +534,7 @@ rich ### block, merge 1.1.3 + 1.1.4 into another.
 - Language: {profile.prompt_name}
 - Output: raw Markdown — NO outer fences
 - First line: strictly follow Rule 1
-- Character count MUST reach {char_min} minimum
+- Character count target: {char_min}-{char_max}; {char_min} is a hard minimum, {char_max} is the soft ceiling
 
 {visual_rule}
 [/FORMAT]"""
@@ -964,10 +969,15 @@ def write_section_crag(state: AgentState) -> dict:
         )
 
         content_level   = state.get("content_level", "Trung Bình")
-        base_min, base_max = get_char_target(sec_type, content_level)
+        base_min, base_max = get_char_target(
+            sec_type,
+            content_level,
+            state.get("advanced_config", {}),
+            language=language,
+        )
         min_chars_floor = state.get("min_chars_per_section", 0)
         effective_min   = max(base_min, min_chars_floor)
-        effective_max   = max(base_max, effective_min + 500)
+        effective_max   = max(base_max, effective_min + 250)
         char_target     = (effective_min, effective_max)
         used_queries    = state.get("used_rag_queries", [])
 

@@ -83,6 +83,7 @@ class ReviewerAgent:
         self,
         content: str,
         char_min: int = 300,
+        char_max: int | None = None,
         language: str = "vi",
     ) -> tuple[bool, str]:
         """
@@ -104,23 +105,44 @@ class ReviewerAgent:
             content:  Polished content from review_content().
             char_min: Minimum character count floor (default 300 as safety net;
                     callers should pass the section's effective char_target[0]).
+            char_max: Soft maximum character target. If content exceeds this by
+                    a large margin, ask Writer to condense rather than approving
+                    only because the minimum was reached.
 
         Returns:
             (needs_revision, feedback) tuple.
             Falls back to (False, "") on any error to avoid blocking the workflow.
         """
-    # Fast Python pre-check — if content is already long enough,
-    # skip the LLM call entirely. LLM character counting is unreliable
-    # (underestimates by 30-40%) and wastes an API call when content
-    # clearly meets the floor.
-        if len(content) >= char_min * 1.2:
-            # 20% headroom accounts for LLM undercounting tendency
+    # Fast Python pre-check. LLM character counting is unreliable
+    # (underestimates by 30-40%), so deterministic length checks handle
+    # obvious under/over target cases before the LLM quality gate.
+        actual_chars = len(content)
+        if char_max and actual_chars > int(char_max * 1.2):
+            feedback = (
+                f"Content is {actual_chars}/{char_max} chars, too long for the "
+                "configured target. Condense repeated explanations, merge "
+                "overlapping sentences, and keep the same heading/math structure "
+                "without deleting essential examples."
+            )
+            logger.info(f"Quality gate: REJECT (length ceiling) — {feedback}")
+            return True, feedback
+
+        if actual_chars >= char_min * 1.2:
+            # 20% headroom accounts for LLM undercounting tendency.
             logger.info(
                 f"Quality gate: APPROVE (pre-check) — "
-                f"{len(content)} chars ≥ {char_min * 1.2:.0f} (floor {char_min} × 1.2)"
+                f"{actual_chars} chars ≥ {char_min * 1.2:.0f} (floor {char_min} × 1.2)"
             )
             return False, ""
         profile = get_language_profile(language)
+        upper_bound_rule = ""
+        if char_max:
+            upper_bound_rule = f"""
+    Rule 1B — LENGTH UPPER TARGET: Character count should not exceed {char_max}
+    by more than 20%. If this rule fails, feedback MUST ask the writer to
+    condense repetition and overlapping sentences while preserving required
+    examples, headings, code blocks, and math structure.
+"""
         prompt = ChatPromptTemplate.from_messages([
             ("system", f"""
     [CONTEXT]
@@ -144,6 +166,7 @@ class ReviewerAgent:
     should be expanded first.
     Example: "Content is 2474/3000 chars. Section ### 1.1.2 has only 1 paragraph —
     expand with concrete examples and deeper analysis before other fixes."
+{upper_bound_rule}
 
     Rule 2 — NAKED MATH: Contains LaTeX symbols or variables written outside
     $ delimiters (e.g., a_x, \\frac outside $).
@@ -171,7 +194,7 @@ class ReviewerAgent:
 
         self.prompt_logger.log(
             system_prompt=(
-                f"[QUALITY GATE — char_min={char_min} — "
+                f"[QUALITY GATE — char_min={char_min}, char_max={char_max} — "
                 "see reviewer_prompts.log for full criteria]"
             ),
             user_prompt=f"Content to evaluate (first 300 chars):\n{content[:300]}...",
@@ -182,7 +205,7 @@ class ReviewerAgent:
             chain = prompt | self.llm
             response = rate_limited_invoke(
                 chain,
-                {"content": content, "char_min": char_min},
+                {"content": content, "char_min": char_min, "char_max": char_max},
                 bucket="chat",
             )
 
@@ -1052,7 +1075,15 @@ def review_section(state: AgentState) -> dict:
         # Skip the gate entirely once MAX_REVISIONS is reached.
         # ------------------------------------------------------------------
         from app.schemas.curriculum import get_char_target
-        char_min, _ = get_char_target(sec_type, state.get("content_level", "Trung Bình"))
+        char_min, char_max = get_char_target(
+            sec_type,
+            state.get("content_level", "Trung Bình"),
+            state.get("advanced_config", {}),
+            language=language,
+        )
+        min_chars_floor = state.get("min_chars_per_section", 0)
+        char_min = max(char_min, min_chars_floor)
+        char_max = max(char_max, char_min + 250)
         source_audit = state.get("rag_source_audit", {}) or {}
         if source_audit.get("context_quality") == "insufficient":
             feedback = (
@@ -1075,6 +1106,7 @@ def review_section(state: AgentState) -> dict:
             needs_revision, feedback = agent.should_revise(
                 polished,
                 char_min=char_min,
+                char_max=char_max,
                 language=language,
             )
 
