@@ -3,7 +3,7 @@ builder = "DOCKERFILE"
 dockerfilePath = "backend/Dockerfile"
 
 [deploy]
-preDeployCommand = "alembic upgrade head && python -m app.bootstrap_admin"
+preDeployCommand = "sh /app/predeploy_railway.sh"
 startCommand = "sh /app/start_railway.sh"
 healthcheckPath = "/api/v1/health"
 healthcheckTimeout = 300

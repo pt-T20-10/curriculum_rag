@@ -42,7 +42,7 @@ COPY backend/ /app/
 RUN useradd --create-home --uid 10001 appuser \
     && mkdir -p /app/outputs /app/logs /app/data/chroma_db \
     && chown -R appuser:appuser /app \
-    && chmod +x /app/docker-entrypoint.sh /app/start_railway.sh
+    && chmod +x /app/docker-entrypoint.sh /app/start_railway.sh /app/predeploy_railway.sh
 
 # The image starts as root only long enough for the entrypoint to repair
 # ownership of runtime-mounted volumes. The application command itself always
