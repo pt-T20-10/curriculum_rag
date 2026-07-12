@@ -31,6 +31,10 @@ WORKDIR /app
 
 COPY requirements-prod.lock /tmp/requirements-prod.lock
 RUN python -m pip install --disable-pip-version-check \
+        --no-cache-dir --retries 10 --timeout 120 \
+        --upgrade pip setuptools wheel \
+    && python -m pip install --disable-pip-version-check \
+        --no-cache-dir --retries 10 --timeout 120 --prefer-binary \
     -r /tmp/requirements-prod.lock
 
 COPY backend/ /app/
