@@ -154,17 +154,17 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
   }, [deletedChapters, deletedSubs, editedCurriculum, newSubs])
 
   useEffect(() => {
-    if (!textbookId || finalCurriculum.invalid) {
-      setCreditEstimate(null)
-      setEstimateError('')
-      return
-    }
-
-    setCreditEstimate(null)
-    setEstimateError('')
-
     let cancelled = false
     const timer = setTimeout(async () => {
+      if (!textbookId || finalCurriculum.invalid) {
+        setCreditEstimate(null)
+        setEstimateError('')
+        setEstimatingCredits(false)
+        return
+      }
+
+      setCreditEstimate(null)
+      setEstimateError('')
       setEstimatingCredits(true)
       try {
         const response = await textbooksAPI.estimateCredits(textbookId, finalCurriculum)
@@ -183,7 +183,7 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
           setEstimatingCredits(false)
         }
       }
-    }, 400)
+    }, !textbookId || finalCurriculum.invalid ? 0 : 400)
 
     return () => {
       cancelled = true

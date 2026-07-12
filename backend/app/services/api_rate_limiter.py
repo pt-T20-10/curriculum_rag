@@ -13,6 +13,9 @@ import random
 import threading
 import time
 from collections.abc import Callable
+from contextlib import contextmanager
+from contextvars import ContextVar
+from copy import deepcopy
 from typing import Any, TypeVar
 
 from app.config import settings
@@ -28,6 +31,55 @@ _local_next_allowed: dict[str, float] = {}
 _redis_client: Any | None = None
 _redis_failed_until = 0.0
 _REDIS_RETRY_AFTER_SECONDS = 30.0
+_usage_context: ContextVar[dict[str, Any]] = ContextVar("api_usage_context", default={})
+_usage_lock = threading.RLock()
+_usage_summaries: dict[str, dict[str, Any]] = {}
+
+_MODEL_PRICES_PER_MILLION: dict[str, tuple[float, float]] = {
+    "gpt-4o-mini": (0.15, 0.60),
+    "gpt-4o": (2.50, 10.00),
+    "gpt-4.1-mini": (0.40, 1.60),
+    "gpt-4.1": (2.00, 8.00),
+    "gpt-5.4-mini": (0.75, 4.50),
+    "text-embedding-3-small": (0.02, 0.0),
+}
+
+
+@contextmanager
+def api_usage_context(**values: Any):
+    """Attach run/node metadata to API calls made inside the context."""
+    current = dict(_usage_context.get())
+    current.update({k: v for k, v in values.items() if v is not None})
+    token = _usage_context.set(current)
+    try:
+        yield
+    finally:
+        _usage_context.reset(token)
+
+
+def reset_api_usage_summary(run_id: str) -> None:
+    with _usage_lock:
+        _usage_summaries.pop(run_id, None)
+
+
+def get_api_usage_summary(run_id: str) -> dict[str, Any]:
+    with _usage_lock:
+        return deepcopy(_usage_summaries.get(run_id, _new_usage_summary(run_id)))
+
+
+def _new_usage_summary(run_id: str) -> dict[str, Any]:
+    return {
+        "run_id": run_id,
+        "total_calls": 0,
+        "total_estimated_usd": 0.0,
+        "premium_chat_calls": 0,
+        "cheap_chat_calls": 0,
+        "other_chat_calls": 0,
+        "by_bucket": {},
+        "by_model": {},
+        "by_agent": {},
+        "by_node": {},
+    }
 
 
 def _runtime_bool(key: str, default: bool) -> bool:
@@ -53,6 +105,152 @@ def _runtime_int(key: str, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _infer_model(runnable: Any, metadata: dict[str, Any]) -> str:
+    if metadata.get("model"):
+        return str(metadata["model"])
+    for attr in ("model_name", "model", "deployment_name"):
+        value = getattr(runnable, attr, None)
+        if value:
+            return str(value)
+    return ""
+
+
+def _usage_value(raw: Any, *keys: str) -> int:
+    for key in keys:
+        if isinstance(raw, dict) and key in raw:
+            try:
+                return int(raw[key] or 0)
+            except (TypeError, ValueError):
+                return 0
+        value = getattr(raw, key, None)
+        if value is not None:
+            try:
+                return int(value or 0)
+            except (TypeError, ValueError):
+                return 0
+    return 0
+
+
+def _extract_usage(result: Any) -> dict[str, int]:
+    usage = getattr(result, "usage", None)
+    if usage is None:
+        usage = getattr(result, "usage_metadata", None)
+    if usage is None:
+        response_metadata = getattr(result, "response_metadata", None)
+        if isinstance(response_metadata, dict):
+            usage = response_metadata.get("token_usage") or response_metadata.get("usage")
+    if usage is None:
+        return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
+    input_tokens = _usage_value(usage, "input_tokens", "prompt_tokens")
+    output_tokens = _usage_value(usage, "output_tokens", "completion_tokens")
+    total_tokens = _usage_value(usage, "total_tokens")
+    if total_tokens <= 0:
+        total_tokens = input_tokens + output_tokens
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+    }
+
+
+def _estimate_usd(model: str, usage: dict[str, int]) -> float:
+    prices = _MODEL_PRICES_PER_MILLION.get(model)
+    if not prices:
+        return 0.0
+    input_price, output_price = prices
+    return (
+        (usage.get("input_tokens", 0) / 1_000_000) * input_price
+        + (usage.get("output_tokens", 0) / 1_000_000) * output_price
+    )
+
+
+def _bump_bucket(summary: dict[str, Any], bucket_name: str, key: str, estimated_usd: float) -> None:
+    if not key:
+        key = "unknown"
+    bucket = summary[bucket_name].setdefault(
+        key,
+        {"calls": 0, "estimated_usd": 0.0},
+    )
+    bucket["calls"] += 1
+    bucket["estimated_usd"] = round(bucket["estimated_usd"] + estimated_usd, 8)
+
+
+def _record_api_usage(
+    *,
+    provider: str,
+    bucket: str,
+    model: str,
+    elapsed_seconds: float,
+    metadata: dict[str, Any],
+    result: Any,
+) -> None:
+    context = dict(_usage_context.get())
+    merged = {**context, **metadata}
+    run_id = str(merged.get("run_id") or merged.get("textbook_id") or "global")
+    agent = str(merged.get("agent") or "")
+    node = str(merged.get("node") or "")
+    usage = _extract_usage(result)
+    estimated_usd = _estimate_usd(model, usage)
+
+    with _usage_lock:
+        summary = _usage_summaries.setdefault(run_id, _new_usage_summary(run_id))
+        summary["total_calls"] += 1
+        summary["total_estimated_usd"] = round(
+            summary["total_estimated_usd"] + estimated_usd,
+            8,
+        )
+        if bucket == "chat":
+            if model == settings.LLM_MODEL_PREMIUM:
+                summary["premium_chat_calls"] += 1
+            elif model == settings.LLM_MODEL_CHEAP:
+                summary["cheap_chat_calls"] += 1
+            else:
+                summary["other_chat_calls"] += 1
+        _bump_bucket(summary, "by_bucket", bucket, estimated_usd)
+        _bump_bucket(summary, "by_model", model or f"{provider}:{bucket}", estimated_usd)
+        _bump_bucket(summary, "by_agent", agent, estimated_usd)
+        _bump_bucket(summary, "by_node", node, estimated_usd)
+
+    logger.info(
+        "API usage run=%s provider=%s bucket=%s model=%s agent=%s node=%s "
+        "elapsed=%.3fs tokens(in=%s,out=%s,total=%s) estimated_usd=%.8f",
+        run_id,
+        provider,
+        bucket,
+        model or "unknown",
+        agent or "unknown",
+        node or "unknown",
+        elapsed_seconds,
+        usage["input_tokens"],
+        usage["output_tokens"],
+        usage["total_tokens"],
+        estimated_usd,
+    )
+
+
+def _execute_and_record(
+    fn: Callable[[], T],
+    *,
+    provider: str,
+    bucket: str,
+    model: str = "",
+    metadata: dict[str, Any] | None = None,
+) -> T:
+    started = time.monotonic()
+    result = fn()
+    elapsed = time.monotonic() - started
+    _record_api_usage(
+        provider=provider,
+        bucket=bucket,
+        model=model,
+        elapsed_seconds=elapsed,
+        metadata=metadata or {},
+        result=result,
+    )
+    return result
 
 
 def _bucket_interval(provider: str, bucket: str) -> float:
@@ -168,9 +366,17 @@ def rate_limited_call(
     *,
     provider: str = "openai",
     bucket: str = "chat",
+    model: str = "",
+    metadata: dict[str, Any] | None = None,
 ) -> T:
     if not _runtime_bool(f"{provider.upper()}_RATE_LIMIT_ENABLED", False):
-        return fn()
+        return _execute_and_record(
+            fn,
+            provider=provider,
+            bucket=bucket,
+            model=model,
+            metadata=metadata,
+        )
 
     max_retries = max(0, _runtime_int(f"{provider.upper()}_RATE_LIMIT_MAX_RETRIES", 5))
     base = max(0.1, _runtime_float(f"{provider.upper()}_RATE_LIMIT_BACKOFF_BASE_SECONDS", 2.0))
@@ -179,7 +385,13 @@ def rate_limited_call(
     for attempt in range(max_retries + 1):
         wait_for_api_slot(provider=provider, bucket=bucket)
         try:
-            return fn()
+            return _execute_and_record(
+                fn,
+                provider=provider,
+                bucket=bucket,
+                model=model,
+                metadata=metadata,
+            )
         except Exception as exc:
             if not _is_rate_limit_error(exc) or attempt >= max_retries:
                 raise
@@ -195,7 +407,13 @@ def rate_limited_call(
             )
             _sleep_with_jitter(wait_seconds, provider)
 
-    return fn()
+    return _execute_and_record(
+        fn,
+        provider=provider,
+        bucket=bucket,
+        model=model,
+        metadata=metadata,
+    )
 
 
 def rate_limited_invoke(
@@ -204,9 +422,13 @@ def rate_limited_invoke(
     *,
     provider: str = "openai",
     bucket: str = "chat",
+    metadata: dict[str, Any] | None = None,
 ) -> Any:
+    resolved_metadata = metadata or {}
     return rate_limited_call(
         lambda: runnable.invoke(input_value),
         provider=provider,
         bucket=bucket,
+        model=_infer_model(runnable, resolved_metadata),
+        metadata=resolved_metadata,
     )

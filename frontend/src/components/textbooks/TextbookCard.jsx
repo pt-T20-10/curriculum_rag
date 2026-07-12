@@ -1,6 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { StatusBadge, ContentTypeBadge } from '../common/Badge'
+import { StatusBadge, ContentTypeBadge, TextbookModeBadge } from '../common/Badge'
 import { Button } from '../common/Button'
 import { getDocxUrl, getPdfUrl } from '../../utils/helpers'
 
@@ -38,6 +38,7 @@ export function TextbookCard({ textbook }) {
           <div className="flex flex-wrap gap-2">
             <StatusBadge status={textbook.status} />
             <ContentTypeBadge type={textbook.content_type} />
+            <TextbookModeBadge mode={textbook.textbook_mode} />
           </div>
         </div>
       </div>

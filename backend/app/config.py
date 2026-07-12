@@ -5,7 +5,6 @@
 """
 Application configuration using Pydantic Settings.
 """
-import os
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote_plus
@@ -151,8 +150,16 @@ class Settings(BaseSettings):
     
     LLM_MODEL_CHEAP: str = "gpt-4o-mini"
     LLM_MODEL_PREMIUM: str = "gpt-4.1"
-    IMAGE_MODEL_DEFAULT: str = "gpt-image-1-mini"
-    IMAGE_MODEL_PREMIUM: str = "gpt-image-1.5"
+    API_COST_PROFILE: str = "balanced_cost"
+    """
+    Reversible API-cost profile:
+    - quality_current: preserve current model choices and review depth
+    - balanced_cost: use cheaper models for auxiliary gates/evaluation
+    - aggressive_cost: reserved for post-benchmark optimizations
+    """
+    IMAGE_MODEL_DEFAULT: str = "gpt-image-2"
+    IMAGE_MODEL_PREMIUM: str = "gpt-image-2"
+    IMAGE_VALIDATION_MODEL: str = "gpt-5.4-mini"
     # Deprecated compatibility aliases. Textbook agents use
     # LLM_MODEL_PREMIUM or LLM_MODEL_CHEAP directly.
     LLM_MODEL_WRITER_LONGFORM: str = "gpt-4.1"
@@ -247,8 +254,8 @@ class Settings(BaseSettings):
     crawl a small set of URLs for the current subsection and ingest them into
     the same Chroma collection before retrying QueryFormulator once.
     """
-    CRAG_TARGETED_RECOVERY_RESULTS_PER_QUERY: int = 4
-    CRAG_TARGETED_RECOVERY_MAX_ROOT_URLS: int = 3
+    CRAG_TARGETED_RECOVERY_RESULTS_PER_QUERY: int = 5
+    CRAG_TARGETED_RECOVERY_MAX_ROOT_URLS: int = 4
 
     # ==================== Content Generation ====================
     CHECKPOINT_MARKDOWN_AFTER_SECTION: bool = True
@@ -257,7 +264,7 @@ class Settings(BaseSettings):
     This protects generated content if a later RAG gate or export step fails.
     """
     WRITER_RETRIEVAL_MAX_ROUNDS: int = 3
-    """Max tool-call rounds ContextRetrievalAgent may use to supplement context."""
+    """Max tool-call rounds ContextEvaluator may use to supplement context."""
     WRITER_SUMMARY_PREVIEW_CHARS: int = 200
     """Chars truncated per section summary entry stored in section_summaries."""
     WRITER_MAX_PRIOR_SUMMARIES: int = 6
@@ -303,6 +310,13 @@ class Settings(BaseSettings):
     RAG_SEMANTIC_DEDUP_THRESHOLD: float = 0.85
     """Cosine similarity ceiling for semantic deduplication (0.0–1.0).
     CAUTION: Lowering removes more chunks; raising allows more near-duplicates."""
+    RAG_CHUNK_LLM_FILTER_MODE: str = "auto"
+    """
+    Retriever LLM chunk classifier mode:
+    - auto: quality_current maps to always; balanced_cost checks only borderline chunks
+    - always: classify every structurally valid chunk with the cheap LLM
+    - off: use deterministic structural/rerank filters only
+    """
     RAG_CHUNK_SWEET_SPOT_MIN: int = 300
     """Chunk length floor for quality scoring sweet-spot bonus."""
     RAG_CHUNK_SWEET_SPOT_MAX: int = 1500

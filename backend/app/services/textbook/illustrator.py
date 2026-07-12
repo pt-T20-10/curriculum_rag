@@ -49,6 +49,7 @@ BASE_DIR = settings.BASE_DIR
 INDICATE_LINKS_FOR_PICS = settings.INDICATE_LINKS_FOR_PICS
 IMAGE_MODEL_DEFAULT = settings.IMAGE_MODEL_DEFAULT
 IMAGE_MODEL_PREMIUM = settings.IMAGE_MODEL_PREMIUM
+IMAGE_VALIDATION_MODEL = settings.IMAGE_VALIDATION_MODEL
 LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
 from app.schemas.curriculum import AgentState
 
@@ -65,6 +66,14 @@ IMAGE_MAX_HEIGHT = 500
 # Output directory for downloaded/generated images (relative to BASE_DIR).
 # Cleaned up by Publisher after PDF export.
 IMAGE_OUTPUT_DIR = BASE_DIR / "outputs" / "images"
+
+
+def _select_image_generation_settings(section_type: str) -> tuple[str, str]:
+    """Choose the image model and cost-aware quality for a textbook section."""
+    if section_type in ("deep", "applied"):
+        return IMAGE_MODEL_PREMIUM, "medium"
+    return IMAGE_MODEL_DEFAULT, "low"
+
 
 # ---------------------------------------------------------------------------
 
@@ -212,7 +221,13 @@ class IllustratorAgent:
                 "  Adding quotes around the query\n"
                 "  Including Vietnamese words\n"
                 "  Repeating the full description verbatim\n\n"
-                "Query:"
+                "Query:",
+                metadata={
+                    "agent": "Illustrator",
+                    "node": "illustrator",
+                    "model": LLM_MODEL_CHEAP,
+                    "operation": "image_query_builder",
+                },
             )
             query = str(response.content).strip()
             logger.info(f"Optimized query: '{description[:40]}...' → '{query}'")
@@ -251,6 +266,12 @@ class IllustratorAgent:
                 f"Translate this image caption to {profile.prompt_name}. "
                 "Return ONLY the translation, no explanation:\n\n" + caption,
                 bucket="chat",
+                metadata={
+                    "agent": "Illustrator",
+                    "node": "illustrator",
+                    "model": LLM_MODEL_CHEAP,
+                    "operation": "caption_translation",
+                },
             )
             translated = str(response.content).strip()
             logger.info(f"Caption translated: '{caption[:40]}' → '{translated[:40]}'")
@@ -303,6 +324,12 @@ class IllustratorAgent:
                 "- CRITICAL: No text, words, numbers visible in the image\n\n"
                 "Original: " + description,
                 bucket="chat",
+                metadata={
+                    "agent": "Illustrator",
+                    "node": "illustrator",
+                    "model": LLM_MODEL_CHEAP,
+                    "operation": "image_prompt_sanitize",
+                },
             )
             sanitized = str(response.content).strip()
             logger.info(f"Description sanitized: '{description[:50]}' → '{sanitized[:50]}'")
@@ -372,6 +399,12 @@ class IllustratorAgent:
                 self.llm,
                 prompt.format(description=description),
                 bucket="chat",
+                metadata={
+                    "agent": "Illustrator",
+                    "node": "illustrator",
+                    "model": LLM_MODEL_CHEAP,
+                    "operation": "image_router",
+                },
             )
             data   = json.loads(str(response.content).strip())
             action = data.get("action", "SEARCH").upper()
@@ -398,12 +431,12 @@ class IllustratorAgent:
         Generate an educational illustration via OpenAI GPT Image API.
 
         Uses the project-wide OPENAI_API_KEY (same key as Writer/Reviewer).
-        Model is selected dynamically based on section_type:
-            deep / applied → gpt-image-1.5  (flagship, higher fidelity)
-            light / medium → gpt-image-1-mini (cost-efficient, lower latency)
+        Generation settings are selected dynamically based on section_type:
+            deep / applied → GPT Image 2 at medium quality
+            light / medium → GPT Image 2 at low quality
 
         Flow:
-            1. Select image model based on section_type
+            1. Select image model and quality based on section_type
             2. Sanitize description (remove enumeration labels)
             3. Call GPT Image API → receive temporary CDN URL (TTL ~1 hour)
             4. Download image bytes (timeout=15s)
@@ -432,12 +465,16 @@ class IllustratorAgent:
 
             client = OpenAI(api_key=openai_api_key)
 
-            image_model = (
-                IMAGE_MODEL_PREMIUM
-                if section_type in ("deep", "applied")
-                else IMAGE_MODEL_DEFAULT
+            image_model, image_quality = _select_image_generation_settings(
+                section_type
             )
-            logger.info(f"GPT Image model selected: {image_model} (section_type='{section_type}')")
+            logger.info(
+                "GPT Image settings selected: model=%s quality=%s "
+                "(section_type='%s')",
+                image_model,
+                image_quality,
+                section_type,
+            )
 
             if is_search_fallback:
                 dalle_prompt = (
@@ -458,13 +495,19 @@ class IllustratorAgent:
                     model=image_model,
                     prompt=dalle_prompt,
                     size="1024x1024",
-                    quality="medium",
+                    quality=image_quality,
                     n=1,
                 ),
                 bucket="image",
+                model=image_model,
+                metadata={
+                    "agent": "Illustrator",
+                    "node": "illustrator",
+                    "operation": "image_generation",
+                },
             )
 
-            # gpt-image-1 returns base64 by default, not a URL.
+            # GPT Image models return base64 by default, not a URL.
             # Use b64_json response format and decode directly to avoid
             # empty URL issues that occur when the model omits the URL field.
             image_data = response.data[0] # type: ignore
@@ -613,8 +656,9 @@ class IllustratorAgent:
         """
         Verify downloaded image matches the intended description using vision API.
 
-        Calls gpt-4o-mini with the image + description and asks for a pass/fail
-        judgment. Returns True (use image) or False (try next candidate).
+        Calls the configured vision model with the image + description and asks
+        for a strict pass/fail judgment covering relevance and visual quality.
+        Returns True (use image) or False (try next candidate).
         Fails open — returns True on any API error to avoid blocking pipeline.
 
         Args:
@@ -630,7 +674,7 @@ class IllustratorAgent:
                 img_b64 = base64.b64encode(f.read()).decode()
 
             validator = ChatOpenAI(
-                model="gpt-4o-mini",
+                model=IMAGE_VALIDATION_MODEL,
                 api_key=get_api_key("OPENAI_API_KEY"), #type: ignore
                 temperature=0,
             )
@@ -643,10 +687,14 @@ class IllustratorAgent:
                             {
                                 "type": "text",
                                 "text": (
-                                    f"Does this image match the following description for an "
-                                    f"educational textbook?\n\nDescription: {description}\n\n"
-                                    "Reply ONLY with 'PASS' if the image is relevant and appropriate, "
-                                    "or 'FAIL' if it is wrong, irrelevant, or low quality."
+                                    "Evaluate this candidate image for a university textbook.\n\n"
+                                    f"Intended description: {description}\n\n"
+                                    "Reply ONLY with 'PASS' when all criteria are satisfied: "
+                                    "the central subject and relationships match the description; "
+                                    "the image is clear, coherent, and educationally useful; "
+                                    "there are no obvious visual artifacts, misleading details, "
+                                    "unwanted text, watermarks, or inappropriate content. "
+                                    "Otherwise reply only with 'FAIL'."
                                 ),
                             },
                             {
@@ -657,6 +705,12 @@ class IllustratorAgent:
                     }
                 ],
                 bucket="chat",
+                metadata={
+                    "agent": "Illustrator",
+                    "node": "illustrator",
+                    "model": IMAGE_VALIDATION_MODEL,
+                    "operation": "image_validation",
+                },
             )
             result = str(response.content).strip().upper()
             passed = result.startswith("PASS")

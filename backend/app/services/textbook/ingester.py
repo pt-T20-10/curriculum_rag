@@ -34,6 +34,7 @@ from app.schemas.curriculum import (
     get_chapter_and_subsection,
 )
 from app.config import settings
+from app.services.cost_profile import should_reuse_ingestion_query_expansion
 
 from app.ingestion.query_expansion import QueryExpansionAgent
 from app.ingestion.search_engine import search_web
@@ -406,6 +407,11 @@ def perform_ingestion(state: AgentState) -> dict:
     print(f"[DEBUG INGESTER] Step 2: expanding query bilingually", flush=True)
     query_expansion_agent = QueryExpansionAgent()
     expanded = query_expansion_agent.expand_query_bilingual(topic, content_type=content_type)
+    reusable_query_expansion = (
+        expanded
+        if should_reuse_ingestion_query_expansion(runtime_config)
+        else None
+    )
 
     vi_queries = expanded["vi"][:search_queries_per_language]
     en_queries = expanded["en"][:search_queries_per_language]
@@ -579,6 +585,7 @@ def perform_ingestion(state: AgentState) -> dict:
         run_id=_run_id_from_collection(collection_name),
         progress_callback=_get_ingestion_callback(),
         runtime_config=runtime_config,
+        query_expansion=reusable_query_expansion,
     )
     print(f"[DEBUG INGESTER] Step 5 done: success={success}", flush=True)
     logger.info(

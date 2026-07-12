@@ -267,6 +267,62 @@ def _patch_word_document_styles(doc) -> None:
                 _set_ppr_alignment_xml(style.element.get_or_add_pPr(), "center")
 
 
+def _word_paragraph_has_tag(paragraph, tag_names: set[str]) -> bool:
+    from docx.oxml.ns import qn
+
+    resolved = {qn(tag_name) for tag_name in tag_names}
+    return any(element.tag in resolved for element in paragraph._p.iter())
+
+
+def _should_justify_word_paragraph(paragraph) -> bool:
+    text = (paragraph.text or "").strip()
+    if not text:
+        return False
+
+    style_id = getattr(getattr(paragraph, "style", None), "style_id", "") or ""
+    style_name = getattr(getattr(paragraph, "style", None), "name", "") or ""
+    special_style_ids = {
+        "Title",
+        "Subtitle",
+        "Caption",
+        "TOCHeading",
+        "TOC1",
+        "TOC2",
+        "TOC3",
+        "TOC4",
+        "TOC5",
+    }
+    if style_id in special_style_ids or style_id.startswith("Heading"):
+        return False
+    if style_name in {"Title", "Subtitle", "Caption"} or style_name.startswith("TOC"):
+        return False
+    if _word_paragraph_has_tag(paragraph, {"w:drawing", "m:oMath", "m:oMathPara"}):
+        return False
+    return True
+
+
+def _iter_word_body_paragraphs(doc):
+    for paragraph in doc.paragraphs:
+        yield paragraph
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    yield paragraph
+
+
+def _justify_word_body_paragraphs(doc) -> int:
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    count = 0
+    for paragraph in _iter_word_body_paragraphs(doc):
+        if not _should_justify_word_paragraph(paragraph):
+            continue
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        count += 1
+    return count
+
+
 def _patch_word_toc_heading(doc, toc_label: str) -> None:
     from docx.oxml.ns import qn
 
@@ -425,9 +481,9 @@ def finalize_word_docx(
     Best-effort Word finishing pass for Pandoc DOCX output.
 
     Applies presentation-only fixes: localized TOC heading, heading/TOC fonts,
-    TOC heading alignment, a body-only centered PAGE footer, and dirty field
-    flags so Word refreshes TOC page numbers on open. It deliberately does not
-    rewrite prose content, including em dash usage.
+    TOC heading alignment, justified body paragraphs, a body-only centered PAGE
+    footer, and dirty field flags so Word refreshes TOC page numbers on open.
+    It deliberately does not rewrite prose content, including em dash usage.
     """
     try:
         from docx import Document as DocxDocument
@@ -435,13 +491,18 @@ def finalize_word_docx(
         doc = DocxDocument(docx_path)  # type: ignore
         _patch_word_document_styles(doc)
         _patch_word_toc_heading(doc, toc_label)
+        justified_count = _justify_word_body_paragraphs(doc)
         has_body_section = False
         if page_start_heading:
             has_body_section = _insert_body_section_break(doc, page_start_heading)
         _add_centered_page_footer(doc, body_only=has_body_section)
         _mark_word_fields_for_update(doc)
         doc.save(docx_path)  # type: ignore
-        logger.info("✓ Word finishing pass applied: %s", docx_path)
+        logger.info(
+            "✓ Word finishing pass applied: %s (%s body paragraphs justified)",
+            docx_path,
+            justified_count,
+        )
         return True
     except Exception as e:
         logger.warning("Word finishing pass skipped for %s: %s", docx_path, e)
@@ -514,11 +575,23 @@ def fix_unicode_math(content: str) -> str:
 _COMPLEX_MATH_RE = re.compile(
     r'\\(?:frac|int|sum|prod|lim|begin|end|sqrt|left|right|binom|matrix|pmatrix|cases)'
 )
+_DISPLAY_MATH_SIGNAL_RE = re.compile(
+    r'(?:=|[<>]|\\(?:times|cdot|approx|leq|geq|sum|prod|int|frac|sqrt|lim)\b)'
+)
 _WORD_PAGEBREAK = (
     '```{=openxml}\n'
     '<w:p><w:r><w:br w:type="page"/></w:r></w:p>\n'
     '```'
 )
+
+
+def _looks_like_display_math_expression(expr: str) -> bool:
+    """Return True for equations that should remain block/display math."""
+    expr = expr.strip()
+    if not expr:
+        return False
+    return bool(_DISPLAY_MATH_SIGNAL_RE.search(expr))
+
 
 def fix_inline_display_math(content: str) -> str:
     """
@@ -546,6 +619,8 @@ def fix_inline_display_math(content: str) -> str:
     def maybe_inline(m: re.Match) -> str:
         expr = m.group(1).strip()
         if _COMPLEX_MATH_RE.search(expr):
+            return m.group(0)
+        if _looks_like_display_math_expression(expr):
             return m.group(0)
         if len(expr) > 40:
             return m.group(0)
@@ -639,6 +714,202 @@ def _apply_outside_fenced_blocks(content: str, transform) -> str:
             continue
         parts[idx] = transform(part)
     return "".join(parts)
+
+
+_FORMULA_TOKEN_RE = r'(?:\$[^$\n]{1,80}\$|`[^`\n]{1,80}`)'
+_FORMULA_DEFINITION_START_RE = re.compile(
+    rf'^{_FORMULA_TOKEN_RE}\s*(?::|(?:là|is|are)\b)',
+    re.IGNORECASE,
+)
+
+
+def _looks_like_formula_symbol(expr: str) -> bool:
+    expr = expr.strip()
+    if not expr or not re.search(r'[A-Za-z]', expr):
+        return False
+    if re.search(r'["\'=\[\]()]', expr):
+        return False
+    if re.search(r'[_\\{}^]', expr):
+        return True
+    if re.fullmatch(r'[A-Z][A-Z0-9]{0,9}', expr):
+        return True
+    if re.fullmatch(r'[A-Za-z](?:\s*,\s*[A-Za-z])+', expr):
+        return True
+    if re.fullmatch(r'[A-Za-z]', expr):
+        return True
+    return False
+
+
+def _convert_formula_backticks(text: str) -> str:
+    def repl(match: re.Match) -> str:
+        expr = match.group(1).strip()
+        if _looks_like_formula_symbol(expr):
+            return f'${expr}$'
+        return match.group(0)
+
+    return re.sub(r'`([^`\n]{1,80})`', repl, text)
+
+
+def _fix_glued_inline_math(text: str) -> str:
+    simple_math_span = r'\$(?!\$)[A-Za-z\\][A-Za-z0-9_{}\\^,]*\$(?!\$)'
+    text = re.sub(rf'({simple_math_span})(?=[^\W\d_])', r'\1 ', text)
+    text = re.sub(rf'(?<=[^\W\d_])(?={simple_math_span})', ' ', text)
+    return text
+
+
+def _split_dash_definition_items(text: str) -> list[str]:
+    body = re.sub(r'^\s*-\s*', '', text.strip())
+    parts = [
+        part.strip()
+        for part in re.split(rf'\s*,?\s+-\s*(?={_FORMULA_TOKEN_RE})', body)
+        if part.strip()
+    ]
+    if len(parts) <= 1:
+        return [text.strip()]
+    if sum(1 for part in parts if _FORMULA_DEFINITION_START_RE.match(part)) < 2:
+        return [text.strip()]
+    return parts
+
+
+def _split_inline_definition_items(text: str) -> list[str]:
+    body = text.strip()
+    parts = [
+        part.strip()
+        for part in re.split(
+            rf'\s*,\s+(?={_FORMULA_TOKEN_RE}\s*(?::|(?:là|is|are)\b))',
+            body,
+            flags=re.IGNORECASE,
+        )
+        if part.strip()
+    ]
+    if len(parts) <= 1:
+        return [text.strip()]
+    if not all(_FORMULA_DEFINITION_START_RE.match(part) for part in parts):
+        return [text.strip()]
+    return parts
+
+
+def _format_formula_definition_item(item: str) -> str:
+    item = re.sub(r'^\s*-\s*', '', item.strip()).rstrip(' ,;')
+    item = _convert_formula_backticks(item)
+    item = re.sub(
+        r'^(\$[^$\n]+\$)\s+(?:là|is|are)\s+',
+        r'\1: ',
+        item,
+        flags=re.IGNORECASE,
+    )
+    item = re.sub(r'^(\$[^$\n]+\$)\s*[:：]\s*', r'\1: ', item)
+    return f'- {item}'
+
+
+def normalize_formula_explanations(content: str) -> str:
+    """
+    Normalize formula explanation blocks for clean Markdown/Pandoc rendering.
+
+    The writer sometimes emits compact explanations such as
+    "Trong đó: - $E$ là ..., - $R$ là ..." or uses backticks for formula
+    symbols. This pass turns those into one bullet per variable.
+    """
+    intro_re = re.compile(r'^(?P<label>Trong đó|Where)\s*:?\s*(?P<body>.*)$', re.IGNORECASE)
+
+    def transform(text: str) -> str:
+        text = _fix_glued_inline_math(text)
+        lines = text.split('\n')
+        out: list[str] = []
+        in_formula_definitions = False
+
+        for line in lines:
+            indent = re.match(r'\s*', line).group(0)
+            stripped = line.strip()
+
+            if not stripped:
+                out.append(line)
+                in_formula_definitions = False
+                continue
+
+            intro_match = intro_re.match(stripped)
+            if intro_match:
+                label = intro_match.group('label')
+                body = intro_match.group('body').strip()
+                if not body:
+                    out.append(f'{indent}{label}:')
+                    in_formula_definitions = True
+                    continue
+
+                items = (
+                    _split_dash_definition_items(body)
+                    if body.startswith('-')
+                    else _split_inline_definition_items(body)
+                )
+                if len(items) > 1 or _FORMULA_DEFINITION_START_RE.match(items[0]):
+                    out.append(f'{indent}{label}:')
+                    out.extend(
+                        f'{indent}{_format_formula_definition_item(item)}'
+                        for item in items
+                    )
+                    in_formula_definitions = True
+                    continue
+
+                line = f'{indent}{label} {body}'
+                line = _convert_formula_backticks(line)
+                out.append(line)
+                in_formula_definitions = False
+                continue
+
+            if in_formula_definitions and stripped.startswith('- '):
+                items = _split_dash_definition_items(stripped)
+                out.extend(
+                    f'{indent}{_format_formula_definition_item(item)}'
+                    for item in items
+                )
+                continue
+
+            if not stripped.startswith('- '):
+                in_formula_definitions = False
+
+            if stripped.startswith('- '):
+                line = re.sub(
+                    r'(?<=[.!?])\s+-\s+(?=\S)',
+                    f'\n{indent}- ',
+                    line,
+                )
+
+            if (
+                '`' in line
+                and (
+                    'trong đó' in line.lower()
+                    or 'công thức' in line.lower()
+                    or 'formula' in line.lower()
+                    or 'with ' in line.lower()
+                    or 'với ' in line.lower()
+                    or re.search(r'\$[^$\n]*=[^$\n]*\$', line)
+                )
+            ):
+                line = _convert_formula_backticks(line)
+
+            out.append(line)
+
+        return '\n'.join(out)
+
+    return _apply_outside_fenced_blocks(content, transform)
+
+
+def promote_standalone_inline_math(content: str) -> str:
+    """Convert equation-only inline math lines into display math blocks."""
+    def transform(text: str) -> str:
+        lines = text.split('\n')
+        out: list[str] = []
+        for line in lines:
+            match = re.match(r'^(\s*)\$(?!\$)([^$\n]+)\$(?!\$)\s*$', line)
+            if match and _looks_like_display_math_expression(match.group(2)):
+                indent = match.group(1)
+                expr = match.group(2).strip()
+                out.extend([f'{indent}$$', f'{indent}{expr}', f'{indent}$$'])
+            else:
+                out.append(line)
+        return '\n'.join(out)
+
+    return _apply_outside_fenced_blocks(content, transform)
 
 
 _PYTHON_INLINE_CODE_WORDS = {
@@ -860,49 +1131,51 @@ def fix_chapter_pagebreaks(content: str, language: str = "vi") -> str:
 
 def add_figure_numbers(content: str, language: str = "vi") -> str:
     """
-    Prefix image captions with section-scoped figure numbers.
+    Prefix image captions with chapter-scoped figure numbers.
 
-    Tracks the current ## X.Y and ### X.Y.Z heading as images are encountered
-    and prefixes each caption with "Hình X.Y.N:" or "Hình X.Y.Z.N:".
+    Tracks the current ``# CHƯƠNG N``/``# CHAPTER N`` heading as images are
+    encountered and prefixes each caption with "Hình N.M:"/"Figure N.M:".
 
     Behaviour:
-        - Idempotent: captions already starting with "Hình [digits]" are skipped.
-        - Images before the first ## heading are left unchanged.
-        - Counter resets to 1 when the tracked section changes.
+        - Existing figure-number prefixes are replaced, making the pass
+          idempotent and normalizing legacy section-scoped numbers.
+        - Images before the first chapter heading are left unchanged.
+        - The counter is shared by all sections in a chapter and starts again
+          at 1 for each new chapter.
     """
     lines = content.split('\n')
     result: list[str] = []
-    current_section   = ""
-    section_img_count: dict[str, int] = {}
+    current_chapter = ""
+    chapter_img_count: dict[str, int] = {}
     profile = get_language_profile(language)
+    chapter_heading_re = re.compile(
+        rf'^#\s+{re.escape(profile.chapter_label)}\s+(\d+)\b',
+        flags=re.IGNORECASE,
+    )
+    existing_number_re = re.compile(
+        rf'^{re.escape(profile.figure_label)}\s+\d+(?:\.\d+)*\s*:\s*',
+        flags=re.IGNORECASE,
+    )
 
     for line in lines:
-        m2 = re.match(r'^## (\d+\.\d+)', line)
-        if m2:
-            current_section = m2.group(1)
+        chapter_match = chapter_heading_re.match(line)
+        if chapter_match:
+            current_chapter = chapter_match.group(1)
             result.append(line)
             continue
 
-        m3 = re.match(r'^### (\d+\.\d+\.\d+)', line)
-        if m3:
-            current_section = m3.group(1)
-            result.append(line)
-            continue
-
-       
         img_match = re.match(r'^(!\[)([^\]]*?)(\]\()(.+?)(\))(\{.*?\})?$', line)
-        if img_match and current_section:
-            caption = img_match.group(2)
+        if img_match and current_chapter:
+            caption = existing_number_re.sub("", img_match.group(2), count=1)
             path    = img_match.group(4)
             attrs   = img_match.group(6) or ""
 
-            if not re.match(rf'^{re.escape(profile.figure_label)} \d[\d.]*:', caption):
-                section_img_count[current_section] = (
-                    section_img_count.get(current_section, 0) + 1
-                )
-                n       = section_img_count[current_section]
-                caption = f"{profile.figure_label} {current_section}.{n}: {caption}"
-                line    = f"![{caption}]({path}){attrs}"
+            chapter_img_count[current_chapter] = (
+                chapter_img_count.get(current_chapter, 0) + 1
+            )
+            n = chapter_img_count[current_chapter]
+            caption = f"{profile.figure_label} {current_chapter}.{n}: {caption}"
+            line = f"![{caption}]({path}){attrs}"
 
         result.append(line)
 
@@ -954,7 +1227,7 @@ def _prepare_word_md(
     content = re.sub(r'```\{=typst\}.*?```', '', content, flags=re.DOTALL)
 
     # Step 4 — Extract figure list from captions already in MD.
-    # Captions format: "Figure/Hình X.Y.Z: Caption text" — set by add_figure_numbers()
+    # Captions format: "Figure/Hình X.Y: Caption text" — set by add_figure_numbers()
     # No leading _WORD_PAGEBREAK — Step 5 manages page separation around this block.
     figure_list_md = ""
     if enable_images:
@@ -1209,7 +1482,7 @@ def publish_curriculum(state: AgentState) -> dict:
         9.  fix_math_formatting()       — Typst-compatible math
         10. fix_typst_deprecated_symbols() — times.circle → times.o
         11. fix_chapter_pagebreaks()    — #pagebreak() before # CHƯƠNG
-        12. add_figure_numbers()        — "Hình X.Y.N:"
+        12. add_figure_numbers()        — "Hình X.N:"
         13. Assemble front matter:
                 _TYPST_SETUP_BLOCK
                 _build_title_block()   — vertically+horizontally centred title
@@ -1342,6 +1615,8 @@ def publish_curriculum(state: AgentState) -> dict:
     full_content = remove_markdown_horizontal_rules(full_content)
     full_content = fix_inline_display_math(full_content)
     full_content = fix_math_formatting(full_content)
+    full_content = normalize_formula_explanations(full_content)
+    full_content = promote_standalone_inline_math(full_content)
     full_content = fix_typst_deprecated_symbols(full_content)
     full_content = fix_chapter_pagebreaks(full_content, language=language)
     full_content = add_figure_numbers(full_content, language=language)

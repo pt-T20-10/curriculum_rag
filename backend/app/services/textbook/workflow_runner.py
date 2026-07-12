@@ -14,6 +14,11 @@ from sqlalchemy import select
 from app.models.textbook import Textbook
 from app.config import settings
 from app.schemas.curriculum import AgentState, build_initial_state
+from app.services.api_rate_limiter import (
+    api_usage_context,
+    get_api_usage_summary,
+    reset_api_usage_summary,
+)
 from app.services.textbook.language import get_language_profile, progress_text
 from app.utils.log_config import setup_logger
 from app.utils.stop_signal import WorkflowStoppedException
@@ -173,12 +178,26 @@ async def run_textbook_workflow(
         core_topic_val = textbook_record.core_topic if textbook_record else topic
         user_req_val = textbook_record.user_requirements if textbook_record else ""
         content_type_val = textbook_record.content_type if textbook_record else "technical"
+        textbook_mode_val = textbook_record.textbook_mode if textbook_record else "standard"
         language_val = textbook_record.language if textbook_record else language
+        progress_data_val = dict(textbook_record.progress_data or {}) if textbook_record else {}
+        planning_mode_val = str(
+            progress_data_val.get("planning_mode")
+            or ("structured" if textbook_record and textbook_record.curriculum_json else "auto")
+        )
+        initial_structure_val = (
+            textbook_record.curriculum_json
+            if textbook_record and planning_mode_val == "structured"
+            else None
+        )
     else:
         core_topic_val = topic
         user_req_val = ""
         content_type_val = "technical"
+        textbook_mode_val = "standard"
         language_val = language
+        planning_mode_val = "auto"
+        initial_structure_val = None
     # Build initial state
     initial_state: AgentState = build_initial_state( # type: ignore
         request=topic,
@@ -187,16 +206,21 @@ async def run_textbook_workflow(
         content_level=content_level,
         max_subsections_per_chapter=max_subsections_per_chapter,
         content_type=content_type_val, #type: ignore
+        textbook_mode=textbook_mode_val, #type: ignore
         core_topic=core_topic_val, #type: ignore
         user_requirements=user_req_val, #type: ignore
         language=language_val, #type: ignore
         advanced_config=advanced_config,
+        initial_curriculum_structure=initial_structure_val, #type: ignore
+        planning_mode=planning_mode_val,
         export_formats=export_formats,
     )
 
     # Use planning-only workflow (planner → END)
     from app.services.textbook.orchestrator import create_planning_only_workflow
     app = create_planning_only_workflow()
+    api_run_id = f"textbook:{textbook_id}:planning"
+    reset_api_usage_summary(api_run_id)
 
     try:
         logger.info(f"[Workflow] Starting planning phase for: {topic}")
@@ -211,79 +235,113 @@ async def run_textbook_workflow(
                 "publisher_status": "pending",
                 "topic": topic,
                 "language": language_val,
+                "planning_mode": planning_mode_val,
+                "textbook_mode": textbook_mode_val,
             })
 
         cumulative_state: Dict[str, Any] = dict(initial_state)
 
-        for event in app.stream(
-            initial_state,
-            {"recursion_limit": settings.PLANNING_WORKFLOW_RECURSION_LIMIT},
-        ):
-            for node_name, node_output in event.items():
-                if isinstance(node_output, dict):
-                    cumulative_state.update(node_output)
+        with api_usage_context(run_id=api_run_id, textbook_id=textbook_id, phase="planning"):
+            event_stream = app.stream(
+                initial_state,
+                {"recursion_limit": settings.PLANNING_WORKFLOW_RECURSION_LIMIT},
+            )
+            for event in event_stream:
+                for node_name, node_output in event.items():
+                    if isinstance(node_output, dict):
+                        cumulative_state.update(node_output)
 
-                if node_name == "planner" and db:
-                    curriculum = cumulative_state.get("curriculum")
-                    textbook_title = cumulative_state.get("textbook_title", "")  # ⭐ Get generated title
+                    if node_name == "planner" and db:
+                        curriculum = cumulative_state.get("curriculum")
+                        textbook_title = cumulative_state.get("textbook_title", "")  # ⭐ Get generated title
 
-                    curriculum_data = None
-                    chapter_titles = []
+                        curriculum_data = None
+                        chapter_titles = []
 
-                    if curriculum:
-                        profile = get_language_profile(language_val) #type: ignore
-                        if hasattr(curriculum, 'model_dump'):
-                            curriculum_data = curriculum.model_dump()
-                        elif hasattr(curriculum, 'dict'):
-                            curriculum_data = curriculum.dict()
+                        if curriculum:
+                            profile = get_language_profile(language_val) #type: ignore
+                            if hasattr(curriculum, 'model_dump'):
+                                curriculum_data = curriculum.model_dump()
+                            elif hasattr(curriculum, 'dict'):
+                                curriculum_data = curriculum.dict()
+                            else:
+                                curriculum_data = dict(curriculum)
+
+                            chapters = curriculum.chapters if hasattr(curriculum, 'chapters') else curriculum.get('chapters', [])
+                            chapter_titles = [
+                                ch.title if hasattr(ch, 'title') else ch.get(
+                                    'title',
+                                    f"{profile.chapter_label.title()} {i+1}",
+                                )
+                                for i, ch in enumerate(chapters)
+                            ]
+
+                        # ⭐ Update textbook title in database
+                        if textbook_title:
+                            result = await db.execute(select(Textbook).where(Textbook.id == textbook_id))
+                            textbook_record = result.scalar_one_or_none()
+                            if textbook_record:
+                                textbook_record.title = textbook_title  # type: ignore
+                                await db.commit()
+                                logger.info(f"✓ Updated textbook title: {textbook_title}")
+
+                        api_usage = get_api_usage_summary(api_run_id)
+                        review_phase = (
+                            "reviewing" if planning_mode_val != "structured" else "planning"
+                        )
+                        review_status_key = (
+                            "review_curriculum"
+                            if planning_mode_val != "structured"
+                            else "content_generation_started"
+                        )
+                        await update_progress(db, textbook_id, {
+                            "phase": review_phase,
+                            "progress_value": 15.0,
+                            "status_text": progress_text(language_val, review_status_key), #type: ignore
+                            "planner_status": "completed",
+                            "ingestion_status": "pending",
+                            "curriculum_data": curriculum_data,
+                            "chapter_titles": chapter_titles,
+                            "total_chapters": len(chapter_titles),
+                            "topic": topic,
+                            "language": language_val,
+                            "planning_mode": planning_mode_val,
+                            "textbook_mode": textbook_mode_val,
+                            "api_usage_summary": api_usage,
+                        })
+
+                        if planning_mode_val == "structured":
+                            logger.info("[Workflow] Structured planning complete. Continuing to content generation...")
                         else:
-                            curriculum_data = dict(curriculum)
+                            logger.info("[Workflow] Planning complete. Waiting for curriculum confirmation...")
+                        logger.info("[Workflow] API usage summary: %s", api_usage)
 
-                        chapters = curriculum.chapters if hasattr(curriculum, 'chapters') else curriculum.get('chapters', [])
-                        chapter_titles = [
-                            ch.title if hasattr(ch, 'title') else ch.get(
-                                'title',
-                                f"{profile.chapter_label.title()} {i+1}",
+                        return {
+                            "success": True,
+                            "phase": review_phase,
+                            "planning_mode": planning_mode_val,
+                            "curriculum": curriculum_data,
+                            "api_usage_summary": api_usage,
+                            "message": (
+                                "Structured planning complete. Continuing to content generation."
+                                if planning_mode_val == "structured"
+                                else "Planning complete. Awaiting curriculum confirmation."
                             )
-                            for i, ch in enumerate(chapters)
-                        ]
+                        }
 
-                    # ⭐ Update textbook title in database
-                    if textbook_title:
-                        result = await db.execute(select(Textbook).where(Textbook.id == textbook_id))
-                        textbook_record = result.scalar_one_or_none()
-                        if textbook_record:
-                            textbook_record.title = textbook_title  # type: ignore
-                            await db.commit()
-                            logger.info(f"✓ Updated textbook title: {textbook_title}")
-
-                    await update_progress(db, textbook_id, {
-                        "phase": "reviewing",
-                        "progress_value": 15.0,
-                        "status_text": progress_text(language_val, "review_curriculum"), #type: ignore
-                        "planner_status": "completed",
-                        "ingestion_status": "pending",
-                        "curriculum_data": curriculum_data,
-                        "chapter_titles": chapter_titles,
-                        "total_chapters": len(chapter_titles),
-                        "topic": topic,
-                        "language": language_val,
-                    })
-
-                    logger.info(f"[Workflow] Planning complete. Waiting for curriculum confirmation...")
-
-                    return {
-                        "success": True,
-                        "phase": "reviewing",
-                        "curriculum": curriculum_data,
-                        "message": "Planning complete. Awaiting curriculum confirmation."
-                    }
-
-        return {"success": False, "error": "Planning phase did not complete"}
+        return {
+            "success": False,
+            "error": "Planning phase did not complete",
+            "api_usage_summary": get_api_usage_summary(api_run_id),
+        }
 
     except WorkflowStoppedException:
         logger.info("[Workflow] Planning stopped by user request")
-        return {"success": False, "error": "stopped_by_user"}
+        return {
+            "success": False,
+            "error": "stopped_by_user",
+            "api_usage_summary": get_api_usage_summary(api_run_id),
+        }
 
     except Exception as e:
         logger.error(f"[Workflow] Error: {e}", exc_info=True)
@@ -295,7 +353,11 @@ async def run_textbook_workflow(
                 "topic": topic,
             })
 
-        return {"success": False, "error": str(e)}
+        return {
+            "success": False,
+            "error": str(e),
+            "api_usage_summary": get_api_usage_summary(api_run_id),
+        }
 
 
 async def continue_after_curriculum_confirmation(
@@ -307,7 +369,7 @@ async def continue_after_curriculum_confirmation(
     """
     Continue workflow after curriculum confirmation.
 
-    Runs: ingestion → researcher → writer → ... → publisher
+    Runs: ingestion → CRAG retrieval/evaluation → writer → ... → publisher
     Curriculum already confirmed and in state.
 
     Args:
@@ -332,8 +394,10 @@ async def continue_after_curriculum_confirmation(
     topic = initial_state.get("request", "")  # type: ignore[union-attr]
     core_topic = initial_state.get("core_topic", topic)  # type: ignore[union-attr]
     user_requirements = initial_state.get("user_requirements", "")  # type: ignore[union-attr]
+    planning_mode = str(initial_state.get("planning_mode", "auto"))  # type: ignore[union-attr]
+    textbook_mode = str(initial_state.get("textbook_mode", "standard"))  # type: ignore[union-attr]
     rag_collection_name = f"dynamic_context_{textbook_id}_{int(time.time())}"
-         # CRAG pipeline nodes replace the old researcher/writer pair
+    # Content-generation nodes that participate in the CRAG loop.
     _CRAG_NODES = (
                         "query_formulator", "retriever_node",
                         "context_evaluator", "targeted_rag_recovery", "content_writer",
@@ -377,9 +441,11 @@ async def continue_after_curriculum_confirmation(
         "curriculum_confirmed":     True,
     }
 
-    # Use post-confirmation workflow (ingestion → researcher → ... → publisher)
+    # Use post-confirmation workflow (ingestion → CRAG retrieval/evaluation → ... → publisher)
     from app.services.textbook.orchestrator import create_content_after_confirm_workflow
     app = create_content_after_confirm_workflow()
+    api_run_id = f"textbook:{textbook_id}:content"
+    reset_api_usage_summary(api_run_id)
 
     try:
         logger.info(
@@ -405,6 +471,8 @@ async def continue_after_curriculum_confirmation(
                 "total_subsections": sum(len(ch.subsections) for ch in curriculum.chapters),
                 "topic": topic,
                 "language": initial_state.get("language", "vi"),
+                "planning_mode": planning_mode,
+                "textbook_mode": textbook_mode,
             })
 
         cumulative_state: Dict[str, Any] = dict(content_state)
@@ -415,10 +483,18 @@ async def continue_after_curriculum_confirmation(
             source_audit = cumulative_state.get("rag_source_audit")
             return {"source_audit": source_audit} if source_audit else {}
 
-        for event in app.stream(
-            content_state,
-            {"recursion_limit": settings.CONTENT_WORKFLOW_RECURSION_LIMIT},
-        ):
+        def _stream_events():
+            with api_usage_context(
+                run_id=api_run_id,
+                textbook_id=textbook_id,
+                phase="content",
+            ):
+                yield from app.stream(
+                    content_state,
+                    {"recursion_limit": settings.CONTENT_WORKFLOW_RECURSION_LIMIT},
+                )
+
+        for event in _stream_events():
             for node_name, node_output in event.items():
                 if isinstance(node_output, dict):
                     cumulative_state.update(node_output)
@@ -450,6 +526,8 @@ async def continue_after_curriculum_confirmation(
                             "error_message":  failed_msg,
                             "topic":          topic,
                             "language":       initial_state.get("language", "vi"),
+                            "planning_mode":  planning_mode,
+                            "textbook_mode":  textbook_mode,
                         })
                         logger.error(f"[Workflow] Ingestion failed: {failed_msg}")
                     else:
@@ -470,6 +548,8 @@ async def continue_after_curriculum_confirmation(
                             ),
                             "topic": topic,
                             "language": initial_state.get("language", "vi"),
+                            "planning_mode": planning_mode,
+                            "textbook_mode": textbook_mode,
                         })
 
                 elif node_name in _CRAG_NODES and db:
@@ -495,6 +575,8 @@ async def continue_after_curriculum_confirmation(
                         "current_content_preview": cumulative_state.get("final_content", ""),
                         "topic": topic,
                         "language": initial_state.get("language", "vi"),
+                        "planning_mode": planning_mode,
+                        "textbook_mode": textbook_mode,
                         "sub_stages": {
                             "retriever":  "active" if node_name in ("query_formulator", "retriever_node", "context_evaluator") else "done",
                             "writer":     "active" if node_name == "content_writer"  else ("done" if node_name in ("reviewer", "illustrator") else "pending"),
@@ -514,8 +596,13 @@ async def continue_after_curriculum_confirmation(
                         "publisher_status": "active",
                         "topic": topic,
                         "language": initial_state.get("language", "vi"),
+                        "planning_mode": planning_mode,
+                        "textbook_mode": textbook_mode,
                         **_source_audit_progress(),
                     })
+
+        api_usage = get_api_usage_summary(api_run_id)
+        logger.info("[Workflow] API usage summary: %s", api_usage)
 
         # Guard: if ingestion failed, error state was already written inside the loop.
         # Do NOT overwrite it with a success state.
@@ -526,6 +613,7 @@ async def continue_after_curriculum_confirmation(
                 "success": False,
                 "error": "Ingestion failed: no search results found",
                 "partial_markdown_path": cumulative_state.get("partial_markdown_filepath"),
+                "api_usage_summary": api_usage,
             }
 
         if (
@@ -554,6 +642,7 @@ async def continue_after_curriculum_confirmation(
                     "stopped_early": True,
                     "topic": topic,
                     "language": initial_state.get("language", "vi"),
+                    "textbook_mode": textbook_mode,
                     **_source_audit_progress(),
                 })
             logger.error("[Workflow] Content generation stopped: %s", error)
@@ -569,6 +658,7 @@ async def continue_after_curriculum_confirmation(
                     "markdown_path": emergency.get("markdown_path"),
                     "partial_markdown_path": cumulative_state.get("partial_markdown_filepath"),
                     "source_audit": cumulative_state.get("rag_source_audit") or {},
+                    "api_usage_summary": api_usage,
                 }
             return {
                 "success": False,
@@ -576,6 +666,7 @@ async def continue_after_curriculum_confirmation(
                 "title": cumulative_state.get("textbook_title", topic),
                 "partial_markdown_path": cumulative_state.get("partial_markdown_filepath"),
                 "source_audit": cumulative_state.get("rag_source_audit") or {},
+                "api_usage_summary": api_usage,
             }
 
         pdf_path = _validated_artifact_path(
@@ -616,6 +707,7 @@ async def continue_after_curriculum_confirmation(
                     "partial_markdown_filepath": cumulative_state.get("partial_markdown_filepath"),
                     "topic": topic,
                     "language": initial_state.get("language", "vi"),
+                    "textbook_mode": textbook_mode,
                     **_source_audit_progress(),
                 })
             logger.error("[Workflow] Content export failed: %s", error)
@@ -627,6 +719,7 @@ async def continue_after_curriculum_confirmation(
                 "pdf_path": pdf_path,
                 "docx_path": docx_path,
                 "partial_markdown_path": cumulative_state.get("partial_markdown_filepath"),
+                "api_usage_summary": api_usage,
             }
 
         if db:
@@ -639,6 +732,7 @@ async def continue_after_curriculum_confirmation(
                 "publisher_status": "completed",
                 "topic": topic,
                 "language": initial_state.get("language", "vi"),
+                "textbook_mode": textbook_mode,
                 **_source_audit_progress(),
             })
 
@@ -651,6 +745,7 @@ async def continue_after_curriculum_confirmation(
             "title": title,
             "pdf_path": pdf_path,
             "docx_path": docx_path,
+            "api_usage_summary": api_usage,
         }
 
     except WorkflowStoppedException:
@@ -671,6 +766,7 @@ async def continue_after_curriculum_confirmation(
                 "stopped_early": True,
                 "topic": topic,
                 "language": initial_state.get("language", "vi"),
+                "textbook_mode": textbook_mode,
             })
         _cleanup_rag_after_export(cleanup_state)
         partial_path = None
@@ -688,11 +784,13 @@ async def continue_after_curriculum_confirmation(
                 "docx_path": emergency.get("docx_path"),
                 "markdown_path": emergency.get("markdown_path"),
                 "partial_markdown_path": partial_path,
+                "api_usage_summary": get_api_usage_summary(api_run_id),
             }
         return {
             "success": False,
             "error": "stopped_by_user",
             "partial_markdown_path": partial_path,
+            "api_usage_summary": get_api_usage_summary(api_run_id),
         }
 
     except Exception as e:
@@ -718,6 +816,7 @@ async def continue_after_curriculum_confirmation(
                 "partial_export": _has_emergency_artifact(emergency),
                 "topic": topic,
                 "language": initial_state.get("language", "vi"),
+                "textbook_mode": textbook_mode,
             })
 
         partial_path = None
@@ -735,9 +834,11 @@ async def continue_after_curriculum_confirmation(
                 "docx_path": emergency.get("docx_path"),
                 "markdown_path": emergency.get("markdown_path"),
                 "partial_markdown_path": partial_path,
+                "api_usage_summary": get_api_usage_summary(api_run_id),
             }
         return {
             "success": False,
             "error": str(e),
             "partial_markdown_path": partial_path,
+            "api_usage_summary": get_api_usage_summary(api_run_id),
         }

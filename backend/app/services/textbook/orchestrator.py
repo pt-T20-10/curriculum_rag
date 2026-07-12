@@ -26,7 +26,6 @@ from app.services.textbook.planner import plan_curriculum, generate_metadata_nod
 from app.services.textbook.reviewer import review_section
 from app.services.textbook.illustrator import illustrate_section
 from app.services.textbook.publisher import publish_curriculum, save_partial_markdown_checkpoint
-from app.services.textbook.validator import validate_topic_node
 from app.utils import stop_signal
 from app.utils.stop_signal import WorkflowStoppedException  # noqa: F401 — re-exported
 
@@ -476,7 +475,7 @@ def create_content_after_confirm_workflow() -> CompiledStateGraph:
     """
     Content generation workflow: crawl → generate → publish.
 
-    Entry point: ingestion → researcher → writer → ... → publisher → END
+    Entry point: ingestion → CRAG retrieval/evaluation → writer → ... → publisher → END
 
     Used after user confirms curriculum. Curriculum already in state.
     """
@@ -505,7 +504,7 @@ def create_content_after_confirm_workflow() -> CompiledStateGraph:
 
 def create_workflow() -> CompiledStateGraph:
     """
-    Full workflow: planner → ingestion → researcher → ... → publisher.
+    Full workflow: planner → ingestion → CRAG retrieval/evaluation → ... → publisher.
 
     Legacy workflow — runs everything in one shot without a user review gate.
     Prefer create_planning_only_workflow() + create_content_after_confirm_workflow()

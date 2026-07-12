@@ -85,7 +85,9 @@ export function CreateTextbookPage() {
               content_level: data.content_level || CONTENT_LEVEL.MEDIUM,
               max_subsections_per_chapter: data.max_subsections_per_chapter || 5,
               enable_images: data.enable_images !== undefined ? data.enable_images : true,
-              language: data.language || 'vi'
+              language: data.language || 'vi',
+              planning_mode: data.planning_mode || 'auto',
+              textbook_mode: data.textbook_mode || 'standard',
             })
 
             const curriculum = data.curriculum_data
@@ -162,6 +164,8 @@ export function CreateTextbookPage() {
       setSubmittedConfig({
         ...formData,
         language: textbook.language || uiLanguage,
+        planning_mode: formData.planning_mode || 'auto',
+        textbook_mode: formData.textbook_mode || 'standard',
       }) // ⭐ Save actual submitted config
       setConfigExpanded(false)
 

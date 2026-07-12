@@ -1,15 +1,15 @@
 """
-Researcher Agent for AI Textbook Generator.
+Retriever node for AI Textbook Generator.
 
-This agent retrieves relevant document chunks from ChromaDB using semantic
+This component retrieves relevant document chunks from ChromaDB using semantic
 similarity search based on the current subsection's search_query field.
 
 It is called once per subsection iteration in the workflow loop:
-    Researcher -> Writer -> Reviewer -> Illustrator -> [next subsection]
+    QueryFormulator -> Retriever -> ContextEvaluator -> Writer -> Reviewer -> Illustrator
 
 Performance note:
     ResearcherAgent is instantiated via a module-level lazy singleton
-    (_get_researcher()) so that the ChromaDB client connection is created
+    (_get_retriever()) so that the ChromaDB client connection is created
     once and reused across all N×M subsection calls, rather than
     reconnecting on every iteration.
 
@@ -22,7 +22,6 @@ RAG Context Logging:
     This log is the primary audit trail for RAG quality evaluation.
 """
 
-from pyexpat import model
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -37,6 +36,11 @@ from langchain_core.tools import tool
 import re
 from app.config import settings, get_embedding_model
 from app.services.api_rate_limiter import rate_limited_call, rate_limited_invoke
+from app.services.cost_profile import (
+    RAG_CHUNK_FILTER_ALWAYS,
+    RAG_CHUNK_FILTER_OFF,
+    get_rag_chunk_llm_filter_mode,
+)
 from app.services.runtime_config import get_api_key
 
 LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
@@ -50,7 +54,7 @@ _TRUSTED_DOMAIN_QUOTA:      int = settings.RAG_TRUSTED_DOMAIN_QUOTA
 _DEFAULT_DOMAIN_QUOTA:      int = settings.RAG_DEFAULT_DOMAIN_QUOTA
 _SEMANTIC_DEDUP_THRESHOLD: float = settings.RAG_SEMANTIC_DEDUP_THRESHOLD
 from langchain_chroma import Chroma
-from app.schemas.curriculum import AgentState, Chapter, SubSection, get_chapter_and_subsection
+from app.schemas.curriculum import AgentState
 from app.utils.log_config import setup_logger
 
 logger = setup_logger(name="Retriever", logfile="logs/agents.log")
@@ -66,12 +70,16 @@ class _RateLimitedEmbeddingFunction:
         return rate_limited_call(
             lambda: self._base.embed_query(text),
             bucket="embedding",
+            model=settings.OPENAI_EMBEDDING_MODEL,
+            metadata={"agent": "Retriever", "node": "retriever_node"},
         )
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return rate_limited_call(
             lambda: self._base.embed_documents(texts),
             bucket="embedding",
+            model=settings.OPENAI_EMBEDDING_MODEL,
+            metadata={"agent": "Retriever", "node": "retriever_node"},
         )
 
     def __getattr__(self, name: str) -> Any:
@@ -423,8 +431,9 @@ class Retriever:
         - Perform top-k similarity search with MMR for diversity
         - Apply three-layer chunk quality filtering:
             Layer 1: structural heuristics (no LLM)
-            Layer 2: LLM binary classifier (KEEP/DISCARD per chunk)
-            Layer 3: semantic deduplication + quality scoring
+            Layer 2: deterministic rerank/quality scoring
+            Layer 3: optional LLM binary classifier for configured/borderline chunks
+            Layer 4: semantic deduplication + quality scoring
         - Format retrieved chunks with source metadata for EvaluatorAgent
         - Write full retrieval records to logs/rag_context.log for audit
 
@@ -472,6 +481,8 @@ class Retriever:
         k:             int  = RAG_TOP_K,
         context_label: str  = "",
         content_type:  str  = "technical",
+        advanced_config: dict[str, Any] | None = None,
+        chunk_llm_filter_mode: str | None = None,
     ) -> str:
         logger.info(f"Searching ChromaDB — query: '{query}' | k={k}")
         """
@@ -500,11 +511,17 @@ class Retriever:
         
 
         try:
+            effective_filter_mode = get_rag_chunk_llm_filter_mode(
+                advanced_config,
+                explicit_mode=chunk_llm_filter_mode,
+            )
             self.last_retrieval_audit = {
                 "query": query,
                 "discarded_chunks": [],
                 "candidate_count": 0,
                 "kept_count": 0,
+                "llm_filter_mode": effective_filter_mode,
+                "llm_classifier_calls": 0,
             }
             results = self.vector_db.max_marginal_relevance_search(
                 query,
@@ -574,15 +591,6 @@ class Retriever:
                     logger.debug(f"Heuristic DISCARD: '{text[:60]}'")
                     continue
 
-                if not _llm_classify_chunk(text, query=query, content_type=content_type):
-                    discarded.append({
-                        "source": doc.metadata.get("source", "Unknown"),
-                        "reason": "llm_classifier",
-                        "sample": text[:120],
-                    })
-                    logger.debug(f"LLM DISCARD: '{text[:60]}'")
-                    continue
-
                 retrieval_score, discard_reason = _rerank_retrieved_doc(doc, query)
                 doc.metadata["retrieval_score"] = f"{retrieval_score:.4f}"
                 if discard_reason:
@@ -596,6 +604,21 @@ class Retriever:
                         f"'{text[:60]}'"
                     )
                     continue
+
+                if _should_run_llm_chunk_filter(
+                    doc,
+                    query=query,
+                    mode=effective_filter_mode,
+                ):
+                    self.last_retrieval_audit["llm_classifier_calls"] += 1
+                    if not _llm_classify_chunk(text, query=query, content_type=content_type):
+                        discarded.append({
+                            "source": doc.metadata.get("source", "Unknown"),
+                            "reason": "llm_classifier",
+                            "sample": text[:120],
+                        })
+                        logger.debug(f"LLM DISCARD: '{text[:60]}'")
+                        continue
 
                 kept.append(doc)
 
@@ -966,6 +989,8 @@ def _deduplicate_chunks_semantic(
         embeddings = rate_limited_call(
             lambda: embedding_model.embed_documents(texts),
             bucket="embedding",
+            model=settings.OPENAI_EMBEDDING_MODEL,
+            metadata={"agent": "Retriever", "node": "retriever_node"},
         )
     else:
         embeddings = embedding_model.embed_documents(texts)
@@ -1043,6 +1068,7 @@ def _rerank_retrieved_doc(doc, query: str) -> tuple[float, str]:
     keyword_overlap = _keyword_overlap_score(query, doc.page_content)
     doc.metadata["query_overlap_score"] = f"{keyword_overlap:.4f}"
     quality_score = _score_chunk_quality(doc.page_content, source)
+    doc.metadata["chunk_quality_score"] = f"{quality_score:.4f}"
     trust_bonus = 0.05 if any(d in domain for d in _TRUSTED_RETRIEVAL_DOMAINS) else 0.0
 
     score = (
@@ -1058,6 +1084,45 @@ def _rerank_retrieved_doc(doc, query: str) -> tuple[float, str]:
     if quality_score < 0.25:
         return score, "low_chunk_quality"
     return min(1.0, score), ""
+
+
+def _should_run_llm_chunk_filter(doc, query: str, mode: str) -> bool:
+    """Return True when a retrieved chunk still needs LLM binary verification."""
+    if mode == RAG_CHUNK_FILTER_OFF:
+        return False
+    if mode == RAG_CHUNK_FILTER_ALWAYS:
+        return True
+
+    source = doc.metadata.get("source", "")
+    domain = urlparse(source).netloc.lower()
+    if any(trusted in domain for trusted in _TRUSTED_RETRIEVAL_DOMAINS):
+        return False
+
+    retrieval_score = _safe_float(doc.metadata.get("retrieval_score"), 0.0)
+    ingest_relevance = _safe_float(doc.metadata.get("relevance_score"), 0.0)
+    keyword_overlap = _safe_float(
+        doc.metadata.get("query_overlap_score"),
+        _keyword_overlap_score(query, doc.page_content),
+    )
+    quality_score = _safe_float(
+        doc.metadata.get("chunk_quality_score"),
+        _score_chunk_quality(doc.page_content, source),
+    )
+
+    strong_relevance = (
+        retrieval_score >= 0.62
+        and keyword_overlap >= 0.18
+        and quality_score >= 0.45
+    )
+    strong_ingest = (
+        ingest_relevance >= 0.55
+        and keyword_overlap >= 0.12
+        and quality_score >= 0.55
+    )
+    if strong_relevance or strong_ingest:
+        return False
+
+    return True
 
 def _score_chunk_quality(chunk_text: str, source_url: str) -> float:
     """
@@ -1209,7 +1274,17 @@ Reply with ONLY one word: KEEP or DISCARD"""
     
     try:
         llm = _get_chunk_classifier()
-        response = rate_limited_invoke(llm, prompt, bucket="chat")
+        response = rate_limited_invoke(
+            llm,
+            prompt,
+            bucket="chat",
+            metadata={
+                "agent": "Retriever",
+                "node": "retriever_node",
+                "model": LLM_MODEL_CHEAP,
+                "operation": "chunk_classifier",
+            },
+        )
         result = response.content.strip().upper() #type: ignore[attr-defined]
         
         # Extract decision from response (may include reasoning)
@@ -1251,6 +1326,7 @@ def retrieve_context_tool(
     query: str,
     content_type: str = "technical",
     collection_name: str = "dynamic_context",
+    chunk_llm_filter_mode: str = "",
 ) -> str:
     """
     Retrieve relevant chunks from the knowledge base for a given query.
@@ -1274,6 +1350,7 @@ def retrieve_context_tool(
         k=RAG_TOOL_K,
         context_label="[TOOL CALL]",
         content_type=content_type,
+        chunk_llm_filter_mode=chunk_llm_filter_mode or None,
     )
 
 
@@ -1313,6 +1390,7 @@ def retriever_node(state: AgentState) -> dict:
     sub_idx      = state["current_subsection_index"]
     content_type = state.get("content_type", "technical")
     collection_name = state.get("rag_collection_name", "dynamic_context")
+    advanced_config = state.get("advanced_config", {}) or {}
 
     if not query:
         logger.warning("retrieval_query is empty — RetrieverNode skipped")
@@ -1328,6 +1406,7 @@ def retriever_node(state: AgentState) -> dict:
             k             = RAG_INITIAL_K,
             context_label = context_label,
             content_type  = content_type,
+            advanced_config = advanced_config,
         )
 
         prior_used = list(state.get("used_rag_queries", []))

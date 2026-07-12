@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { CONTENT_LEVEL } from '../../constants/textbookOptions'
+import { createDefaultStructure, serializeStructureToMarkdown, validateStructure } from '../../utils/curriculumStructure'
+import { CurriculumStructureEditor } from './CurriculumStructureEditor'
 
 const CONTENT_LEVEL_LABEL_KEYS = {
   [CONTENT_LEVEL.SHORT]: 'textbook.form.levelShort',
@@ -112,11 +114,14 @@ export function ConfigForm({
   const { i18n, t } = useTranslation()
   const [formData, setFormData] = useState({
     topic: '',
+    planning_mode: 'auto',
+    textbook_mode: 'standard',
     num_chapters: 3,
     content_level: CONTENT_LEVEL.MEDIUM,
     max_subsections_per_chapter: 5,
     enable_images: true
   })
+  const [initialStructure, setInitialStructure] = useState(() => createDefaultStructure(t))
   const [fieldErrors, setFieldErrors] = useState({})
   const [confirmWarnings, setConfirmWarnings] = useState([])
   const [pendingSubmitData, setPendingSubmitData] = useState(null)
@@ -191,9 +196,32 @@ export function ConfigForm({
       num_chapters: parseIntegerInput(formData.num_chapters),
       max_subsections_per_chapter: parseIntegerInput(formData.max_subsections_per_chapter),
     }
+
+    if (submitData.planning_mode === 'structured') {
+      const structureError = validateStructure(initialStructure, t)
+      if (structureError) {
+        setFieldErrors({ initial_structure: structureError })
+        return
+      }
+      const chapterCount = initialStructure.chapters.length
+      const maxSubsectionCount = Math.max(
+        ...initialStructure.chapters.map(chapter => chapter.subsections.length)
+      )
+      submitData.initial_structure_markdown = serializeStructureToMarkdown(initialStructure)
+      submitData.num_chapters = chapterCount
+      submitData.max_subsections_per_chapter = maxSubsectionCount
+    }
+
     const { errors, warnings } = getConfigIssues(submitData)
     const topicWarnings = getTopicWarnings(submitData)
 
+    if (fieldErrors.initial_structure) {
+      setFieldErrors(prev => {
+        const next = { ...prev }
+        delete next.initial_structure
+        return next
+      })
+    }
     setFieldErrors(errors)
     if (Object.keys(errors).length > 0) {
       return
@@ -283,7 +311,27 @@ export function ConfigForm({
               <div className="flex flex-col gap-0.5">
                 <span className="text-xs text-gray-500">{t('textbook.form.images')}</span>
                 <span className="font-semibold text-gray-800">
-                  {(submittedConfig?.enable_images !== undefined ? submittedConfig.enable_images : formData.enable_images) ? t('app.yes') : t('app.no')}
+              {(submittedConfig?.enable_images !== undefined ? submittedConfig.enable_images : formData.enable_images) ? t('app.yes') : t('app.no')}
+                </span>
+              </div>
+              <div className="flex flex-col gap-0.5">
+                <span className="text-xs text-gray-500">{t('textbook.form.planningMode')}</span>
+                <span className="font-semibold text-gray-800">
+                  {t(
+                    (submittedConfig?.planning_mode || formData.planning_mode) === 'structured'
+                      ? 'textbook.form.planningModeStructured'
+                      : 'textbook.form.planningModeAuto'
+                  )}
+                </span>
+              </div>
+              <div className="flex flex-col gap-0.5">
+                <span className="text-xs text-gray-500">{t('textbook.form.textbookMode')}</span>
+                <span className="font-semibold text-gray-800">
+                  {t(
+                    (submittedConfig?.textbook_mode || formData.textbook_mode) === 'practice'
+                      ? 'textbook.form.textbookModePractice'
+                      : 'textbook.form.textbookModeStandard'
+                  )}
                 </span>
               </div>
               {submittedConfig?.language && (
@@ -323,6 +371,100 @@ export function ConfigForm({
         </p>
       </div>
 
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-2">
+          {t('textbook.form.textbookMode')}
+        </label>
+        <div className="grid grid-cols-2 gap-2 rounded-lg border border-gray-200 bg-gray-50 p-1">
+          {[
+            ['standard', 'textbook.form.textbookModeStandard'],
+            ['practice', 'textbook.form.textbookModePractice'],
+          ].map(([value, labelKey]) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setFormData(prev => ({ ...prev, textbook_mode: value }))}
+              disabled={loading}
+              className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                formData.textbook_mode === value
+                  ? 'bg-white text-blue-700 shadow-sm ring-1 ring-blue-200'
+                  : 'text-gray-600 hover:bg-white/70'
+              }`}
+            >
+              {t(labelKey)}
+            </button>
+          ))}
+        </div>
+        <p className="mt-1 text-xs text-gray-500">
+          {formData.textbook_mode === 'practice'
+            ? t('textbook.form.textbookModePracticeHint')
+            : t('textbook.form.textbookModeStandardHint')}
+        </p>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-2">
+          {t('textbook.form.planningMode')}
+        </label>
+        <div className="grid grid-cols-2 gap-2 rounded-lg border border-gray-200 bg-gray-50 p-1">
+          {[
+            ['auto', 'textbook.form.planningModeAuto'],
+            ['structured', 'textbook.form.planningModeStructured'],
+          ].map(([value, labelKey]) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setFormData(prev => ({ ...prev, planning_mode: value }))}
+              disabled={loading}
+              className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                formData.planning_mode === value
+                  ? 'bg-white text-blue-700 shadow-sm ring-1 ring-blue-200'
+                  : 'text-gray-600 hover:bg-white/70'
+              }`}
+            >
+              {t(labelKey)}
+            </button>
+          ))}
+        </div>
+        <p className="mt-1 text-xs text-gray-500">
+          {formData.planning_mode === 'structured'
+            ? t('textbook.form.planningModeStructuredHint')
+            : t('textbook.form.planningModeAutoHint')}
+        </p>
+      </div>
+
+      {formData.planning_mode === 'structured' && (
+        <div className="space-y-3 rounded-lg border border-blue-100 bg-blue-50/40 p-4">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-900">
+              {t('textbook.structure.title')}
+            </h3>
+            <p className="mt-1 text-xs text-gray-600">
+              {t('textbook.structure.description')}
+            </p>
+          </div>
+          {fieldErrors.initial_structure && (
+            <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
+              {fieldErrors.initial_structure}
+            </p>
+          )}
+          <CurriculumStructureEditor
+            value={initialStructure}
+            onChange={(next) => {
+              setInitialStructure(next)
+              if (fieldErrors.initial_structure) {
+                setFieldErrors(prev => {
+                  const updated = { ...prev }
+                  delete updated.initial_structure
+                  return updated
+                })
+              }
+            }}
+            disabled={loading}
+          />
+        </div>
+      )}
+
       {/* Advanced Config Toggle */}
       <button
         type="button"
@@ -343,27 +485,28 @@ export function ConfigForm({
       {/* Advanced Config */}
       {configExpanded && (
         <div className="space-y-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
-          {/* Number of Chapters */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              {t('textbook.form.chapters')}
-            </label>
-            <input
-              type="number"
-              name="num_chapters"
-              value={formData.num_chapters}
-              onChange={handleChange}
-              step={1}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              disabled={loading}
-            />
-            {fieldErrors.num_chapters && (
-              <p className="mt-1 text-xs text-red-600">{fieldErrors.num_chapters}</p>
-            )}
-            <p className="mt-1 text-xs text-gray-500">
-              {t('textbook.form.chaptersHint')}
-            </p>
-          </div>
+          {formData.planning_mode === 'auto' && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                {t('textbook.form.chapters')}
+              </label>
+              <input
+                type="number"
+                name="num_chapters"
+                value={formData.num_chapters}
+                onChange={handleChange}
+                step={1}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                disabled={loading}
+              />
+              {fieldErrors.num_chapters && (
+                <p className="mt-1 text-xs text-red-600">{fieldErrors.num_chapters}</p>
+              )}
+              <p className="mt-1 text-xs text-gray-500">
+                {t('textbook.form.chaptersHint')}
+              </p>
+            </div>
+          )}
 
           {/* Content Level */}
           <div>
@@ -386,27 +529,28 @@ export function ConfigForm({
             </p>
           </div>
 
-          {/* Subsections per Chapter */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              {t('textbook.form.maxSubsections')}
-            </label>
-            <input
-              type="number"
-              name="max_subsections_per_chapter"
-              value={formData.max_subsections_per_chapter}
-              onChange={handleChange}
-              step={1}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              disabled={loading}
-            />
-            {fieldErrors.max_subsections_per_chapter && (
-              <p className="mt-1 text-xs text-red-600">{fieldErrors.max_subsections_per_chapter}</p>
-            )}
-            <p className="mt-1 text-xs text-gray-500">
-              {t('textbook.form.maxSubsectionsHint')}
-            </p>
-          </div>
+          {formData.planning_mode === 'auto' && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                {t('textbook.form.maxSubsections')}
+              </label>
+              <input
+                type="number"
+                name="max_subsections_per_chapter"
+                value={formData.max_subsections_per_chapter}
+                onChange={handleChange}
+                step={1}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                disabled={loading}
+              />
+              {fieldErrors.max_subsections_per_chapter && (
+                <p className="mt-1 text-xs text-red-600">{fieldErrors.max_subsections_per_chapter}</p>
+              )}
+              <p className="mt-1 text-xs text-gray-500">
+                {t('textbook.form.maxSubsectionsHint')}
+              </p>
+            </div>
+          )}
 
           {/* Enable Images */}
           <div>

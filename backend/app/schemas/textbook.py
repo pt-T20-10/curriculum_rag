@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -29,6 +29,9 @@ class TextbookCreate(BaseModel):
     enable_images: bool = False
     ui_language: str = Field(default="vi", pattern="^(vi|en)$")
     export_formats: List[str] = Field(default_factory=lambda: ["PDF", "Word"])
+    planning_mode: Literal["auto", "structured"] = "auto"
+    textbook_mode: Literal["standard", "practice"] = "standard"
+    initial_structure_markdown: Optional[str] = Field(default=None, max_length=20000)
 
 
 class TextbookResponse(BaseModel):
@@ -43,6 +46,7 @@ class TextbookResponse(BaseModel):
     enable_images: bool
     language: str = "vi"
     content_type: str
+    textbook_mode: str = "standard"
     status: str
     pdf_path: Optional[str] = None
     docx_path: Optional[str] = None

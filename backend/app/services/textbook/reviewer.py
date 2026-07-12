@@ -34,6 +34,7 @@ from app.schemas.curriculum import (
     clean_section_title,
 )
 from app.config import settings
+from app.services.cost_profile import auxiliary_chat_model, use_balanced_cost
 from app.services.api_rate_limiter import rate_limited_invoke
 from app.services.runtime_config import get_api_key
 from app.services.textbook.language import get_language_profile
@@ -43,9 +44,185 @@ LLM_MODEL_PREMIUM =settings.LLM_MODEL_PREMIUM
 
 logger = setup_logger(name="ReviewerAgent", logfile="logs/agents.log")
 
+
+def _is_practice_mode(textbook_mode: str | None) -> bool:
+    return str(textbook_mode or "standard").strip().lower() == "practice"
+
 # Maximum number of revision cycles per subsection before forcing approval.
 # Also imported by graph.py for the graph-level defense-in-depth ceiling.
 MAX_REVISIONS = settings.REVIEWER_MAX_REVISIONS
+
+
+def _quality_gate_model(advanced_config: dict | None = None) -> str:
+    return auxiliary_chat_model(
+        cheap_model=LLM_MODEL_CHEAP,
+        premium_model=LLM_MODEL_PREMIUM,
+        advanced_config=advanced_config,
+    )
+
+
+_IMAGE_MARKER_LINE_RE = re.compile(
+    r"^\s*>?\s*\[(?:IMAGE|IMAGE_NEEDED):.*$",
+    flags=re.IGNORECASE | re.MULTILINE,
+)
+_UNICODE_SUB_SUP_RE = re.compile(r"[₀₁₂₃₄₅₆₇₈₉⁺⁻⁰¹²³⁴⁵⁶⁷⁸⁹]")
+
+
+def strip_image_markers_when_disabled(content: str) -> str:
+    """Remove image placeholders/tags when the run explicitly disabled images."""
+    cleaned = _IMAGE_MARKER_LINE_RE.sub("", content or "")
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip() if cleaned.strip() else cleaned
+
+
+def _code_fence_without_language(content: str) -> bool:
+    inside = False
+    for line in (content or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("```"):
+            continue
+        if not inside:
+            if stripped == "```":
+                return True
+            inside = True
+        else:
+            inside = False
+    return False
+
+
+def _has_heading_blank_line_issue(content: str) -> bool:
+    lines = (content or "").splitlines()
+    for idx, line in enumerate(lines):
+        if not re.match(r"^#{1,3}\s+\S", line):
+            continue
+        if idx > 0 and lines[idx - 1].strip():
+            return True
+        if idx + 1 < len(lines) and lines[idx + 1].strip():
+            return True
+    return False
+
+
+def _has_format_issues(
+    content: str,
+    section_num: str,
+    section_title: str,
+    language: str = "vi",
+) -> bool:
+    expected_section = rf"^##\s+{re.escape(section_num)}\s+{re.escape(section_title)}\s*$"
+    has_expected_section = bool(re.search(expected_section, content or "", re.MULTILINE))
+    if not has_expected_section:
+        return True
+    if re.search(r"^#{4,}\s+", content or "", re.MULTILINE):
+        return True
+    if re.search(rf"^##\s+{re.escape(section_num)}:", content or "", re.MULTILINE):
+        return True
+    if re.search(r"^\s*-{3,}\s*$", content or "", re.MULTILINE):
+        return True
+    if "\\[" in content or "\\]" in content or "\\(" in content or "\\)" in content:
+        return True
+    if "\\begin{equation}" in content or "\\end{equation}" in content:
+        return True
+    if _UNICODE_SUB_SUP_RE.search(content or ""):
+        return True
+    if _has_heading_blank_line_issue(content):
+        return True
+    if _code_fence_without_language(content):
+        return True
+    if "—" in (content or "") or (language == "en" and "–" in (content or "")):
+        return True
+    return False
+
+
+def _subsection_blocks(content: str) -> list[tuple[str, str]]:
+    matches = list(re.finditer(r"^###\s+(.+)$", content or "", flags=re.MULTILINE))
+    blocks: list[tuple[str, str]] = []
+    for idx, match in enumerate(matches):
+        start = match.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(content or "")
+        blocks.append((match.group(1).strip(), (content or "")[start:end].strip()))
+    return blocks
+
+
+def _substantial_paragraph_count(text: str) -> int:
+    paragraphs = [
+        part.strip()
+        for part in re.split(r"\n\s*\n", text or "")
+        if part.strip()
+    ]
+    return sum(
+        1
+        for paragraph in paragraphs
+        if not paragraph.lstrip().startswith(("#", ">", "-", "*", "```"))
+        and len(re.sub(r"\s+", " ", paragraph)) >= 120
+    )
+
+
+def _has_content_issues(
+    content: str,
+    char_min: int,
+    review_feedback: str = "",
+) -> bool:
+    text = content or ""
+    feedback = (review_feedback or "").lower()
+    if len(text) < char_min:
+        return True
+    if re.search(r"\b(chúng ta hãy|hãy cùng|cùng tìm hiểu|let's|we will now)\b", text, re.IGNORECASE):
+        return True
+    if len(re.findall(r"\*\*[^*\n]{1,80}\*\*", text)) > 10:
+        return True
+    blocks = _subsection_blocks(text)
+    if not blocks:
+        return True
+    for _heading, body in blocks:
+        if _substantial_paragraph_count(body) < 2:
+            return True
+    depth_signals = (
+        "depth", "deeper", "superficial", "paragraph", "expand",
+        "thiếu chiều sâu", "nông cạn", "mở rộng", "thêm ví dụ",
+    )
+    return any(signal in feedback for signal in depth_signals)
+
+
+def deterministic_quality_gate_passes(
+    content: str,
+    *,
+    char_min: int,
+    char_max: int | None,
+    section_num: str,
+    section_title: str,
+    section_type: str,
+    language: str,
+) -> bool:
+    """Conservative no-LLM approval gate for balanced_cost."""
+    if len(content or "") < char_min:
+        return False
+    if _has_format_issues(content, section_num, section_title, language):
+        return False
+    if _has_content_issues(content, char_min):
+        return False
+    max_blocks = {
+        "light": 2,
+        "medium": 3,
+        "deep": 4,
+        "applied": 3,
+    }.get(section_type, 3)
+    return len(_subsection_blocks(content)) <= max_blocks
+
+
+def _balanced_rejection_kind(feedback: str) -> str:
+    feedback_lower = (feedback or "").lower()
+    if any(term in feedback_lower for term in (
+        "source", "rag", "context", "nguồn", "ngữ cảnh",
+        "missing definition", "thiếu định nghĩa",
+    )):
+        return "missing_context"
+    if any(term in feedback_lower for term in (
+        "too short", "quá ngắn", "chars", "ký tự", "paragraph",
+        "expand", "mở rộng", "superficial", "nông cạn", "depth", "chiều sâu",
+        "example", "ví dụ",
+    )):
+        return "length_depth"
+    return "formatting_error"
 
 
 class ReviewerAgent:
@@ -85,6 +262,8 @@ class ReviewerAgent:
         char_min: int = 300,
         char_max: int | None = None,
         language: str = "vi",
+        advanced_config: dict | None = None,
+        textbook_mode: str = "standard",
     ) -> tuple[bool, str]:
         """
         Quality gate: decide whether polished content meets minimum standards.
@@ -105,29 +284,23 @@ class ReviewerAgent:
             content:  Polished content from review_content().
             char_min: Minimum character count floor (default 300 as safety net;
                     callers should pass the section's effective char_target[0]).
-            char_max: Soft maximum character target. If content exceeds this by
-                    a large margin, ask Writer to condense rather than approving
-                    only because the minimum was reached.
+            char_max: Soft target retained for logging/telemetry only. Reviewer
+                    must not request rewrites only because content exceeds it;
+                    longer-than-target content is acceptable if quality and the
+                    minimum floor pass.
 
         Returns:
             (needs_revision, feedback) tuple.
             Falls back to (False, "") on any error to avoid blocking the workflow.
         """
-    # Fast Python pre-check. LLM character counting is unreliable
-    # (underestimates by 30-40%), so deterministic length checks handle
-    # obvious under/over target cases before the LLM quality gate.
+        practice_mode = _is_practice_mode(textbook_mode)
+        # Fast Python pre-check. LLM character counting is unreliable
+        # (underestimates by 30-40%), so deterministic length checks handle
+        # obvious below-floor cases before the LLM quality gate. There is no
+        # upper-length rejection: longer-than-target content is preferable to
+        # spending another call to condense acceptable material.
         actual_chars = len(content)
-        if char_max and actual_chars > int(char_max * 1.2):
-            feedback = (
-                f"Content is {actual_chars}/{char_max} chars, too long for the "
-                "configured target. Condense repeated explanations, merge "
-                "overlapping sentences, and keep the same heading/math structure "
-                "without deleting essential examples."
-            )
-            logger.info(f"Quality gate: REJECT (length ceiling) — {feedback}")
-            return True, feedback
-
-        if actual_chars >= char_min * 1.2:
+        if not practice_mode and actual_chars >= char_min * 1.2:
             # 20% headroom accounts for LLM undercounting tendency.
             logger.info(
                 f"Quality gate: APPROVE (pre-check) — "
@@ -135,14 +308,26 @@ class ReviewerAgent:
             )
             return False, ""
         profile = get_language_profile(language)
-        upper_bound_rule = ""
-        if char_max:
-            upper_bound_rule = f"""
-    Rule 1B — LENGTH UPPER TARGET: Character count should not exceed {char_max}
-    by more than 20%. If this rule fails, feedback MUST ask the writer to
-    condense repetition and overlapping sentences while preserving required
-    examples, headings, code blocks, and math structure.
-"""
+        depth_rule = (
+            """
+    Rule 5 — PRACTICE COMPLETENESS: Section is unacceptable if it lacks any
+    of these required practice elements:
+    - concrete hands-on action steps the learner can follow;
+    - at least one similar exercise or practice task;
+    - at least one slightly advanced exercise/challenge.
+    Do NOT reject merely because definitions or conceptual theory are absent.
+
+    Rule 5.5 — NO THEORY SECTIONS: Return needs_revision=true if the content
+    contains dedicated headings or blocks focused on "Lý thuyết", "Khái niệm",
+    "Tổng quan", "Tổng kết", "Kết luận", "Theory", "Concepts", "Overview",
+    "Summary", or "Conclusion".
+    """
+            if practice_mode
+            else """
+    Rule 5 — DEPTH: Section is superficial — missing definitions, examples, or
+    core explanations. OR any ### sub-section contains fewer than 3 paragraphs.
+    """
+        )
         prompt = ChatPromptTemplate.from_messages([
             ("system", f"""
     [CONTEXT]
@@ -166,7 +351,9 @@ class ReviewerAgent:
     should be expanded first.
     Example: "Content is 2474/3000 chars. Section ### 1.1.2 has only 1 paragraph —
     expand with concrete examples and deeper analysis before other fixes."
-{upper_bound_rule}
+    Do NOT reject content only because it is longer than a target or expected
+    maximum. Longer-than-target content is acceptable when it is relevant,
+    structured, and meets the minimum floor.
 
     Rule 2 — NAKED MATH: Contains LaTeX symbols or variables written outside
     $ delimiters (e.g., a_x, \\frac outside $).
@@ -176,8 +363,7 @@ class ReviewerAgent:
     Rule 4 — TONE: Uses conversational or unprofessional tone in {profile.prompt_name}.
     Expected tone: {profile.tone_rule}
 
-    Rule 5 — DEPTH: Section is superficial — missing definitions, examples, or
-    core explanations. OR any ### sub-section contains fewer than 3 paragraphs.
+{depth_rule}
 
     Rule 6 — BLANK LINES: Any Markdown heading (`#`, `##`, `###`) is NOT preceded
     by a blank line — i.e., the line immediately before the `#` is non-empty text.
@@ -202,11 +388,27 @@ class ReviewerAgent:
         )
 
         try:
-            chain = prompt | self.llm
+            gate_model = _quality_gate_model(advanced_config)
+            gate_llm = (
+                self.llm
+                if gate_model == LLM_MODEL_PREMIUM
+                else ChatOpenAI(
+                    model=gate_model,
+                    api_key=get_api_key("OPENAI_API_KEY"),  # type: ignore[arg-type]
+                    temperature=0.1,
+                )
+            )
+            chain = prompt | gate_llm
             response = rate_limited_invoke(
                 chain,
                 {"content": content, "char_min": char_min, "char_max": char_max},
                 bucket="chat",
+                metadata={
+                    "agent": "Reviewer",
+                    "node": "reviewer",
+                    "model": gate_model,
+                    "operation": "quality_gate",
+                },
             )
 
             raw = response.content.strip()  # type: ignore
@@ -364,6 +566,14 @@ Rule 5 — Unicode subscripts/superscripts → math notation:
   subscript digits (₀₁₂₃₄₅₆₇₈₉) → $_n$
   superscripts (⁺⁻⁰¹²³⁴⁵⁶⁷⁸⁹) → $^n$
 
+Rule 5.5 — Formula explanations:
+  Use one bullet per variable after "Trong đó:" / "Where:".
+  Fix: Trong đó: - $E$ là ..., - $R$ là ...
+    → Trong đó:
+      - $E$: ...
+      - $R$: ...
+  Mathematical symbols must use $...$, not backticks.
+
 --- STRUCTURE FIXES ---
 
 Rule 6 — Chapter header: {chap_cmd}
@@ -452,7 +662,12 @@ No fences, no preamble, no explanation.
                 "language_math_rule": language_math_rule,
                 "format_style_rule": format_style_rule,
                 "draft":         draft,
-            }, bucket="chat")
+            }, bucket="chat", metadata={
+                "agent": "Reviewer",
+                "node": "reviewer",
+                "model": LLM_MODEL_PREMIUM,
+                "operation": "format_pass",
+            })
             return str(response.content)
 
         except Exception as e:
@@ -469,6 +684,8 @@ No fences, no preamble, no explanation.
         section_title: str,
         section_description: str,
         language: str = "vi",
+        enable_images: bool = True,
+        textbook_mode: str = "standard",
     ) -> str:
         """
         Pass B: Content quality — academic tone, depth, and visuals.
@@ -502,6 +719,18 @@ No fences, no preamble, no explanation.
             Content-polished Markdown. Returns draft unchanged on error.
         """
         profile = get_language_profile(language)
+        practice_mode = _is_practice_mode(textbook_mode)
+        practice_criterion = (
+            """
+--- PRACTICE COURSE MODE ---
+Preserve the section as hands-on practice material. Do not add theory-first
+explanations, concept catalogues, summaries, or conclusion blocks. If a hands-on
+section lacks action steps, a similar exercise, or a slightly advanced exercise,
+add those elements while preserving the existing Markdown structure.
+"""
+            if practice_mode
+            else ""
+        )
         content_style_rule = (
             "Do NOT use em dash or en dash characters (—, –) in English output. "
             "Use commas, parentheses, semicolons, or ASCII hyphen-minus (-) instead."
@@ -513,6 +742,21 @@ No fences, no preamble, no explanation.
                 "rewrite prose explanations with natural Vietnamese connectors such as "
                 "\"đây là\", \"là\", \"điều này cho thấy\", a comma, or a separate sentence."
             )
+        )
+        visual_criterion = (
+            """--- VISUALS ---
+PRESERVE all existing > [IMAGE: ...] tags — do NOT remove or modify them.
+ADD new image suggestions only where a visual genuinely aids comprehension:
+  medium/deep sections → up to 3 images; light sections → max 1; applied → max 2.
+  ADD: architecture diagrams, process flows, data structures, comparisons.
+  SKIP: pure definition paragraphs, abstract theory, transition paragraphs.
+Format: > [IMAGE: Short caption title | Detailed English description for image search]"""
+            if enable_images
+            else """--- VISUALS ---
+Images are disabled for this textbook.
+Do NOT add image suggestions, [IMAGE: ...] tags, or [IMAGE_NEEDED: ...] placeholders.
+If the draft already contains image markers, leave content quality edits to prose only;
+the deterministic postprocess will remove those markers."""
         )
         content_system = """
 [CONTEXT]
@@ -558,14 +802,20 @@ Bold audit: remove excessive bold. Keep bold ONLY for the primary concept
 defined for the first time in the section. Remove bold from adjectives, general
 nouns, phrases over 4 words, and any term already in a heading.
 
---- VISUALS ---
-PRESERVE all existing > [IMAGE: ...] tags — do NOT remove or modify them.
-ADD new image suggestions only where a visual genuinely aids comprehension:
-  medium/deep sections → up to 3 images; light sections → max 1; applied → max 2.
-  ADD: architecture diagrams, process flows, data structures, comparisons.
-  SKIP: pure definition paragraphs, abstract theory, transition paragraphs.
-Format: > [IMAGE: Short caption title | Detailed English description for image search]
+{visual_criterion}
+{practice_criterion}
 [/CRITERION]
+
+[CONSTRAINT]
+Rule 1 — PRESERVE STRUCTURE: Do not change ## or ### numbering, chapter headers,
+math notation, code fences, image tags, or paragraph order unless needed to fix
+content quality.
+Rule 2 — NO WRAPPERS: Do not add preambles, explanations, meta-commentary, or
+outer markdown fences.
+Rule 3 — NO SEPARATORS: Do not output standalone separator lines such as --- or ----.
+Rule 4 — LENGTH: Do not shorten the content; the output must remain at least
+95% of the draft length.
+[/CONSTRAINT]
 
 [FORMAT]
 MANDATORY CHARACTER COUNT CHECK — execute before submitting:
@@ -602,6 +852,8 @@ Output rules:
                     filler_examples=profile.filler_examples,
                     tone_rule=profile.tone_rule,
                     content_style_rule=content_style_rule,
+                    visual_criterion=visual_criterion,
+                    practice_criterion=practice_criterion,
                 )
             except Exception:
                 logged_system = content_system
@@ -632,9 +884,17 @@ Output rules:
                 "filler_examples":     profile.filler_examples,
                 "tone_rule":           profile.tone_rule,
                 "content_style_rule":  content_style_rule,
+                "visual_criterion":    visual_criterion,
+                "practice_criterion":  practice_criterion,
                 "draft":               draft,
-            }, bucket="chat")
-            return str(response.content)
+            }, bucket="chat", metadata={
+                "agent": "Reviewer",
+                "node": "reviewer",
+                "model": LLM_MODEL_PREMIUM,
+                "operation": "content_pass",
+            })
+            result = str(response.content)
+            return result if enable_images else strip_image_markers_when_disabled(result)
 
         except Exception as e:
             logger.error(
@@ -709,7 +969,17 @@ Return raw Markdown only. No preamble, no explanation, no fences.
                 ("system", cleanup_system),
                 ("user", "Clean em dashes in this draft:\n\n{draft}"),
             ])
-            response = rate_limited_invoke(prompt | llm_cleanup, {"draft": draft}, bucket="chat")
+            response = rate_limited_invoke(
+                prompt | llm_cleanup,
+                {"draft": draft},
+                bucket="chat",
+                metadata={
+                    "agent": "Reviewer",
+                    "node": "reviewer",
+                    "model": LLM_MODEL_PREMIUM,
+                    "operation": "em_dash_cleanup",
+                },
+            )
             cleaned = str(response.content)
             if "—" in cleaned:
                 logger.warning(
@@ -738,6 +1008,11 @@ Return raw Markdown only. No preamble, no explanation, no fences.
         draft_content: str,
         chapter_cmd: str,
         language: str = "vi",
+        enable_images: bool = True,
+        advanced_config: dict | None = None,
+        char_min: int = 300,
+        review_feedback: str = "",
+        textbook_mode: str = "standard",
     ) -> str:
         """
         Full editorial pass: sanitize, refine tone, fix structure, audit visuals.
@@ -785,30 +1060,55 @@ Return raw Markdown only. No preamble, no explanation, no fences.
             if c >= ' ' or c in '\n\t\r'
         )
 
-        # --- Pass A: Mechanical format fixes ---
-        logger.info(f"  Pass A (format): {section_num} {section_title}")
-        format_fixed = self._format_pass(
-            draft=safe_draft,
-            section_num=section_num,
-            section_title=section_title,
-            chapter_cmd=chapter_cmd,
-            language=language,
+        balanced = use_balanced_cost(advanced_config)
+        needs_format_pass = (
+            not balanced
+            or _has_format_issues(safe_draft, section_num, section_title, language)
         )
+
+        # --- Pass A: Mechanical format fixes ---
+        if needs_format_pass:
+            logger.info(f"  Pass A (format): {section_num} {section_title}")
+            format_fixed = self._format_pass(
+                draft=safe_draft,
+                section_num=section_num,
+                section_title=section_title,
+                chapter_cmd=chapter_cmd,
+                language=language,
+            )
+        else:
+            logger.info("  Pass A skipped: deterministic format checks passed")
+            format_fixed = safe_draft
         pass_a_len = len(format_fixed)
         logger.info(f"  Pass A complete: {len(safe_draft)} → {pass_a_len} chars")
 
-        # --- Pass B: Content quality ---
-        logger.info(f"  Pass B (content): {section_num} {section_title}")
-        polished = self._content_pass(
-            draft=format_fixed,
-            course_topic=course_topic,
-            chapter_num=chapter_num,
-            chapter_title=chapter_title,
-            section_num=section_num,
-            section_title=section_title,
-            section_description=section_description,
-            language=language,
+        needs_content_pass = (
+            not balanced
+            or (
+                review_feedback
+                and _balanced_rejection_kind(review_feedback) != "formatting_error"
+            )
+            or _has_content_issues(format_fixed, char_min, review_feedback)
         )
+
+        # --- Pass B: Content quality ---
+        if needs_content_pass:
+            logger.info(f"  Pass B (content): {section_num} {section_title}")
+            polished = self._content_pass(
+                draft=format_fixed,
+                course_topic=course_topic,
+                chapter_num=chapter_num,
+                chapter_title=chapter_title,
+                section_num=section_num,
+                section_title=section_title,
+                section_description=section_description,
+                language=language,
+                enable_images=enable_images,
+                textbook_mode=textbook_mode,
+            )
+        else:
+            logger.info("  Pass B skipped: deterministic content checks passed")
+            polished = format_fixed
         pass_b_len = len(polished)
         logger.info(
             f"  Pass B complete: {pass_a_len} → {pass_b_len} chars "
@@ -818,6 +1118,8 @@ Return raw Markdown only. No preamble, no explanation, no fences.
 
         # Apply deterministic heading level fix (existing logic — keep unchanged).
         polished = self._fix_heading_levels(polished, section_num, section_title)
+        if not enable_images:
+            polished = strip_image_markers_when_disabled(polished)
         if self._needs_em_dash_cleanup(polished, language):
             logger.info("  Em dash cleanup required: %s %s", section_num, section_title)
             cleaned = self._em_dash_cleanup_pass(
@@ -827,6 +1129,8 @@ Return raw Markdown only. No preamble, no explanation, no fences.
                 language=language,
             )
             polished = self._fix_heading_levels(cleaned, section_num, section_title)
+            if not enable_images:
+                polished = strip_image_markers_when_disabled(polished)
 
         logger.info("✓ Review complete")
         return polished
@@ -945,7 +1249,11 @@ def review_section(state: AgentState) -> dict:
     sub_idx         = state["current_subsection_index"]
     revision_number = state.get("revision_number", 0)
     language = state.get("language", "vi")
+    textbook_mode = state.get("textbook_mode", "standard")
     profile = get_language_profile(language)
+    advanced_config = state.get("advanced_config", {}) or {}
+    balanced = use_balanced_cost(advanced_config)
+    enable_images = bool(state.get("enable_images", True))
 
     try:
         # Unified curriculum access — handles Pydantic and dict formats.
@@ -1008,11 +1316,38 @@ def review_section(state: AgentState) -> dict:
                     "The draft does not contain a chapter header — do not add one."
                 )
 
-        
+        from app.schemas.curriculum import get_char_target
+        char_min, char_max = get_char_target(
+            sec_type,
+            state.get("content_level", "Trung Bình"),
+            advanced_config,
+            language=language,
+        )
+        min_chars_floor = state.get("min_chars_per_section", 0)
+        char_min = max(char_min, min_chars_floor)
+        char_max = max(char_max, char_min + 250)
+
+        source_audit = state.get("rag_source_audit", {}) or {}
+        if source_audit.get("context_quality") == "insufficient":
+            feedback = (
+                "RAG source audit is insufficient for this section; "
+                "retrieve more relevant external sources before approving."
+            )
+            logger.warning(feedback)
+            return {
+                "current_content":  draft,
+                "review_feedback":  feedback,
+                "revision_number":  revision_number + 1,
+                "rejection_type":   "missing_context",
+                "messages": [
+                    f"↺ Revision {revision_number + 1}/{MAX_REVISIONS} "
+                    "[missing_context]: source audit insufficient"
+                ],
+            }
 
         # ------------------------------------------------------------------
         # Step 1 — Polish content.
-        # Always runs; returns original draft on LLM error.
+        # In balanced_cost this can skip expensive passes when detectors pass.
         # ------------------------------------------------------------------
         agent    = ReviewerAgent()
         polished = agent.review_content(
@@ -1025,6 +1360,11 @@ def review_section(state: AgentState) -> dict:
             draft_content=draft,
             chapter_cmd=chap_cmd_text,
             language=language,
+            enable_images=enable_images,
+            advanced_config=advanced_config,
+            char_min=char_min,
+            review_feedback=state.get("review_feedback", ""),
+            textbook_mode=textbook_mode,
         )
 
         # ------------------------------------------------------------------
@@ -1066,6 +1406,8 @@ def review_section(state: AgentState) -> dict:
                 logger.warning(
                     f"⚠️  Chapter heading absent — injected: '{expected_heading}'"
                 )
+        if not enable_images:
+            polished = strip_image_markers_when_disabled(polished)
 
         # ------------------------------------------------------------------
         # Step 2 — Quality gate.
@@ -1074,47 +1416,127 @@ def review_section(state: AgentState) -> dict:
         # the Writer targeted, rather than a fixed word-count threshold.
         # Skip the gate entirely once MAX_REVISIONS is reached.
         # ------------------------------------------------------------------
-        from app.schemas.curriculum import get_char_target
-        char_min, char_max = get_char_target(
-            sec_type,
-            state.get("content_level", "Trung Bình"),
-            state.get("advanced_config", {}),
+        effective_max_revisions = 1 if balanced else MAX_REVISIONS
+        if (
+            balanced
+            and not _is_practice_mode(textbook_mode)
+            and deterministic_quality_gate_passes(
+            polished,
+            char_min=char_min,
+            char_max=char_max,
+            section_num=display_sec_num,
+            section_title=sec_title,
+            section_type=sec_type,
             language=language,
-        )
-        min_chars_floor = state.get("min_chars_per_section", 0)
-        char_min = max(char_min, min_chars_floor)
-        char_max = max(char_max, char_min + 250)
-        source_audit = state.get("rag_source_audit", {}) or {}
-        if source_audit.get("context_quality") == "insufficient":
-            feedback = (
-                "RAG source audit is insufficient for this section; "
-                "retrieve more relevant external sources before approving."
             )
-            logger.warning(feedback)
+        ):
+            logger.info("Balanced deterministic gate: APPROVE — skipped LLM quality gate")
             return {
                 "current_content":  polished,
-                "review_feedback":  feedback,
-                "revision_number":  revision_number + 1,
-                "rejection_type":   "missing_context",
+                "review_feedback":  "",
+                "revision_number":  0,
+                "rejection_type":   None,
                 "messages": [
-                    f"↺ Revision {revision_number + 1}/{MAX_REVISIONS} "
-                    "[missing_context]: source audit insufficient"
+                    f"✓ Approved: {display_sec_num} {sec_title} "
+                    "(deterministic balanced gate)"
                 ],
             }
 
-        if revision_number < MAX_REVISIONS:
+        if revision_number < effective_max_revisions:
             needs_revision, feedback = agent.should_revise(
                 polished,
                 char_min=char_min,
                 char_max=char_max,
                 language=language,
+                advanced_config=advanced_config,
+                textbook_mode=textbook_mode,
             )
 
             if needs_revision:
                 logger.info(
                     f"Revision requested "
-                    f"(attempt {revision_number + 1}/{MAX_REVISIONS}): {feedback[:80]}"
+                    f"(attempt {revision_number + 1}/{effective_max_revisions}): {feedback[:80]}"
                 )
+                if balanced:
+                    rejection_kind = _balanced_rejection_kind(feedback)
+                    if rejection_kind == "missing_context":
+                        return {
+                            "current_content":  polished,
+                            "review_feedback":  feedback,
+                            "revision_number":  revision_number + 1,
+                            "rejection_type":   "missing_context",
+                            "messages": [
+                                f"↺ Revision {revision_number + 1}/{effective_max_revisions} "
+                                f"[missing_context]: {feedback[:80]}"
+                            ],
+                        }
+
+                    if rejection_kind == "formatting_error":
+                        repaired = agent._format_pass(
+                            draft=polished,
+                            section_num=display_sec_num,
+                            section_title=sec_title,
+                            chapter_cmd=chap_cmd_text,
+                            language=language,
+                        )
+                        repaired = agent._fix_heading_levels(
+                            repaired,
+                            display_sec_num,
+                            sec_title,
+                        )
+                        if not enable_images:
+                            repaired = strip_image_markers_when_disabled(repaired)
+                        logger.info("Balanced reviewer self-repair: formatting fixed without Writer rewrite")
+                        return {
+                            "current_content":  repaired,
+                            "review_feedback":  "",
+                            "revision_number":  0,
+                            "rejection_type":   None,
+                            "messages": [
+                                f"✓ Approved: {display_sec_num} {sec_title} "
+                                "(reviewer format self-repair)"
+                            ],
+                        }
+
+                    repaired = agent._content_pass(
+                        draft=polished,
+                        course_topic=state.get("request", "General Topic"),
+                        chapter_num=display_chap_num,
+                        chapter_title=chap_title,
+                        section_num=display_sec_num,
+                        section_title=sec_title,
+                        section_description=f"{sec_desc}\nReviewer feedback: {feedback}",
+                        language=language,
+                        enable_images=enable_images,
+                        textbook_mode=textbook_mode,
+                    )
+                    repaired = agent._fix_heading_levels(repaired, display_sec_num, sec_title)
+                    if not enable_images:
+                        repaired = strip_image_markers_when_disabled(repaired)
+                    if len(repaired) >= char_min:
+                        logger.info("Balanced reviewer self-repair: depth/length fixed without Writer rewrite")
+                        return {
+                            "current_content":  repaired,
+                            "review_feedback":  "",
+                            "revision_number":  0,
+                            "rejection_type":   None,
+                            "messages": [
+                                f"✓ Approved: {display_sec_num} {sec_title} "
+                                "(reviewer depth self-repair)"
+                            ],
+                        }
+                    logger.info("Balanced reviewer self-repair still below hard minimum; Writer rewrite required")
+                    return {
+                        "current_content":  repaired,
+                        "review_feedback":  feedback,
+                        "revision_number":  revision_number + 1,
+                        "rejection_type":   "formatting_error",
+                        "messages": [
+                            f"↺ Revision {revision_number + 1}/{effective_max_revisions} "
+                            f"[length_depth]: {feedback[:80]}"
+                        ],
+                    }
+
                 rejection = agent.classify_rejection_type(feedback)
                 return {
                     "current_content":  polished,
@@ -1122,13 +1544,13 @@ def review_section(state: AgentState) -> dict:
                     "revision_number":  revision_number + 1,
                     "rejection_type":   rejection,
                     "messages": [
-                        f"↺ Revision {revision_number + 1}/{MAX_REVISIONS} "
+                        f"↺ Revision {revision_number + 1}/{effective_max_revisions} "
                         f"[{rejection}]: {feedback[:80]}"
                     ],
                 }
         else:
             logger.warning(
-                f"Max revisions ({MAX_REVISIONS}) reached for "
+                f"Max revisions ({effective_max_revisions}) reached for "
                 f"{display_sec_num} — forcing approval"
             )
 

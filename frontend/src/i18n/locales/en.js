@@ -356,6 +356,16 @@ export const en = {
       locked: 'cannot be changed while running',
       generating: 'Generating textbook',
       aiTitle: 'Title',
+      textbookMode: 'Textbook type',
+      textbookModeStandard: 'Standard',
+      textbookModePractice: 'Practice course',
+      textbookModeStandardHint: 'Creates a full textbook with explanations, examples, and appropriate academic content.',
+      textbookModePracticeHint: 'Focuses on topic-based hands-on guidance, similar exercises, and advanced exercises.',
+      planningMode: 'Planning mode',
+      planningModeAuto: 'AI builds structure',
+      planningModeStructured: 'Enter structure first',
+      planningModeAutoHint: 'AI will draft the outline first, then you review and confirm it.',
+      planningModeStructuredHint: 'You enter the structure first; the planner enriches it and content generation starts automatically.',
       chapters: 'Number of chapters',
       chaptersHint: 'Recommended: 2-12 chapters. Values outside this range require confirmation.',
       contentLength: 'Content length',
@@ -419,6 +429,9 @@ export const en = {
       professional: 'Professional',
       simplified: 'Simplified',
     },
+    textbookMode: {
+      practice: 'Practice',
+    },
     workflow: {
       planner: 'Build textbook outline',
       ingestion: 'Collect data',
@@ -479,6 +492,23 @@ export const en = {
       creditConfirmAdminDescription: 'Admin accounts can start textbook generation without spending credits.',
       creditConfirmCancel: 'Review outline',
       creditConfirmProceed: 'Start generation',
+    },
+    structure: {
+      title: 'Textbook structure',
+      description: 'Enter chapters and sections first. Internally, chapters are ## and sections are ###.',
+      chapter: 'Chapter {{number}}',
+      defaultChapter: 'New chapter {{number}}',
+      defaultSubsection: 'New section {{chapter}}.{{number}}',
+      addChapter: 'Add chapter',
+      addSubsection: 'Add section',
+      deleteChapter: 'Delete chapter',
+      deleteSubsection: 'Delete section',
+      errors: {
+        empty: 'The structure must include at least 1 chapter.',
+        blankChapter: 'Chapter {{number}} title cannot be empty.',
+        emptyChapter: 'Chapter {{number}} must include at least 1 section.',
+        blankSubsection: 'Section {{chapter}}.{{number}} title cannot be empty.',
+      },
     },
     contentPreview: {
       title: 'Textbook Content',
@@ -768,10 +798,6 @@ export const en = {
         label: 'Tool Retrieval K',
         description: 'Number of chunks retrieved per tool-call round while enriching writer content.',
       },
-      RAG_TOOL_MAX_ROUNDS: {
-        label: 'Max Enrichment Rounds',
-        description: 'Maximum tool-call rounds the writer can use to add context; higher values slow generation.',
-      },
       CRAG_CONTEXT_QUALITY_MIN_CHARS: {
         label: 'Context Quality Threshold (chars)',
         description: 'Minimum total RAG characters required before writing starts; below this threshold the system retries.',
@@ -796,6 +822,10 @@ export const en = {
         label: 'Semantic Deduplication Threshold',
         description: 'Cosine similarity threshold for deduplication; lower values remove more chunks.',
       },
+      RAG_CHUNK_LLM_FILTER_MODE: {
+        label: 'LLM Chunk Filter Mode',
+        description: 'Auto checks only borderline chunks in balanced_cost; always keeps the old behavior; off disables the binary classifier.',
+      },
       LLM_MODEL_CHEAP: {
         label: 'Supporting Model',
         description: 'LLM used for reviewer, illustrator, and supporting agents; higher models can be selected when extra cost and latency are acceptable.',
@@ -804,13 +834,17 @@ export const en = {
         label: 'Primary Model',
         description: 'LLM used by the planner and content writer; gpt-4.1 is the stable default, and Admins can raise it to a stronger model when needed.',
       },
+      API_COST_PROFILE: {
+        label: 'API Cost Profile',
+        description: 'Choose a rollback-friendly cost mode: current quality, balanced cost, or aggressive mode after benchmarking.',
+      },
       REVIEWER_MAX_REVISIONS: {
         label: 'Max Revision Rounds',
         description: 'Maximum reviewer-to-writer rounds per section before forced acceptance; 0 disables review.',
       },
       WRITER_RETRIEVAL_MAX_ROUNDS: {
         label: 'Writer Retrieval Rounds',
-        description: 'Maximum tool-call rounds ContextRetrievalAgent can use to add context while writing.',
+        description: 'Maximum tool-call rounds ContextEvaluator can use to add context before writing.',
       },
       WRITER_MAX_PRIOR_SUMMARIES: {
         label: 'Prior Summaries in Prompt',

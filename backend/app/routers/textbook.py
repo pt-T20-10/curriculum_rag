@@ -27,6 +27,10 @@ from app.services.textbook.language import (
     normalize_language,
     progress_text,
 )
+from app.services.textbook.structure_parser import (
+    StructureParseError,
+    parse_structure_markdown,
+)
 from app.services.textbook.validator import validate_topic
 
 router = APIRouter(prefix="/textbooks", tags=["textbooks"])
@@ -261,6 +265,23 @@ async def create_textbook(
     core_topic = validation.get("core_topic", textbook_data.topic)
     user_requirements = validation.get("user_requirements", "")
     textbook_language = normalize_language(validation.get("target_language"), ui_language)
+    planning_mode = textbook_data.planning_mode
+    initial_curriculum: dict[str, Any] | None = None
+    initial_total_subsections = 0
+
+    if planning_mode == "structured":
+        try:
+            initial_curriculum = parse_structure_markdown(
+                textbook_data.initial_structure_markdown or "",
+                topic=core_topic,
+            )
+        except StructureParseError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        initial_total_subsections = sum(
+            len(chapter.get("subsections") or [])
+            for chapter in initial_curriculum.get("chapters", [])
+        )
     
     # ================ CHECK CREDITS ================
     result = await db.execute(select(User).where(User.id == current_user_id))
@@ -285,14 +306,39 @@ async def create_textbook(
         core_topic=core_topic,  
         user_requirements=user_requirements,  
         title=core_topic,  # To be filled by planner
-        num_chapters=textbook_data.num_chapters,
+        num_chapters=(
+            len(initial_curriculum["chapters"])
+            if initial_curriculum
+            else textbook_data.num_chapters
+        ),
         content_level=textbook_data.content_level,
-        max_subsections_per_chapter=textbook_data.max_subsections_per_chapter,
+        max_subsections_per_chapter=(
+            max(
+                len(chapter.get("subsections") or [])
+                for chapter in initial_curriculum["chapters"]
+            )
+            if initial_curriculum
+            else textbook_data.max_subsections_per_chapter
+        ),
         enable_images=textbook_data.enable_images,
         language=textbook_language,
+        curriculum_json=initial_curriculum,
+        total_chapters=len(initial_curriculum["chapters"]) if initial_curriculum else 0,
+        total_subsections=initial_total_subsections,
         content_type=detected_type,
+        textbook_mode=textbook_data.textbook_mode,
         status=TextbookStatus.PENDING,
         credits_used=0,
+        progress_data={
+            "planning_mode": planning_mode,
+            "textbook_mode": textbook_data.textbook_mode,
+            "curriculum_data": initial_curriculum,
+            "total_chapters": len(initial_curriculum["chapters"]) if initial_curriculum else 0,
+            "total_subsections": initial_total_subsections,
+        } if initial_curriculum else {
+            "planning_mode": planning_mode,
+            "textbook_mode": textbook_data.textbook_mode,
+        },
     )
 
     db.add(textbook)
@@ -349,6 +395,7 @@ async def list_textbooks(
             Textbook.enable_images,
             Textbook.language,
             Textbook.content_type,
+            Textbook.textbook_mode,
             Textbook.status,
             Textbook.pdf_path,
             Textbook.docx_path,
@@ -459,6 +506,8 @@ async def get_textbook_progress(
 
     if textbook.curriculum_json and not progress_data.get("curriculum_data"):  # type: ignore
         progress_data["curriculum_data"] = textbook.curriculum_json  # type: ignore
+    if progress_data.get("planning_mode") is None:
+        progress_data["planning_mode"] = "auto"
     
    
         progress_data.setdefault("current_chapter", textbook.current_chapter)  # type: ignore
@@ -486,6 +535,8 @@ async def get_textbook_progress(
         progress_data.setdefault("enable_images", textbook.enable_images)  # type: ignore
     if textbook.language:  # type: ignore
         progress_data.setdefault("language", textbook.language)  # type: ignore
+    if textbook.textbook_mode:  # type: ignore
+        progress_data.setdefault("textbook_mode", textbook.textbook_mode)  # type: ignore
 
     return TextbookProgressResponse(
         id=textbook.id,  # type: ignore
@@ -624,6 +675,7 @@ async def confirm_curriculum(
         "total_chapters": chapter_count,
         "total_subsections": total_subsections,
         "language": textbook.language, # type: ignore
+        "textbook_mode": textbook.textbook_mode or "standard", # type: ignore
         "credits_required": credits_required,
         "credits_charged": credits_charged,
         "is_admin_free": is_admin_free,

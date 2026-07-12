@@ -8,7 +8,7 @@ tool calls (ReAct loop).
 This is the agentic core of the CRAG system:
     - Uses LLM reasoning (not just rules) to decide if context is adequate
     - Executes tool calls to retrieve_context_tool when more context is needed
-    - Loops up to RAG_TOOL_MAX_ROUNDS times before declaring sufficient/insufficient
+    - Loops up to WRITER_RETRIEVAL_MAX_ROUNDS times before declaring sufficient/insufficient
 
 Positioned as the third node in the CRAG loop:
     QueryFormulator → RetrieverNode → [EvaluatorAgent] → WriterAgent
@@ -16,8 +16,14 @@ Positioned as the third node in the CRAG loop:
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
+from typing import Any
 
 from app.config import settings
+from app.services.cost_profile import (
+    auxiliary_chat_model,
+    get_rag_chunk_llm_filter_mode,
+    should_skip_context_evaluator_when_sufficient,
+)
 from app.services.api_rate_limiter import rate_limited_invoke
 from app.services.runtime_config import get_api_key, get_runtime_config
 from app.utils import stop_signal
@@ -69,6 +75,43 @@ def _context_evidence_score(
     )
 
 
+def deterministic_context_is_sufficient(
+    rag_context: str,
+    source_audit: dict[str, Any] | None = None,
+) -> bool:
+    """
+    Fast no-LLM sufficiency check for balanced-cost mode.
+
+    This only approves clearly strong context. Borderline or missing audit data
+    falls through to the LLM evaluator so quality_current behavior remains safe.
+    """
+    audit = source_audit or {}
+    chars = len(rag_context or "")
+    valid_chunks = int(
+        audit.get("valid_chunks")
+        or audit.get("total_chunks")
+        or 0
+    )
+    unique_sources = int(audit.get("unique_sources") or 0)
+    source_scores = [
+        source.get("avg_score")
+        for source in audit.get("sources", [])
+        if isinstance(source, dict) and isinstance(source.get("avg_score"), (int, float))
+    ]
+    avg_source_score = (
+        sum(source_scores) / len(source_scores)
+        if source_scores else 0.0
+    )
+
+    if chars < settings.CRAG_CONTEXT_QUALITY_MIN_CHARS:
+        return False
+    if valid_chunks < 2 or unique_sources < 2:
+        return False
+    if source_scores and avg_source_score < 0.30:
+        return False
+    return True
+
+
 # ============================================================================
 # EvaluatorAgent
 # ============================================================================
@@ -89,12 +132,20 @@ class EvaluatorAgent:
         (enriched_context_string, list_of_queries_used)
     """
 
-    def __init__(self) -> None:
+    def __init__(self, advanced_config: dict[str, Any] | None = None) -> None:
+        model = auxiliary_chat_model(
+            cheap_model=LLM_MODEL_CHEAP,
+            premium_model=LLM_MODEL_PREMIUM,
+            advanced_config=advanced_config,
+        )
         self._llm = ChatOpenAI(
-            model=LLM_MODEL_PREMIUM, #type: ignore
+            model=model, #type: ignore
             api_key=get_api_key("OPENAI_API_KEY"), #type: ignore
             temperature=0,
         )
+        self._model = model
+        self._advanced_config = advanced_config or {}
+        self._chunk_llm_filter_mode = get_rag_chunk_llm_filter_mode(self._advanced_config)
         self._llm_with_tools = self._llm.bind_tools([retrieve_context_tool])
 
     def enrich_context(
@@ -164,7 +215,16 @@ class EvaluatorAgent:
             if stop_signal.is_stopped():
                 break
 
-            response = rate_limited_invoke(self._llm_with_tools, messages, bucket="chat")
+            response = rate_limited_invoke(
+                self._llm_with_tools,
+                messages,
+                bucket="chat",
+                metadata={
+                    "agent": "Evaluator",
+                    "node": "context_evaluator",
+                    "model": self._model,
+                },
+            )
             tool_calls = getattr(response, "tool_calls", [])
 
             if not tool_calls:
@@ -176,6 +236,7 @@ class EvaluatorAgent:
             for tc in tool_calls:
                 tool_args = dict(tc["args"])
                 tool_args["collection_name"] = collection_name
+                tool_args["chunk_llm_filter_mode"] = self._chunk_llm_filter_mode
                 query = tool_args.get("query", "")
                 logger.info(f"[Retrieval] Tool call: '{query[:60]}'")
                 _queries_this_call.append(query)
@@ -256,6 +317,47 @@ def evaluate_context(state: AgentState) -> dict:
     retrieval_attempts = int(state.get("rag_retrieval_attempts", 0) or 0)
     max_retries = max(1, getattr(settings, "CRAG_MAX_CONTEXT_RETRIES", 2))
     allow_best_effort = _runtime_bool("CRAG_BEST_EFFORT_AFTER_RETRIES", False)
+    advanced_config = state.get("advanced_config", {}) or {}
+
+    if (
+        should_skip_context_evaluator_when_sufficient(advanced_config)
+        and not review_feedback
+        and deterministic_context_is_sufficient(initial_context, prior_source_audit)
+    ):
+        source_audit = dict(prior_source_audit) if prior_source_audit else build_source_audit_summary(
+            initial_context,
+            used_queries=used_queries,
+            context_quality="sufficient",
+            chapter_index=chap_idx,
+            subsection_index=sub_idx,
+            discarded_chunks=prior_discarded_chunks,
+        )
+        source_audit["context_quality"] = "sufficient"
+        source_audit["used_queries"] = list(used_queries)[-5:]
+        source_audit["current_section"] = {
+            "chapter": chap_idx + 1,
+            "subsection": sub_idx + 1,
+        }
+        logger.info(
+            "ContextEvaluator skipped LLM: deterministic audit is sufficient "
+            "(len=%s, chunks=%s, sources=%s)",
+            len(initial_context),
+            source_audit.get("valid_chunks"),
+            source_audit.get("unique_sources"),
+        )
+        return {
+            "rag_context":             initial_context,
+            "context_quality":         "sufficient",
+            "web_supplement_context":  "",
+            "used_rag_queries":        used_queries,
+            "rag_source_audit":        source_audit,
+            "rag_best_effort_context": initial_context,
+            "rag_best_effort_audit":   source_audit,
+            "rag_best_effort_score":   1.0,
+            "messages": [
+                "✓ ContextEvaluator: skipped LLM; existing RAG audit is sufficient"
+            ],
+        }
 
     try:
         chapter, subsection = get_chapter_and_subsection(curriculum, chap_idx, sub_idx)
@@ -268,7 +370,7 @@ def evaluate_context(state: AgentState) -> dict:
             else subsection.get("section_type", "medium")
         )
 
-        agent = EvaluatorAgent()
+        agent = EvaluatorAgent(advanced_config=advanced_config)
         enriched_context, new_queries = agent.enrich_context(
             section_description = sec_desc,
             section_type        = sec_type,

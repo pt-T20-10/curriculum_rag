@@ -243,7 +243,16 @@ The response should be pure JSON starting with opening brace, containing "vi" an
 
         try:
             chain    = prompt | self.llm
-            response = rate_limited_invoke(chain, {}, bucket="chat")
+            response = rate_limited_invoke(
+                chain,
+                {},
+                bucket="chat",
+                metadata={
+                    "agent": "QueryExpansion",
+                    "node": "ingestion",
+                    "model": LLM_MODEL_CHEAP,
+                },
+            )
             content  = str(response.content).strip()  # type: ignore
 
             # Strip markdown fences if present, then fall back to bare-object

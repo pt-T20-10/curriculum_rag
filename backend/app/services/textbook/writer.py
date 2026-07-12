@@ -49,6 +49,10 @@ from app.schemas.curriculum import (
 logger = setup_logger(name="WriterAgent", logfile="logs/agents.log")
 
 
+def _is_practice_mode(textbook_mode: str | None) -> bool:
+    return str(textbook_mode or "standard").strip().lower() == "practice"
+
+
 # ============================================================================
 # CONSTANTS
 # ============================================================================
@@ -238,7 +242,7 @@ class ContentWriter:
     - Enforce structural rules (headers, blank lines, section depth).
     - Inject [IMAGE_NEEDED: hint] placeholders where images are appropriate.
     - Use prior section summaries for continuity (no repetition).
-    - No tool calls — receives fully prepared context from ContextRetrievalAgent.
+    - No tool calls — receives fully prepared context from ContextEvaluator.
 
     Premium model is used here exclusively because output quality directly
     determines the textbook content quality.
@@ -282,7 +286,7 @@ class ContentWriter:
 
     def __init__(self) -> None:
         self._llm = ChatOpenAI(
-            model=LLM_MODEL_PREMIUM,
+            model=LLM_MODEL_PREMIUM, #type: ignore
             api_key=get_api_key("OPENAI_API_KEY"), #type: ignore
             temperature=0.4,
         )
@@ -319,6 +323,7 @@ class ContentWriter:
         review_feedback: str,
         section_summaries: list[str],
         language: str = "vi",
+        textbook_mode: str = "standard",
     ) -> str:
         """
         Generate academic content for a single textbook section.
@@ -385,6 +390,30 @@ class ContentWriter:
             "for orientation, transition, or emphasis. If adjacent short "
             "paragraphs continue the same idea, merge them into one stronger paragraph."
         )
+        practice_mode = _is_practice_mode(textbook_mode)
+        practice_criterion = ""
+        practice_constraint = ""
+        if practice_mode:
+            practice_criterion = f"""
+Practice-course content standards:
+- Treat this as a university practice textbook section, not a theory chapter.
+- Prioritize what the learner must do, produce, check, modify, and submit.
+- Each section must include guided hands-on steps, a similar exercise, and
+  a slightly advanced exercise/challenge.
+- Use examples or worked steps only when they directly support doing the task.
+- Avoid long conceptual exposition; give only the minimum operational context
+  needed to complete the task.
+"""
+            practice_constraint = """
+Rule 8 — PRACTICE COURSE MODE:
+- Do NOT create headings named 'Lý thuyết', 'Khái niệm', 'Tổng quan',
+  'Tổng kết', 'Kết luận', 'Theory', 'Concepts', 'Overview', 'Summary',
+  or 'Conclusion'.
+- Do NOT write a theory-first explanation, concept catalogue, or summary block.
+- Include concrete action steps the learner can follow.
+- Include at least one similar exercise and one slightly advanced exercise.
+- Keep all existing heading, numbering, blank-line, code, math, and image rules.
+"""
 
         revision_block = ""
         if review_feedback:
@@ -456,9 +485,16 @@ Content standards:
   Incorrect: $student_scores["Alice"]$, $keys()$, $if$, $str()$.
 - Use $...$ only for real mathematical notation. Do not use $...$ for Python
   keywords, variable names, string literals, dictionary/list indexing, or methods.
+- Formula explanations must be formatted as one variable per bullet:
+  Trong đó:
+  - $C_{{total}}$: ...
+  - $C_{{dev}}$: ...
+  Never write "Trong đó: - ..." on one line, and never use backticks for
+  mathematical symbols.
 - {style_rule}
 
 {hk_hint}
+{practice_criterion}
 [/CRITERION]
 
 [CONSTRAINT]
@@ -528,6 +564,7 @@ BAD (medium section with 4 ### blocks):
 
 The BAD example splits content unnecessarily. Merge 1.1.1 + 1.1.2 into one
 rich ### block, merge 1.1.3 + 1.1.4 into another.
+{practice_constraint}
 [/CONSTRAINT]
 
 [FORMAT]
@@ -557,7 +594,16 @@ rich ### block, merge 1.1.3 + 1.1.4 into another.
             HumanMessage(content=user_prompt),
         ]
 
-        response = rate_limited_invoke(self._llm, messages, bucket="chat")
+        response = rate_limited_invoke(
+            self._llm,
+            messages,
+            bucket="chat",
+            metadata={
+                "agent": "ContentWriter",
+                "node": "content_writer",
+                "model": LLM_MODEL_PREMIUM,
+            },
+        )
         return str(response.content)
 
 
@@ -649,10 +695,19 @@ Return ONLY the formatted [IMAGE: ...] tags, one per line. No commentary."""
         )
 
         try:
-            response = rate_limited_invoke(self._llm, [
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=user_prompt),
-            ], bucket="chat")
+            response = rate_limited_invoke(
+                self._llm,
+                [
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=user_prompt),
+                ],
+                bucket="chat",
+                metadata={
+                    "agent": "ImageDescriptionGenerator",
+                    "node": "content_writer",
+                    "model": LLM_MODEL_CHEAP,
+                },
+            )
 
             generated_tags = [
                 line.strip()
@@ -690,7 +745,7 @@ class WriterAgent:
     Orchestrator that sequences the three writing components.
 
     Pipeline per section:
-        1. ContextRetrievalAgent  — enrich RAG context (gpt-4o-mini + tools)
+        1. ContextEvaluator       — enrich RAG context with optional tools
         2. ContentWriter          — generate prose    (LLM_MODEL_PREMIUM)
         3. ImageDescriptionGenerator — fill image tags (gpt-4o-mini, if images enabled)
 
@@ -720,12 +775,13 @@ class WriterAgent:
         section_summaries: list[str] = (), #type: ignore
         used_queries: list[str]  = [], #type: ignore
         language: str = "vi",
+        textbook_mode: str = "standard",
         
     ) -> str:
         """
         Generate or revise content for a single textbook section.
 
-        Sequences ContextRetrievalAgent → ContentWriter →
+        Sequences ContextEvaluator-prepared context → ContentWriter →
         ImageDescriptionGenerator, then applies post-processing.
 
         Args:
@@ -735,7 +791,7 @@ class WriterAgent:
             section_num:         Dot-notation section number (e.g. "1.2").
             section_title:       Title of the current section.
             section_description: What this section should cover.
-            context:             Initial RAG context from Researcher node.
+            context:             Prepared RAG context from Retriever/ContextEvaluator.
             chapter_instruction: # CHƯƠNG header emit/suppress directive.
             section_type:        Depth level.
             char_target:         (min_chars, max_chars) tuple.
@@ -775,6 +831,7 @@ class WriterAgent:
             review_feedback=review_feedback,
             section_summaries=list(section_summaries),
             language=language,
+            textbook_mode=textbook_mode,
         )
 
         if not isinstance(content, str):
@@ -933,6 +990,7 @@ def write_section_crag(state: AgentState) -> dict:
     review_feedback   = state.get("review_feedback", "")
     section_summaries = state.get("section_summaries", [])
     language          = state.get("language", "vi")
+    textbook_mode     = state.get("textbook_mode", "standard")
     profile           = get_language_profile(language)
 
     # ------------------------------------------------------------------
@@ -1039,6 +1097,7 @@ def write_section_crag(state: AgentState) -> dict:
             section_summaries=section_summaries,
             used_queries=used_queries,
             language=language,
+            textbook_mode=textbook_mode,
         )
 
         # Layer 2 — Suppress spurious level-1 headings

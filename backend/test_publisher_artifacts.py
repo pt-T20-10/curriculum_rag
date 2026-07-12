@@ -105,6 +105,56 @@ def test_publisher_filename_sanitizes_control_whitespace(
     assert result["final_docx_filepath"]
 
 
+def test_add_figure_numbers_uses_chapter_scoped_sequence() -> None:
+    content = (
+        "![Ảnh bìa](cover.png){width=70%}\n\n"
+        "# CHƯƠNG 1: MỞ ĐẦU\n\n"
+        "## 1.1 Khái niệm\n\n"
+        "![Sơ đồ thứ nhất](one.png){width=70%}\n\n"
+        "### 1.1.1 Chi tiết\n\n"
+        "![Hình 1.1.2.1: Sơ đồ thứ hai](two.png)\n\n"
+        "## 1.2 Ứng dụng\n\n"
+        "![Sơ đồ thứ ba](three.png)\n\n"
+        "# CHƯƠNG 2: NÂNG CAO\n\n"
+        "![Sơ đồ chương hai](four.png)\n"
+    )
+
+    numbered = publisher.add_figure_numbers(content, language="vi")
+
+    assert "![Ảnh bìa](cover.png){width=70%}" in numbered
+    assert "![Hình 1.1: Sơ đồ thứ nhất](one.png){width=70%}" in numbered
+    assert "![Hình 1.2: Sơ đồ thứ hai](two.png)" in numbered
+    assert "![Hình 1.3: Sơ đồ thứ ba](three.png)" in numbered
+    assert "![Hình 2.1: Sơ đồ chương hai](four.png)" in numbered
+    assert publisher.add_figure_numbers(numbered, language="vi") == numbered
+
+
+def test_add_figure_numbers_supports_english_and_word_figure_list() -> None:
+    content = (
+        "# Preface\n\n"
+        "Introductory text.\n\n"
+        "# CHAPTER 3: BASICS\n\n"
+        "## 3.1 Concepts\n\n"
+        "![First diagram](one.png)\n\n"
+        "### 3.1.1 Details\n\n"
+        "![Figure 3.1.1.4: Second diagram](two.png)\n"
+    )
+
+    numbered = publisher.add_figure_numbers(content, language="en")
+    word_md = publisher._prepare_word_md(
+        numbered,
+        title="Sample Book",
+        enable_images=True,
+        language="en",
+    )
+
+    assert "![Figure 3.1: First diagram](one.png)" in numbered
+    assert "![Figure 3.2: Second diagram](two.png)" in numbered
+    assert "# List of Figures" in word_md
+    assert "- Figure 3.1: First diagram" in word_md
+    assert "- Figure 3.2: Second diagram" in word_md
+
+
 def test_partial_markdown_checkpoint_preserves_reviewed_content(
     tmp_path: Path,
     monkeypatch,
@@ -190,7 +240,7 @@ def test_finalize_word_docx_localizes_toc_fonts_and_footer(tmp_path: Path) -> No
     pstyle.set(qn("w:val"), "TOCHeading")
     toc._p.get_or_add_pPr().append(pstyle)
     doc.add_heading("Lời nói đầu", level=1)
-    doc.add_paragraph("Nội dung lời nói đầu.")
+    doc.add_paragraph("Nội dung lời nói đầu cần được căn đều như bản PDF.")
     doc.add_heading("CHƯƠNG 1: MỞ ĐẦU", level=1)
     doc.add_heading("1.1 Khái niệm", level=2)
     doc.add_heading("1.1.1 Chi tiết", level=3)
@@ -217,6 +267,20 @@ def test_finalize_word_docx_localizes_toc_fonts_and_footer(tmp_path: Path) -> No
     assert "w:updateFields" in settings_xml
     assert "PAGE" in footer_xml
     assert 'w:jc w:val="center"' in footer_xml
+    body_paragraph = re.search(
+        r'<w:p\b(?:(?!</w:p>).)*?Nội dung lời nói đầu cần được căn đều như bản PDF'
+        r'(?:(?!</w:p>).)*?</w:p>',
+        document_xml,
+    )
+    assert body_paragraph
+    assert 'w:jc w:val="both"' in body_paragraph.group(0)
+
+    heading_paragraph = re.search(
+        r'<w:p\b(?:(?!</w:p>).)*?CHƯƠNG 1: MỞ ĐẦU(?:(?!</w:p>).)*?</w:p>',
+        document_xml,
+    )
+    assert heading_paragraph
+    assert 'w:jc w:val="both"' not in heading_paragraph.group(0)
 
     for style_id in ("Heading1", "Heading2", "Heading3"):
         match = re.search(

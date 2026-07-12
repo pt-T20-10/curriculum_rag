@@ -82,6 +82,8 @@ def _rate_limited_embed_query(embedding_model, query: str):
         return rate_limited_call(
             lambda: embedding_model.embed_query(query),
             bucket="embedding",
+            model=settings.OPENAI_EMBEDDING_MODEL,
+            metadata={"agent": "Crawler", "node": "ingestion"},
         )
     return embedding_model.embed_query(query)
 
@@ -380,6 +382,8 @@ def _embed_with_openai(
                 batch_embeddings = rate_limited_call(
                     lambda: embedding_model.embed_documents(batch),
                     bucket="embedding",
+                    model=settings.OPENAI_EMBEDDING_MODEL,
+                    metadata={"agent": "Crawler", "node": "ingestion"},
                 )
                 all_embeddings.extend(batch_embeddings)
                 break  # Success
@@ -1762,6 +1766,7 @@ def ingest_dynamic_data(
     run_id: str = "dynamic_context",
     progress_callback=None,
     runtime_config: dict[str, Any] | None = None,
+    query_expansion: dict[str, list[str]] | None = None,
 ) -> bool: #type: ignore
     """
     Ingest data from filtered URLs into ChromaDB.
@@ -1925,8 +1930,11 @@ def ingest_dynamic_data(
     # Vấn đề: embed_query(topic_VI) có cosine similarity thấp với EN chunks
     # → Stanford PDF, CMU lecture bị loại hoàn toàn dù chất lượng cao
     try:
-        _qe = QueryExpansionAgent()
-        en_queries = _qe.expand_query_bilingual(topic, content_type=content_type).get("en", [])
+        if query_expansion is not None:
+            en_queries = query_expansion.get("en", [])
+        else:
+            _qe = QueryExpansionAgent()
+            en_queries = _qe.expand_query_bilingual(topic, content_type=content_type).get("en", [])
         en_topic   = en_queries[0] if en_queries else topic
 
         topic_emb_vi  = np.array(_rate_limited_embed_query(embedding_model, topic))

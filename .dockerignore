@@ -4,6 +4,7 @@
 .idea
 .env
 .env.*
+!.env.example
 !.env.production.example
 venv
 frontend/node_modules
@@ -15,10 +16,10 @@ data
 outputs
 logs
 results
+results - Copy
 backup
 stuff
 __pycache__
 *.pyc
 *.pdf
 *.db
-

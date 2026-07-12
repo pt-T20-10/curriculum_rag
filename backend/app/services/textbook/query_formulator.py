@@ -10,7 +10,7 @@ Positioned as the first node in the CRAG loop:
 
 from app.schemas.curriculum import (
     AgentState, Chapter, SubSection,
-    get_chapter_and_subsection, clean_section_title,
+    get_chapter_and_subsection,
 )
 from app.utils.log_config import setup_logger
 
@@ -58,6 +58,7 @@ def formulate_query(state: AgentState) -> dict:
     user_requirements = state.get("user_requirements", "")
     review_feedback   = state.get("review_feedback", "")
     used_queries      = state.get("used_rag_queries", [])
+    textbook_mode     = state.get("textbook_mode", "standard")
 
     try:
         chapter, subsection = get_chapter_and_subsection(curriculum, chap_idx, sub_idx)
@@ -106,8 +107,7 @@ def formulate_query(state: AgentState) -> dict:
             enhanced_query = base_with_anchor
 
         # ----------------------------------------------------------------
-        # User requirements enrichment
-        # EXTRACTED FROM: researcher.py perform_research() lines 1042-1069
+        # User requirements enrichment for targeted retrieval.
         # ----------------------------------------------------------------
         if user_requirements:
             logger.info(f"User requirements: {user_requirements}")
@@ -137,6 +137,16 @@ def formulate_query(state: AgentState) -> dict:
                     max_terms=38,
                 )
                 logger.info(f"Enhanced query: {enhanced_query}")
+
+        if str(textbook_mode or "standard").lower() == "practice":
+            enhanced_query = _compact_query(
+                [
+                    enhanced_query,
+                    "lab hands-on tutorial exercise worked example practice bài tập thực hành",
+                ],
+                max_terms=42,
+            )
+            logger.info(f"Practice-mode query: {enhanced_query}")
 
         return {
             "retrieval_query": enhanced_query,

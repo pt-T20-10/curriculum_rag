@@ -30,6 +30,7 @@ ENV/
 .env
 .env.local
 .env.*
+!.env.example
 !.env.production.example
 
 # --- IDE Settings ---
@@ -75,6 +76,7 @@ venv/
 .idea/
 evaluations/
 results/
+results - Copy/
 backend/results/exp2/*
 backup/
 stuff/

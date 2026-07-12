@@ -325,10 +325,13 @@ class AgentState(TypedDict):
     min_chars_per_section: int
     max_subsections_per_chapter: int
     language: str
+    textbook_mode: str
     advanced_config: dict[str, Any]
 
     # ---- Planning ----
     curriculum: Any
+    initial_curriculum_structure: Optional[dict[str, Any]]
+    planning_mode: str
 
     # ---- Human-in-the-Loop Gate (Target 3) ----
     curriculum_confirmed: bool
@@ -421,7 +424,6 @@ class AgentState(TypedDict):
     """Pipe-separated list of more specific topic alternatives."""
 
     content_type: str  # "scholarly" | "technical" | "practical" | "lifestyle"
-
     # ---- True Dynamic Routing (Target 2) ----
     rejection_type: Optional[str]
     """
@@ -517,10 +519,13 @@ def build_initial_state(
     max_subsections_per_chapter: int = 5,
     content_level: str = "Trung Bình",
     content_type: str = "technical",
+    textbook_mode: str = "standard",
     core_topic: str = "",
     user_requirements: str = "",
     language: str = "vi",
     advanced_config: dict[str, Any] | None = None,
+    initial_curriculum_structure: dict[str, Any] | None = None,
+    planning_mode: str = "auto",
     section_summaries: list = None, #type: ignore
     export_formats: list | None = None,
 ) -> dict:
@@ -559,10 +564,13 @@ def build_initial_state(
         "min_chars_per_section":       min_chars_per_section,
         "max_subsections_per_chapter": max_subsections_per_chapter,
         "content_type":                content_type,
+        "textbook_mode":               textbook_mode,
         "language":                    language,
         "advanced_config":             advanced_config or {},
         # ---- Planning ----
         "curriculum":      None,
+        "initial_curriculum_structure": initial_curriculum_structure,
+        "planning_mode": planning_mode,
         "textbook_title":  "",
         "preface_content": "",
         # ---- HitL Gate ----

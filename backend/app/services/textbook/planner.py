@@ -15,7 +15,6 @@ Pipeline:
 import json
 from typing import Any, List, Dict, Optional
 
-from langchain_core.language_models import LLM
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from app.schemas.curriculum import AgentState, CurriculumOutline
@@ -29,6 +28,10 @@ LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
 LLM_MODEL_PREMIUM = settings.LLM_MODEL_PREMIUM
 
 logger = setup_logger(name="PlannerAgent", logfile="logs/agents.log")
+
+
+def _is_practice_mode(textbook_mode: str | None) -> bool:
+    return str(textbook_mode or "standard").strip().lower() == "practice"
 
 
 class HybridPlanner:
@@ -68,6 +71,7 @@ class HybridPlanner:
         user_requirements: str,  
         num_chapters: int,
         language: str = "vi",
+        textbook_mode: str = "standard",
     ) -> Optional[List[str]]:
         """
         Generate chapter titles directly from topic.
@@ -80,14 +84,60 @@ class HybridPlanner:
         zone_a = max(1, num_chapters // 3)
         zone_b = max(1, num_chapters // 3)
         profile = get_language_profile(language)
-        chapter_good_example = (
-            "Mạng nơ-ron tích chập CNN"
-            if language == "vi"
-            else "Convolutional Neural Networks"
-        )
-        chapter_bad_example = "Học sâu" if language == "vi" else "Deep Learning"
+        if _is_practice_mode(textbook_mode):
+            chapter_good_example = (
+                "Thực hành xây dựng bộ phân loại ảnh với CNN"
+                if language == "vi"
+                else "Lab: Building an Image Classifier with CNNs"
+            )
+            chapter_bad_example = "Tổng quan CNN" if language == "vi" else "CNN Overview"
+            system_prompt = f"""
+    [CONTEXT]
+    You are a curriculum designer building a {profile.prompt_name} university
+    practice-course textbook. The material is for hands-on lab work, not a
+    theory textbook.
+    [/CONTEXT]
 
-        system_prompt = f"""
+    [TASK]
+    Generate EXACTLY {num_chapters} practice-oriented chapter titles for the
+    subject provided.
+    [/TASK]
+
+    [CRITERION]
+    Each title must:
+    (a) Cover a DISTINCT hands-on topic, lab session, workflow, or deliverable.
+    (b) Be specific, action-oriented, and suitable for university practice hours.
+        Good: "{chapter_good_example}"
+        Bad:  "{chapter_bad_example}"
+    (c) Progress from guided practice to similar tasks, then slightly more
+        advanced practice. Do not use a theory-first learning arc.
+    [/CRITERION]
+
+    [CONSTRAINT]
+    Rule 1 — PRACTICE MODE: Every title must imply doing, building, configuring,
+    analysing a concrete artifact, solving a task, or completing a lab.
+    Rule 2 — NO THEORY CHAPTERS: Do not create titles focused on theory,
+    concepts, definitions, overview, summary, conclusion, or recap.
+    Rule 3 — NO OVERLAP: Do not repeat or rephrase the same practice task.
+    Rule 4 — EXACT COUNT: Output EXACTLY {num_chapters} titles.
+    Rule 5 — LANGUAGE: All titles must be in {profile.prompt_name}.
+    [/CONSTRAINT]
+
+    [FORMAT]
+    Output a JSON array of exactly {num_chapters} {profile.prompt_name} chapter title strings.
+    No explanation, no markdown — ONLY the JSON array.
+    Example: ["{chapter_good_example}", "{profile.title_example}"]
+    [/FORMAT]
+    """
+        else:
+            chapter_good_example = (
+                "Mạng nơ-ron tích chập CNN"
+                if language == "vi"
+                else "Convolutional Neural Networks"
+            )
+            chapter_bad_example = "Học sâu" if language == "vi" else "Deep Learning"
+
+            system_prompt = f"""
     [CONTEXT]
     You are a curriculum designer building a {profile.prompt_name} university textbook.
     Your task is to plan chapter titles that form a coherent, progressive learning arc.
@@ -123,17 +173,26 @@ class HybridPlanner:
     [/FORMAT]
     """
 
-        user_prompt = (
-            f"Subject: {core_topic}\n"
-            f"Number of chapters: {num_chapters}\n"
-            f"User Requirements: {user_requirements or 'None - standard textbook structure'}\n\n"
-            f"Generate a JSON array of exactly {num_chapters} distinct, progressive chapter titles.\n"
-            f"If user requirements exist, ensure some chapters address those requirements.\n"
-            f"For example:\n"
-            f"  - If requirements mention 'bài tập' or 'exercises', include practice-focused chapters\n"
-            f"  - If requirements mention 'ví dụ' or 'examples', include demonstration chapters\n"
-            f"  - If requirements mention 'ứng dụng thực tế', include application chapters"
-        )
+        if _is_practice_mode(textbook_mode):
+            user_prompt = (
+                f"Subject: {core_topic}\n"
+                f"Number of practice chapters/labs: {num_chapters}\n"
+                f"User Requirements: {user_requirements or 'None - standard practice course'}\n\n"
+                f"Generate a JSON array of exactly {num_chapters} distinct hands-on titles.\n"
+                "Prioritize guided labs, repeatable practice tasks, and slightly advanced tasks."
+            )
+        else:
+            user_prompt = (
+                f"Subject: {core_topic}\n"
+                f"Number of chapters: {num_chapters}\n"
+                f"User Requirements: {user_requirements or 'None - standard textbook structure'}\n\n"
+                f"Generate a JSON array of exactly {num_chapters} distinct, progressive chapter titles.\n"
+                f"If user requirements exist, ensure some chapters address those requirements.\n"
+                f"For example:\n"
+                f"  - If requirements mention 'bài tập' or 'exercises', include practice-focused chapters\n"
+                f"  - If requirements mention 'ví dụ' or 'examples', include demonstration chapters\n"
+                f"  - If requirements mention 'ứng dụng thực tế', include application chapters"
+            )
 
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
@@ -152,7 +211,16 @@ class HybridPlanner:
                     ),
                 )
             try:
-                response = rate_limited_invoke(chain, {}, bucket="chat")
+                response = rate_limited_invoke(
+                    chain,
+                    {},
+                    bucket="chat",
+                    metadata={
+                        "agent": "Planner",
+                        "node": "planner",
+                        "model": LLM_MODEL_PREMIUM,
+                    },
+                )
                 raw      = str(response.content).strip()  # type: ignore
 
                 start = raw.find("[")
@@ -196,6 +264,7 @@ class HybridPlanner:
         max_subsections: int = 3,
         assigned_chapters: Optional[List[Dict[str, Any]]] = None,
         language: str = "vi",
+        textbook_mode: str = "standard",
     ) -> Optional[List[Dict[str, Any]]]:
         """
         Generate subsections for a single chapter.
@@ -218,35 +287,87 @@ class HybridPlanner:
 
         profile = get_language_profile(language)
 
-        system_prompt = f"""You are an expert curriculum designer.
-Generate 1 to {max_subsections} subsections for ONE chapter of a {profile.prompt_name} textbook.
-Choose as many subsections as the chapter NATURALLY needs.
+        if _is_practice_mode(textbook_mode):
+            system_prompt = f"""
+[CONTEXT]
+You are an expert university practice-course curriculum designer.
+You design hands-on lab subsections for a {profile.prompt_name} textbook.
+[/CONTEXT]
 
-CRITICAL: Do NOT force a minimum of 3 subsections if the chapter naturally needs fewer.
-Some chapters may only need 1-2 focused subsections. Quality over quantity.
+[TASK]
+Generate 1 to {max_subsections} subsections for ONE practice chapter.
+Choose as many subsections as the chapter naturally needs.
+[/TASK]
 
-OUTPUT: A JSON array of subsection objects. Each object must have:
-- "title": string (in {profile.prompt_name} — descriptive title suited to the subject domain)
-- "description": string (in {profile.prompt_name}, 1-2 sentences)
-- "search_query": string (in English, 3-5 specific keywords for RAG)
+[CRITERION]
+Each subsection must:
+- Represent a concrete practice task, lab activity, guided procedure, worked
+  exercise, similar exercise set, or slightly advanced challenge.
+- Include a description that tells the Writer what the student must do and
+  what artifact/output they should produce.
+- Use an English search_query containing practical retrieval terms such as
+  lab, hands-on, tutorial, exercise, worked example, implementation, practice.
+[/CRITERION]
+
+[CONSTRAINT]
+Rule 1 — PRACTICE ONLY: section_type must be exactly "applied" for every item.
+Rule 2 — NO THEORY: Do not create subsections focused on theory, concepts,
+definitions, overview, summary, conclusion, or recap.
+Rule 3 — UNIQUE TASKS: Do not duplicate tasks already covered in other chapters.
+Rule 4 — COUNT: Return 1 to {max_subsections} subsection objects.
+Rule 5 — LANGUAGE: title and description must be in {profile.prompt_name}.
+[/CONSTRAINT]
+
+[FORMAT]
+Output ONLY a JSON array. No markdown, no explanation.
+Each object must have:
+- "title": string
+- "description": string
+- "search_query": English string, 4-8 practical retrieval keywords
+- "section_type": "applied"
+[/FORMAT]"""
+        else:
+            system_prompt = f"""
+[CONTEXT]
+You are an expert curriculum designer generating subsection metadata for a
+{profile.prompt_name} university textbook.
+[/CONTEXT]
+
+[TASK]
+Generate 1 to {max_subsections} subsections for ONE chapter.
+Choose as many subsections as the chapter naturally needs.
+[/TASK]
+
+[CRITERION]
+Each subsection must:
+- Have a descriptive title suited to the subject domain.
+- Have a {profile.prompt_name} description of 1-2 sentences.
+- Have an English search_query of 3-5 specific keywords for RAG.
+- Choose section_type based on the amount of analytical or applied work needed.
+
+Depth guide:
+- "light"   -> orientation, motivation, recap, bridge to next chapter.
+- "medium"  -> explanation, demonstration, illustration, case study.
+- "deep"    -> sustained theory, critical analysis, complex technique.
+- "applied" -> exercises, hands-on tasks, problems the reader solves.
+[/CRITERION]
+
+[CONSTRAINT]
+Rule 1 — NATURAL COUNT: Do not force a minimum of 3 subsections if fewer is better.
+Rule 2 — NO OVERLAP: Do not duplicate topics already covered in other chapters.
+Rule 3 — UNIQUE TITLES: Each subsection title must reflect content specific to this chapter.
+Rule 4 — VALID TYPES: section_type must be one of "light", "medium", "deep", "applied".
+Rule 5 — LANGUAGE: title and description must be in {profile.prompt_name}.
+[/CONSTRAINT]
+
+[FORMAT]
+Output ONLY a JSON array. No markdown, no explanation.
+Each object must have:
+- "title": string
+- "description": string
+- "search_query": English string
 - "section_type": one of "light", "medium", "deep", "applied"
-
-DEPTH LEVEL GUIDE (controls character count — pick what fits the content):
-- "light"   → orientation, motivation, recap, bridge to next chapter (~1500-2500 chars)
-- "medium"  → explanation, demonstration, illustration, case study (~3000-4500 chars)
-- "deep"    → sustained theory, critical analysis, complex technique (~4500-6500 chars)
-- "applied" → exercises, hands-on tasks, problems the reader solves (~2500-3500 chars)
-
-IMPORTANT: Choose depth based on HOW MUCH analytical work the section requires,
-NOT based on a rigid intro→concept→practice→summary template.
-Adapt freely to the subject domain.
-
-STRUCTURE GUIDANCE:
-- Adapt the section structure to the SUBJECT DOMAIN
-- Each subsection title must reflect UNIQUE content specific to THIS chapter
-- DO NOT generate subsections that duplicate topics already covered in other chapters
-
-OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
+[/FORMAT]"""
 
         already_covered_section = (
             f"\n\n{already_covered_block}" if already_covered_block else ""
@@ -274,6 +395,7 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
         ])
         chain = prompt | self.llm
 
+        practice_mode = _is_practice_mode(textbook_mode)
         valid_types = {"light", "medium", "deep", "applied"}
         MAX_RETRIES = 3
 
@@ -285,7 +407,16 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
                     context_label=f"Ch{chapter_index+1} subsections | {chapter_title[:40]}",
                 )
             try:
-                response = rate_limited_invoke(chain, {}, bucket="chat")
+                response = rate_limited_invoke(
+                    chain,
+                    {},
+                    bucket="chat",
+                    metadata={
+                        "agent": "Planner",
+                        "node": "planner",
+                        "model": LLM_MODEL_PREMIUM,
+                    },
+                )
                 raw      = str(response.content).strip()  # type: ignore
 
                 start = raw.find("[")
@@ -308,7 +439,13 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
                     sub.setdefault("title", "Untitled")
                     sub.setdefault("description", "")
                     sub.setdefault("search_query", core_topic)
-                    if sub.get("section_type", "") not in valid_types:
+                    if practice_mode:
+                        sub["section_type"] = "applied"
+                        query = str(sub.get("search_query") or core_topic)
+                        sub["search_query"] = (
+                            f"{query} lab hands-on tutorial exercise worked example practice"
+                        )
+                    elif sub.get("section_type", "") not in valid_types:
                         sub["section_type"] = "medium"
 
                 logger.info(
@@ -420,7 +557,16 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
                 user_prompt=user_prompt,
                 context_label=f"Title generation | {topic[:40]}",
             )
-            response = rate_limited_invoke(prompt | self.llm, {}, bucket="chat")
+            response = rate_limited_invoke(
+                prompt | self.llm,
+                {},
+                bucket="chat",
+                metadata={
+                    "agent": "Planner",
+                    "node": "generate_metadata",
+                    "model": LLM_MODEL_PREMIUM,
+                },
+            )
             title    = str(response.content).strip().strip('"').strip("'")  # type: ignore
             logger.info(f"✓ Textbook title: {title}")
             return title
@@ -524,7 +670,16 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
                 user_prompt=user_prompt,
                 context_label=f"Preface | {title[:40]}",
             )
-            response = rate_limited_invoke(prompt | self.llm, {}, bucket="chat")
+            response = rate_limited_invoke(
+                prompt | self.llm,
+                {},
+                bucket="chat",
+                metadata={
+                    "agent": "Planner",
+                    "node": "generate_metadata",
+                    "model": LLM_MODEL_PREMIUM,
+                },
+            )
             preface  = str(response.content).strip()  # type: ignore
             logger.info("✓ Preface generated")
             return preface
@@ -543,6 +698,7 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
         num_chapters: int = 3,
         max_subsections: int = 5,
         language: str = "vi",
+        textbook_mode: str = "standard",
     ) -> Optional[Dict[str, Any]]:
         """
         Build full curriculum from topic name only.
@@ -563,6 +719,7 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
             user_requirements,
             num_chapters,
             language=language,
+            textbook_mode=textbook_mode,
         )
         if not chapter_titles:
             return None
@@ -580,6 +737,7 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
                 max_subsections=max_subsections,
                 assigned_chapters=chapters,
                 language=language,
+                textbook_mode=textbook_mode,
             )
 
             if subsections:
@@ -587,15 +745,41 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
             else:
                 failed_chapters += 1
                 logger.warning(f"Skipping chapter {idx + 1} due to generation failure")
-                chapters.append({
-                    "title": title,
-                    "subsections": [{
-                        "title":        f"Giới thiệu về {title}" if language == "vi" else f"Introduction to {title}",
-                        "description":  f"Tổng quan về {title}" if language == "vi" else f"Overview of {title}",
-                        "search_query": f"{core_topic} {title} introduction",
-                        "section_type": "light",
-                    }],
-                })
+                if _is_practice_mode(textbook_mode):
+                    fallback_title = (
+                        f"Thực hành {title}" if language == "vi" else f"Practice: {title}"
+                    )
+                    fallback_description = (
+                        f"Thực hiện một bài thực hành có hướng dẫn về {title}, "
+                        f"sau đó hoàn thành bài tập tương tự và một bài nâng cao."
+                        if language == "vi"
+                        else (
+                            f"Complete a guided hands-on task about {title}, "
+                            "then solve a similar exercise and a slightly advanced challenge."
+                        )
+                    )
+                    chapters.append({
+                        "title": title,
+                        "subsections": [{
+                            "title": fallback_title,
+                            "description": fallback_description,
+                            "search_query": (
+                                f"{core_topic} {title} lab hands-on tutorial "
+                                "exercise worked example practice"
+                            ),
+                            "section_type": "applied",
+                        }],
+                    })
+                else:
+                    chapters.append({
+                        "title": title,
+                        "subsections": [{
+                            "title":        f"Giới thiệu về {title}" if language == "vi" else f"Introduction to {title}",
+                            "description":  f"Tổng quan về {title}" if language == "vi" else f"Overview of {title}",
+                            "search_query": f"{core_topic} {title} introduction",
+                            "section_type": "light",
+                        }],
+                    })
 
         if failed_chapters == num_chapters:
             logger.error("All chapters failed to generate subsections")
@@ -609,6 +793,313 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
         )
         return {"topic": core_topic, "chapters": chapters}
 
+    def _fallback_section_type(self, title: str, user_requirements: str) -> str:
+        text = f"{title} {user_requirements}".lower()
+        applied_markers = (
+            "bài tập", "thực hành", "bài thực hành", "exercise", "practice",
+            "lab", "project", "dự án", "case study", "worked solution",
+        )
+        deep_markers = ("phân tích", "analysis", "theory", "lý thuyết", "mô hình")
+        if any(marker in text for marker in applied_markers):
+            return "applied"
+        if any(marker in text for marker in deep_markers):
+            return "deep"
+        return "medium"
+
+    def _fallback_structured_metadata(
+        self,
+        core_topic: str,
+        user_requirements: str,
+        chapter_title: str,
+        subsection_title: str,
+        language: str,
+        textbook_mode: str = "standard",
+    ) -> Dict[str, str]:
+        if _is_practice_mode(textbook_mode):
+            if language == "vi":
+                description = (
+                    f"Hướng dẫn thực hành {subsection_title} trong chương {chapter_title}; "
+                    "người học cần hoàn thành thao tác, bài tập tương tự và bài nâng cao."
+                )
+            else:
+                description = (
+                    f"Guides hands-on practice for {subsection_title} in {chapter_title}; "
+                    "learners complete steps, a similar exercise, and an advanced challenge."
+                )
+            return {
+                "description": description,
+                "search_query": (
+                    f"{core_topic} {chapter_title} {subsection_title} "
+                    "lab hands-on tutorial exercise worked example practice"
+                ),
+                "section_type": "applied",
+            }
+
+        if language == "vi":
+            description = (
+                f"Trình bày {subsection_title} trong mạch nội dung của chương "
+                f"{chapter_title}, gắn với chủ đề {core_topic}."
+            )
+        else:
+            description = (
+                f"Explains {subsection_title} within the chapter {chapter_title}, "
+                f"aligned with the broader topic {core_topic}."
+            )
+        return {
+            "description": description,
+            "search_query": f"{core_topic} {chapter_title} {subsection_title}",
+            "section_type": self._fallback_section_type(subsection_title, user_requirements),
+        }
+
+    def _enrich_structured_chapter(
+        self,
+        core_topic: str,
+        user_requirements: str,
+        chapter_title: str,
+        chapter_index: int,
+        skeleton: Dict[str, Any],
+        language: str = "vi",
+        textbook_mode: str = "standard",
+    ) -> List[Dict[str, str]]:
+        profile = get_language_profile(language)
+        practice_mode = _is_practice_mode(textbook_mode)
+        valid_types = {"light", "medium", "deep", "applied"}
+        chapters = skeleton.get("chapters") or []
+        chapter = chapters[chapter_index]
+        subsection_titles = [
+            str(sub.get("title") or "").strip()
+            for sub in chapter.get("subsections", [])
+        ]
+        full_outline = "\n".join(
+            "\n".join(
+                [f"Chapter {idx + 1}: {ch.get('title', '')}"]
+                + [
+                    f"  - {idx + 1}.{sub_idx + 1} {sub.get('title', '')}"
+                    for sub_idx, sub in enumerate(ch.get("subsections", []))
+                ]
+            )
+            for idx, ch in enumerate(chapters)
+        )
+
+        if practice_mode:
+            system_prompt = f"""
+[CONTEXT]
+You are a senior university practice-course curriculum planner.
+The user has already approved the chapter and subsection structure.
+[/CONTEXT]
+
+[TASK]
+Enrich the provided subsections without changing their titles, order, count,
+or chapter placement.
+[/TASK]
+
+[CRITERION]
+For each subsection, return:
+- "description": {profile.prompt_name}, 1-2 precise sentences explaining the
+  hands-on task, expected student action, and expected output.
+- "search_query": English, 4-8 keywords suitable for practical retrieval/RAG.
+- "section_type": exactly "applied".
+[/CRITERION]
+
+[CONSTRAINT]
+Rule 1 — PRESERVE STRUCTURE: Do not change titles, order, count, or placement.
+Rule 2 — PRACTICE ONLY: Every subsection must be enriched as lab/practice work.
+Rule 3 — NO THEORY: Do not describe the subsection as theory, concept,
+definition, overview, summary, conclusion, or recap.
+Rule 4 — QUERY TERMS: search_query must include practical terms such as lab,
+hands-on, tutorial, exercise, worked example, implementation, or practice.
+Rule 5 — LANGUAGE: descriptions must be in {profile.prompt_name}.
+[/CONSTRAINT]
+
+[FORMAT]
+Output ONLY a JSON array with exactly {len(subsection_titles)} objects.
+No markdown, no explanation.
+Each object must have "description", "search_query", and "section_type".
+[/FORMAT]"""
+        else:
+            system_prompt = f"""
+[CONTEXT]
+You are a senior university curriculum planner.
+The user has already approved the chapter and subsection structure.
+[/CONTEXT]
+
+[TASK]
+Enrich the provided subsections without changing their titles, order, count,
+or chapter placement.
+[/TASK]
+
+[CRITERION]
+For each subsection, return:
+- "description": {profile.prompt_name}, 1-2 precise sentences explaining the
+  role of this subsection in the whole textbook.
+- "search_query": English, 4-8 specific keywords suitable for retrieval/RAG.
+- "section_type": exactly one of "light", "medium", "deep", "applied".
+
+Section type guide:
+- light   -> orient/recap, accessible prose, light technical depth.
+- medium  -> explain/demonstrate, definitions, worked examples.
+- deep    -> analyse/theorise, sustained argument, rigorous detail.
+- applied -> tasks/exercises, step-by-step guidance, worked solutions.
+[/CRITERION]
+
+[CONSTRAINT]
+Rule 1 — PRESERVE STRUCTURE: Do not change titles, order, count, or placement.
+Rule 2 — VALID TYPES: section_type must be one of "light", "medium", "deep", "applied".
+Rule 3 — PRACTICE SIGNALS: If the outline or requirements imply practice,
+labs, projects, exercises, worked examples, or hands-on university coursework,
+prefer "applied" for the relevant subsections.
+Rule 4 — LANGUAGE: descriptions must be in {profile.prompt_name}.
+[/CONSTRAINT]
+
+[FORMAT]
+Output ONLY a JSON array with exactly {len(subsection_titles)} objects.
+No markdown, no explanation.
+Each object must have "description", "search_query", and "section_type".
+[/FORMAT]"""
+
+        user_prompt = (
+            f"Textbook topic: {core_topic}\n"
+            f"User requirements: {user_requirements or 'None'}\n"
+            f"Target language for descriptions: {profile.prompt_name}\n\n"
+            f"Full outline:\n{full_outline}\n\n"
+            f"Enrich Chapter {chapter_index + 1}: {chapter_title}\n"
+            f"Subsection titles, in fixed order:\n"
+            + "\n".join(f"{idx + 1}. {title}" for idx, title in enumerate(subsection_titles))
+        )
+
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", system_prompt),
+            ("human", user_prompt),
+        ])
+
+        MAX_RETRIES = 3
+        for attempt in range(1, MAX_RETRIES + 1):
+            if attempt == 1:
+                self.prompt_logger.log(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    context_label=f"Structured enrich Ch{chapter_index+1} | {chapter_title[:40]}",
+                )
+            try:
+                response = rate_limited_invoke(
+                    prompt | self.llm,
+                    {},
+                    bucket="chat",
+                    metadata={
+                        "agent": "Planner",
+                        "node": "planner_structured_enrich",
+                        "model": LLM_MODEL_PREMIUM,
+                    },
+                )
+                raw = str(response.content).strip()  # type: ignore
+                start = raw.find("[")
+                end = raw.rfind("]")
+                if start == -1 or end == -1:
+                    raise ValueError("No JSON array in structured enrichment response")
+                enriched = json.loads(raw[start:end + 1])
+                if not isinstance(enriched, list) or len(enriched) != len(subsection_titles):
+                    raise ValueError("Structured enrichment returned the wrong count")
+
+                normalized: List[Dict[str, str]] = []
+                for idx, item in enumerate(enriched):
+                    if not isinstance(item, dict):
+                        raise ValueError("Structured enrichment item is not an object")
+                    title = subsection_titles[idx]
+                    section_type = str(item.get("section_type") or "").strip().lower()
+                    if practice_mode:
+                        section_type = "applied"
+                    elif section_type not in valid_types:
+                        section_type = self._fallback_section_type(title, user_requirements)
+                    fallback = self._fallback_structured_metadata(
+                        core_topic,
+                        user_requirements,
+                        chapter_title,
+                        title,
+                        language,
+                        textbook_mode=textbook_mode,
+                    )
+                    search_query = str(item.get("search_query") or fallback["search_query"]).strip()
+                    if practice_mode:
+                        search_query = (
+                            f"{search_query} lab hands-on tutorial exercise worked example practice"
+                        )
+                    normalized.append({
+                        "description": str(item.get("description") or fallback["description"]).strip(),
+                        "search_query": search_query,
+                        "section_type": section_type,
+                    })
+                return normalized
+            except Exception as e:
+                logger.warning(
+                    f"Structured enrich chapter {chapter_index + 1} attempt "
+                    f"{attempt}/{MAX_RETRIES} failed: {e}"
+                )
+
+        return [
+            self._fallback_structured_metadata(
+                core_topic,
+                user_requirements,
+                chapter_title,
+                title,
+                language,
+                textbook_mode=textbook_mode,
+            )
+            for title in subsection_titles
+        ]
+
+    def enrich_user_structure(
+        self,
+        core_topic: str,
+        user_requirements: str,
+        initial_structure: Dict[str, Any],
+        language: str = "vi",
+        textbook_mode: str = "standard",
+    ) -> Optional[CurriculumOutline]:
+        chapters = initial_structure.get("chapters") if isinstance(initial_structure, dict) else None
+        if not isinstance(chapters, list) or not chapters:
+            logger.error("Structured planner received an empty initial structure")
+            return None
+
+        enriched_chapters: List[Dict[str, Any]] = []
+        for chapter_index, chapter in enumerate(chapters):
+            chapter_title = str(chapter.get("title") or "").strip()
+            subsection_titles = [
+                str(sub.get("title") or "").strip()
+                for sub in chapter.get("subsections", [])
+                if str(sub.get("title") or "").strip()
+            ]
+            if not chapter_title or not subsection_titles:
+                logger.error("Structured planner received a malformed chapter")
+                return None
+
+            metadata = self._enrich_structured_chapter(
+                core_topic=core_topic,
+                user_requirements=user_requirements,
+                chapter_title=chapter_title,
+                chapter_index=chapter_index,
+                skeleton=initial_structure,
+                language=language,
+                textbook_mode=textbook_mode,
+            )
+            enriched_chapters.append({
+                "title": chapter_title,
+                "subsections": [
+                    {
+                        "title": title,
+                        "description": metadata[idx]["description"],
+                        "search_query": metadata[idx]["search_query"],
+                        "section_type": metadata[idx]["section_type"],
+                    }
+                    for idx, title in enumerate(subsection_titles)
+                ],
+            })
+
+        try:
+            return CurriculumOutline(topic=core_topic, chapters=enriched_chapters)
+        except Exception as e:
+            logger.error(f"Failed to parse enriched structured curriculum: {e}")
+            return None
+
     def create_curriculum(
         self,
         core_topic: str,
@@ -616,6 +1107,7 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
         num_chapters: int = 3,
         max_subsections: int = 5,
         language: str = "vi",
+        textbook_mode: str = "standard",
     ) -> Optional[CurriculumOutline]:
         """
         Main entry point: generate curriculum directly from topic.
@@ -638,6 +1130,7 @@ OUTPUT ONLY THE JSON ARRAY — no markdown, no explanation."""
             num_chapters=num_chapters,  
             max_subsections=max_subsections,
             language=language,
+            textbook_mode=textbook_mode,
         )
 
         if not plan_dict:
@@ -695,21 +1188,36 @@ def plan_curriculum(state: AgentState) -> dict:
     num_chapters = state.get("num_chapters", 3)
     max_subsections = state.get("max_subsections_per_chapter", 5)
     language = state.get("language", "vi")
+    planning_mode = state.get("planning_mode", "auto")
+    textbook_mode = state.get("textbook_mode", "standard")
+    initial_structure = state.get("initial_curriculum_structure")
 
     logger.info(f"Core topic         : {core_topic}")
     logger.info(f"User requirements  : {user_requirements or '(none)'}")
     logger.info(f"Num chapters       : {num_chapters}")
     logger.info(f"Max subsections/ch : {max_subsections}")
     logger.info(f"Language           : {language}")
+    logger.info(f"Planning mode      : {planning_mode}")
+    logger.info(f"Textbook mode      : {textbook_mode}")
 
     planner = HybridPlanner()
-    curriculum = planner.create_curriculum(
-        core_topic, 
-        user_requirements,  
-        num_chapters=num_chapters, 
-        max_subsections=max_subsections,
-        language=language,
-    )
+    if planning_mode == "structured" and isinstance(initial_structure, dict):
+        curriculum = planner.enrich_user_structure(
+            core_topic,
+            user_requirements,
+            initial_structure,
+            language=language,
+            textbook_mode=textbook_mode,
+        )
+    else:
+        curriculum = planner.create_curriculum(
+            core_topic,
+            user_requirements,
+            num_chapters=num_chapters,
+            max_subsections=max_subsections,
+            language=language,
+            textbook_mode=textbook_mode,
+        )
 
     if not curriculum:
         raise ValueError("Planner failed: Could not generate curriculum")
@@ -755,6 +1263,7 @@ def generate_metadata_node(state: AgentState) -> dict:
     core_topic = state.get("core_topic", state["request"])
     curriculum = state.get("curriculum")
     language = state.get("language", "vi")
+    textbook_mode = state.get("textbook_mode", "standard")
     profile = get_language_profile(language)
 
     if not curriculum:
@@ -771,12 +1280,16 @@ def generate_metadata_node(state: AgentState) -> dict:
         planner._generate_textbook_title(core_topic, curriculum, language=language)
         or f"{profile.default_title_prefix} {core_topic}"
     )
-    preface_content = planner._generate_preface(
-        core_topic,
-        textbook_title,
-        curriculum,
-        language=language,
-    )
+    if _is_practice_mode(textbook_mode):
+        logger.info("Practice textbook mode: skipping preface generation")
+        preface_content = ""
+    else:
+        preface_content = planner._generate_preface(
+            core_topic,
+            textbook_title,
+            curriculum,
+            language=language,
+        )
 
     logger.info(f"✓ Title: {textbook_title}")
     logger.info(f"✓ Preface: {len(preface_content)} chars")
@@ -785,6 +1298,10 @@ def generate_metadata_node(state: AgentState) -> dict:
         "preface_content": preface_content,
         "messages": [
             f"✓ Title generated: {textbook_title}",
-            f"✓ Preface generated ({len(preface_content)} chars)",
+            (
+                "✓ Preface skipped for practice textbook mode"
+                if _is_practice_mode(textbook_mode)
+                else f"✓ Preface generated ({len(preface_content)} chars)"
+            ),
         ],
     }

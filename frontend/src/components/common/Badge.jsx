@@ -60,3 +60,23 @@ export function ContentTypeBadge({ type }) {
     </span>
   )
 }
+
+export function TextbookModeBadge({ mode }) {
+  const { t } = useTranslation()
+  if (!mode || mode === 'standard') {
+    return null
+  }
+
+  const styles = {
+    practice: 'bg-emerald-100 text-emerald-800 border border-emerald-300',
+  }
+
+  return (
+    <span className={`
+      px-2 py-1 rounded-full text-xs font-medium
+      ${styles[mode] || styles.practice}
+    `}>
+      {t(`textbook.textbookMode.${mode}`, mode)}
+    </span>
+  )
+}

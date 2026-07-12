@@ -99,9 +99,9 @@ Query bằng ngôn ngữ khác VI/EN chỉ được chấp nhận khi nội dung
 | Validator | `backend/app/services/textbook/validator.py` | Validate topic ở API layer bằng Groq `llama-3.3-70b-versatile`; nhận diện/yêu cầu ngôn ngữ và phân loại `scholarly`, `technical`, `practical`, `lifestyle` |
 | Planner | `backend/app/services/textbook/planner.py` | Sinh curriculum theo target language bằng `LLM_MODEL_PREMIUM`; Phase 1 không crawl, không RAG |
 | Metadata | `generate_metadata_node` trong `planner.py` | Sau khi user confirm, sinh textbook title và Preface/Lời nói đầu theo target language |
-| Ingester | `backend/app/services/textbook/ingester.py` | Xóa ChromaDB cũ, query expansion song ngữ, search, filter URL, crawl, chunk, embed, lưu Chroma |
+| Ingester | `backend/app/services/textbook/ingester.py` | Chuẩn bị ChromaDB per-run collection, query expansion song ngữ, search, filter URL, crawl, chunk, embed, lưu Chroma |
 | QueryFormulator | `backend/app/services/textbook/query_formulator.py` | Tạo query retrieval cho subsection hiện tại, có enrichment theo user requirements |
-| RetrieverNode | `backend/app/services/textbook/retriever.py` | MMR search trên Chroma collection `dynamic_context`, lọc chunk nhiều tầng, log context |
+| RetrieverNode | `backend/app/services/textbook/retriever.py` | MMR search trên Chroma collection của textbook hiện tại, lọc chunk nhiều tầng, log context |
 | ContextEvaluator | `backend/app/services/textbook/evaluator.py` | Dùng LLM có tool `retrieve_context_tool` để bổ sung context khi cần |
 | ContentWriter | `backend/app/services/textbook/writer.py` | Sinh nội dung VI/EN bằng `LLM_MODEL_PREMIUM`, enforce depth/length/paragraph flow/heading/continuity/image tags |
 | Reviewer | `backend/app/services/textbook/reviewer.py` | Hai pass review language-aware bằng cheap LLM: format/math pass, content-quality pass, JSON quality gate |
@@ -112,10 +112,11 @@ Query bằng ngôn ngữ khác VI/EN chỉ được chấp nhận khi nội dung
 
 ## Ingestion And RAG
 
-Ingestion chạy sau khi curriculum đã được xác nhận. Mỗi lượt generation dùng một ChromaDB sạch:
+Ingestion chạy sau khi curriculum đã được xác nhận. Mỗi lượt generation dùng một collection riêng trong ChromaDB để tránh lẫn dữ liệu giữa các textbook:
 
 ```text
-clear backend/data/chroma_db
+prepare backend/data/chroma_db
+  -> create/use per-textbook Chroma collection
   -> QueryExpansionAgent
   -> parallel DuckDuckGo search
   -> URL filter
@@ -123,7 +124,7 @@ clear backend/data/chroma_db
   -> chunk + quality filter
   -> relevance scoring with embeddings
   -> language-aware domain caps
-  -> save to Chroma collection dynamic_context
+  -> save to the current run collection
 ```
 
 ### Query Expansion
@@ -178,7 +179,7 @@ Sau khi crawl:
 
 ### Retrieval
 
-Retriever mở ChromaDB tại `backend/data/chroma_db`, collection `dynamic_context`, và dùng MMR search:
+Retriever mở ChromaDB tại `backend/data/chroma_db`, collection của textbook hiện tại, và dùng MMR search:
 
 - initial retrieval: `RAG_INITIAL_K`
 - tool-call retrieval: `RAG_TOOL_K`
@@ -189,7 +190,7 @@ Retriever mở ChromaDB tại `backend/data/chroma_db`, collection `dynamic_cont
 
 Mọi retrieval được log đầy đủ vào `backend/logs/rag_context.log`.
 
-Lưu ý: `backend/app/services/rag_service.py` vẫn tồn tại như singleton Chroma cũ dùng `CHROMA_COLLECTION_NAME`, nhưng workflow textbook hiện hành đang ingest/retrieve bằng collection `dynamic_context`.
+Lưu ý: `backend/app/services/rag_service.py` vẫn tồn tại như singleton Chroma cũ dùng `CHROMA_COLLECTION_NAME`, nhưng workflow textbook hiện hành đang ingest/retrieve bằng collection riêng được lưu trong state/progress của từng textbook.
 
 ## CRAG Content Loop
 
@@ -335,7 +336,11 @@ Các nhóm config chính:
 | Security | `SECRET_KEY`, `ALGORITHM`, token expiry settings |
 | OAuth/email/payment | Google OAuth, SMTP, SePay settings |
 
-Tạo `.env` ở project root. Repo hiện không có `.env.example`, nên cần tạo thủ công. Các API keys dưới đây là fallback tùy chọn nếu chưa nhập trong Admin System Config:
+Tạo `.env` ở project root từ file mẫu. Các API keys dưới đây là fallback tùy chọn nếu chưa nhập trong Admin System Config:
+
+```bash
+cp .env.example .env
+```
 
 ```env
 OPENAI_API_KEY=
@@ -346,8 +351,8 @@ SERPER_API_KEY=
 
 MYSQL_HOST=localhost
 MYSQL_PORT=3306
-MYSQL_USER=admin
-MYSQL_PASSWORD=<match docker-compose.yml or your MySQL user>
+MYSQL_USER=textbook_user
+MYSQL_PASSWORD=change_me_local_password
 MYSQL_DATABASE=ai_textbook_db
 
 REDIS_HOST=localhost
@@ -387,8 +392,9 @@ EMBEDDING_MODEL_NAME=BAAI/bge-m3
 
 LLM_MODEL_CHEAP=gpt-4o-mini
 LLM_MODEL_PREMIUM=gpt-4.1
-IMAGE_MODEL_DEFAULT=gpt-image-1-mini
-IMAGE_MODEL_PREMIUM=gpt-image-1.5
+IMAGE_MODEL_DEFAULT=gpt-image-2
+IMAGE_MODEL_PREMIUM=gpt-image-2
+IMAGE_VALIDATION_MODEL=gpt-5.4-mini
 ```
 
 `MYSQL_*`, `REDIS_*`, `SECRET_KEY`, URL app và model/config vận hành vẫn nên nằm trong `.env`. API keys có thể nhập bằng Admin UI; nếu DB chưa có key thì runtime fallback về `.env`.
@@ -478,7 +484,7 @@ cd backend
 alembic upgrade head
 ```
 
-Migration `backend/alembic/versions/add_textbook_language.py` thêm cột `textbooks.language` và backfill textbook cũ thành `vi`. Nếu bỏ qua bước này, các API đọc textbook sẽ lỗi `Unknown column 'textbooks.language'`.
+Migration `backend/alembic/versions/add_textbook_language.py` thêm cột `textbooks.language` và backfill textbook cũ thành `vi`; migration `backend/alembic/versions/add_textbook_mode.py` thêm mode textbook hiện tại. Nếu bỏ qua migration, các API đọc textbook có thể lỗi thiếu cột schema.
 
 ### Standalone CLI
 
@@ -775,11 +781,7 @@ khả năng restore trên môi trường staging trước khi xem backup là h�
 
 ### Giới hạn scale
 
-Demo khóa `CELERY_CONCURRENCY=1` vì ChromaDB và image workspace hiện dùng
-chung. Có thể nâng CPU/RAM để một job ổn định hơn, nhưng không tăng concurrency
-trước khi triển khai isolation theo `textbook_id`. API, worker, database, Redis
-và web đã là các service tách biệt nên có thể chuyển sang máy khác trong phase
-scale sau này.
+Demo khóa `CELERY_CONCURRENCY=1` vì image workspace, provider rate limit và một số singleton runtime vẫn tối ưu cho một job dài hạn. ChromaDB đã dùng collection riêng theo textbook, nhưng chưa coi hệ thống là multi-worker generation cho tới khi hoàn tất kiểm thử đồng thời end-to-end. API, worker, database, Redis và web đã là các service tách biệt nên có thể chuyển sang máy khác trong phase scale sau này.
 
 Dependency audit hiện còn cảnh báo `CVE-2026-45829` ở `chromadb 1.5.9` và chưa
 có bản vá được công bố trong package index. Đây là rủi ro được chấp nhận riêng
@@ -788,7 +790,7 @@ bản vá trước khi coi hệ thống là production công khai.
 
 ## Operational Notes
 
-- ChromaDB là global theo process/path và ingestion xóa `backend/data/chroma_db` ở đầu mỗi generation run. Nên chạy một generation worker hoặc bổ sung isolation theo `textbook_id` nếu cần concurrent generation thật sự.
+- ChromaDB dùng chung persist path `backend/data/chroma_db`, nhưng mỗi generation dùng collection riêng theo textbook/run và có cleanup best-effort sau export. Vẫn nên giữ một worker generation cho bản demo cho tới khi kiểm thử concurrent jobs đầy đủ.
 - Celery stop dùng Redis key `textbook_stop:{id}` và task registry `task:{id}`. LangGraph node được bọc bởi `_with_stop_check`.
 - Planning/review draft có `credits_used=0`; Stop/Reset xóa record. Sau confirm, credit không được hoàn lại khi user dừng generation.
 - `backend/logs/prompts/*_prompts.log` lưu prompt theo agent để audit khi

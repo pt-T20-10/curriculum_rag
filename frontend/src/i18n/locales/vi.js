@@ -356,6 +356,16 @@ export const vi = {
       locked: 'không thể thay đổi khi đang chạy',
       generating: 'Đang tạo giáo trình',
       aiTitle: 'Tiêu đề',
+      textbookMode: 'Loại giáo trình',
+      textbookModeStandard: 'Tiêu chuẩn',
+      textbookModePractice: 'Học phần thực hành',
+      textbookModeStandardHint: 'Tạo giáo trình đầy đủ với giải thích, ví dụ và nội dung học thuật phù hợp.',
+      textbookModePracticeHint: 'Tập trung hướng dẫn thực hành theo chủ đề, bài tập tương tự và bài nâng cao.',
+      planningMode: 'Chế độ lập dàn ý',
+      planningModeAuto: 'AI lập cấu trúc',
+      planningModeStructured: 'Tự nhập cấu trúc',
+      planningModeAutoHint: 'AI sẽ lập dàn ý trước, sau đó bạn xem lại và xác nhận.',
+      planningModeStructuredHint: 'Bạn nhập cấu trúc trước; planner sẽ phân tích và hệ thống tạo nội dung ngay sau đó.',
       chapters: 'Số chương',
       chaptersHint: 'Khuyến nghị 2-12 chương. Ngoài khoảng này hệ thống sẽ yêu cầu xác nhận lại.',
       contentLength: 'Độ dài nội dung',
@@ -419,6 +429,9 @@ export const vi = {
       professional: 'Chuyên nghiệp',
       simplified: 'Đơn giản hóa',
     },
+    textbookMode: {
+      practice: 'Thực hành',
+    },
     workflow: {
       planner: 'Lập dàn ý giáo trình',
       ingestion: 'Thu thập dữ liệu',
@@ -479,6 +492,23 @@ export const vi = {
       creditConfirmAdminDescription: 'Tài khoản Admin sẽ bắt đầu tạo giáo trình mà không bị trừ credits.',
       creditConfirmCancel: 'Xem lại dàn ý',
       creditConfirmProceed: 'Đồng ý tạo nội dung',
+    },
+    structure: {
+      title: 'Cấu trúc giáo trình',
+      description: 'Nhập trước chương và mục. Hệ thống sẽ hiểu chương là ## và mục là ### theo quy ước nội bộ.',
+      chapter: 'Chương {{number}}',
+      defaultChapter: 'Chương {{number}} mới',
+      defaultSubsection: 'Mục {{chapter}}.{{number}} mới',
+      addChapter: 'Thêm chương',
+      addSubsection: 'Thêm mục',
+      deleteChapter: 'Xóa chương',
+      deleteSubsection: 'Xóa mục',
+      errors: {
+        empty: 'Cấu trúc cần có ít nhất 1 chương.',
+        blankChapter: 'Tiêu đề Chương {{number}} không được để trống.',
+        emptyChapter: 'Chương {{number}} cần có ít nhất 1 mục.',
+        blankSubsection: 'Tiêu đề Mục {{chapter}}.{{number}} không được để trống.',
+      },
     },
     contentPreview: {
       title: 'Nội Dung Giáo Trình',
@@ -768,10 +798,6 @@ export const vi = {
         label: 'K Lấy Kết Quả Theo Tool',
         description: 'Số chunk được lấy mỗi vòng tool-call trong quá trình làm giàu nội dung của writer.',
       },
-      RAG_TOOL_MAX_ROUNDS: {
-        label: 'Số Vòng Làm Giàu Tối Đa',
-        description: 'Số vòng tool-call tối đa writer có thể dùng để bổ sung ngữ cảnh; tăng cao làm chậm tốc độ tạo.',
-      },
       CRAG_CONTEXT_QUALITY_MIN_CHARS: {
         label: 'Ngưỡng Chất Lượng Ngữ Cảnh (ký tự)',
         description: 'Tổng số ký tự RAG tối thiểu cần đạt trước khi bắt đầu viết; dưới ngưỡng này sẽ thử lại.',
@@ -796,6 +822,10 @@ export const vi = {
         label: 'Ngưỡng Khử Trùng Ngữ Nghĩa',
         description: 'Ngưỡng cosine similarity để khử trùng; giá trị thấp hơn loại nhiều chunk hơn.',
       },
+      RAG_CHUNK_LLM_FILTER_MODE: {
+        label: 'Chế Độ Lọc Chunk Bằng LLM',
+        description: 'Auto chỉ kiểm tra chunk nghi ngờ ở balanced_cost; always giữ hành vi cũ; off tắt binary classifier.',
+      },
       LLM_MODEL_CHEAP: {
         label: 'Model Phụ Trợ',
         description: 'Model LLM dùng cho reviewer, illustrator và các agent phụ trợ; có thể chọn model cao hơn nếu chấp nhận tăng chi phí và độ trễ.',
@@ -804,13 +834,17 @@ export const vi = {
         label: 'Model Chính',
         description: 'Model LLM dùng cho planner và content writer; mặc định ổn định là gpt-4.1, Admin có thể nâng lên model cao hơn khi cần chất lượng mạnh hơn.',
       },
+      API_COST_PROFILE: {
+        label: 'Hồ Sơ Chi Phí API',
+        description: 'Chọn mức tối ưu chi phí có thể rollback: giữ nguyên chất lượng hiện tại, cân bằng chi phí, hoặc chế độ mạnh sau benchmark.',
+      },
       REVIEWER_MAX_REVISIONS: {
         label: 'Số Lần Chỉnh Sửa Tối Đa',
         description: 'Số vòng reviewer→writer tối đa mỗi mục trước khi buộc chấp nhận; 0 tắt hoàn toàn bước kiểm duyệt.',
       },
       WRITER_RETRIEVAL_MAX_ROUNDS: {
         label: 'Số Vòng Lấy Dữ Liệu của Writer',
-        description: 'Số vòng tool-call tối đa ContextRetrievalAgent có thể dùng để bổ sung ngữ cảnh khi viết.',
+        description: 'Số vòng tool-call tối đa ContextEvaluator có thể dùng để bổ sung ngữ cảnh trước khi viết.',
       },
       WRITER_MAX_PRIOR_SUMMARIES: {
         label: 'Số Tóm Tắt Trước Đưa Vào Prompt',

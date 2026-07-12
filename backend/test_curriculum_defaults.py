@@ -3,6 +3,31 @@ from __future__ import annotations
 from app.schemas.curriculum import build_initial_state
 
 
+def test_image_models_use_cost_aware_current_defaults() -> None:
+    from app.config import Settings
+    from app.services.textbook import illustrator
+
+    assert Settings.model_fields["IMAGE_MODEL_DEFAULT"].default == "gpt-image-2"
+    assert Settings.model_fields["IMAGE_MODEL_PREMIUM"].default == "gpt-image-2"
+    assert Settings.model_fields["IMAGE_VALIDATION_MODEL"].default == "gpt-5.4-mini"
+    assert illustrator._select_image_generation_settings("light") == (
+        "gpt-image-2",
+        "low",
+    )
+    assert illustrator._select_image_generation_settings("medium") == (
+        "gpt-image-2",
+        "low",
+    )
+    assert illustrator._select_image_generation_settings("deep") == (
+        "gpt-image-2",
+        "medium",
+    )
+    assert illustrator._select_image_generation_settings("applied") == (
+        "gpt-image-2",
+        "medium",
+    )
+
+
 def test_initial_state_exports_pdf_and_word_by_default() -> None:
     state = build_initial_state(request="Test topic")
 
