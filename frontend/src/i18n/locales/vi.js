@@ -565,6 +565,14 @@ export const vi = {
       noteTitle: 'Lưu ý:',
       noteText: 'Vui lòng kiểm tra và hiệu chỉnh nội dung trước khi sử dụng chính thức.',
     },
+    wordNotice: {
+      title: 'Lưu ý khi mở file Word',
+      description: 'Do Microsoft Word và LibreOffice trên từng máy có cách cập nhật trường tự động khác nhau, mục lục và danh mục hình có thể chưa hiển thị đúng số trang ngay lần mở đầu tiên.',
+      stepsTitle: 'Sau khi mở file Word lần đầu:',
+      steps: 'Nhấn Ctrl+A rồi F9 để cập nhật toàn bộ mục lục, danh mục hình và số trang. Một số máy có thể dùng Alt+A rồi F9 tùy thiết lập phím.',
+      note: 'PDF đã được xuất với bố cục cố định; lưu ý này chỉ áp dụng cho file Word có thể chỉnh sửa.',
+      confirm: 'Đã hiểu, tải Word',
+    },
     stopModal: {
       title: 'Dừng tạo giáo trình?',
       description: 'Bạn có chắc chắn muốn dừng quá trình này?',

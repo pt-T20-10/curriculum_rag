@@ -378,6 +378,15 @@ class Settings(BaseSettings):
     OPENAI_RATE_LIMIT_BACKOFF_BASE_SECONDS: float = 2.0
     OPENAI_RATE_LIMIT_BACKOFF_MAX_SECONDS: float = 60.0
     OPENAI_RATE_LIMIT_JITTER_SECONDS: float = 0.2
+    WIKIMEDIA_RATE_LIMIT_ENABLED: bool = True
+    WIKIMEDIA_SHARED_RATE_LIMIT_ENABLED: bool = True
+    WIKIMEDIA_REQUEST_MIN_INTERVAL_SECONDS: float = 1.0
+    WIKIMEDIA_SEARCH_MIN_INTERVAL_SECONDS: float = 1.0
+    WIKIMEDIA_DOWNLOAD_MIN_INTERVAL_SECONDS: float = 1.5
+    WIKIMEDIA_RATE_LIMIT_MAX_RETRIES: int = 4
+    WIKIMEDIA_RATE_LIMIT_BACKOFF_BASE_SECONDS: float = 2.0
+    WIKIMEDIA_RATE_LIMIT_BACKOFF_MAX_SECONDS: float = 30.0
+    WIKIMEDIA_RATE_LIMIT_JITTER_SECONDS: float = 0.5
 
     # ==================== Paths ====================
     @property
@@ -485,8 +494,6 @@ class Settings(BaseSettings):
                 errors.append("CORS_ORIGINS must contain only public HTTPS origins")
             if missing(self.OPENAI_API_KEY):
                 errors.append("OPENAI_API_KEY is required")
-            if missing(self.GROQ_API_KEY):
-                errors.append("GROQ_API_KEY is required")
             if missing(self.GOOGLE_CLIENT_ID) or missing(self.GOOGLE_CLIENT_SECRET):
                 errors.append("Google OAuth credentials are required")
             if missing(self.SMTP_USER) or missing(self.SMTP_PASSWORD) or missing(self.EMAIL_FROM):

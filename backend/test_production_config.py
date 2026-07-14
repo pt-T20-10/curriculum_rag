@@ -18,7 +18,6 @@ def _valid_production_settings(**overrides):
         "SECRET_KEY": "a-production-secret-that-is-longer-than-32-characters",
         "MYSQL_PASSWORD": "db-password-with-special@characters",
         "OPENAI_API_KEY": "openai-test-key",
-        "GROQ_API_KEY": "groq-test-key",
         "GOOGLE_CLIENT_ID": "google-client-id",
         "GOOGLE_CLIENT_SECRET": "google-client-secret",
         "SMTP_USER": "smtp-user",
@@ -117,6 +116,35 @@ def test_openai_rate_limit_settings_are_admin_configurable() -> None:
     assert registry["OPENAI_RATE_LIMIT_ENABLED"]["group"] == "rate_limits"
     assert "OPENAI_CHAT_MIN_INTERVAL_SECONDS" in registry
     assert "OPENAI_IMAGE_MIN_INTERVAL_SECONDS" in registry
+    assert "WIKIMEDIA_RATE_LIMIT_ENABLED" in registry
+    assert registry["WIKIMEDIA_RATE_LIMIT_ENABLED"]["group"] == "rate_limits"
+    assert "WIKIMEDIA_SEARCH_MIN_INTERVAL_SECONDS" in registry
+    assert "WIKIMEDIA_DOWNLOAD_MIN_INTERVAL_SECONDS" in registry
+
+
+def test_runtime_api_key_override_helper_prefers_explicit_override(monkeypatch) -> None:
+    from app.services import runtime_config
+
+    monkeypatch.setattr(
+        runtime_config,
+        "get_runtime_config",
+        lambda key, required=False: "admin-openai-key",
+    )
+
+    assert (
+        runtime_config.get_api_key_with_overrides(
+            "OPENAI_API_KEY",
+            {"OPENAI_API_KEY": "user-openai-key"},
+        )
+        == "user-openai-key"
+    )
+    assert (
+        runtime_config.get_api_key_with_overrides(
+            "OPENAI_API_KEY",
+            {"OPENAI_API_KEY": runtime_config.MASKED_VALUE},
+        )
+        == "admin-openai-key"
+    )
 
 
 def test_content_level_word_targets_are_configurable() -> None:

@@ -67,7 +67,7 @@ def test_publisher_keeps_export_artifacts_distinct(
     )
     monkeypatch.setattr(publisher, "_get_word_reference_doc", lambda path: None)
 
-    result = publisher.publish_curriculum(_state())
+    result = publisher.publish_curriculum(_state()) #type: ignore
 
     assert bool(result["final_pdf_filepath"]) is has_pdf
     assert bool(result["final_docx_filepath"]) is has_docx
@@ -95,7 +95,7 @@ def test_publisher_filename_sanitizes_control_whitespace(
     )
     monkeypatch.setattr(publisher, "_get_word_reference_doc", lambda path: None)
 
-    result = publisher.publish_curriculum(_state(title))
+    result = publisher.publish_curriculum(_state(title)) #type: ignore
 
     markdown_path = Path(result["final_markdown_filepath"])
     assert markdown_path.is_file()
@@ -103,6 +103,53 @@ def test_publisher_filename_sanitizes_control_whitespace(
     assert "\n" not in markdown_path.name
     assert result["final_pdf_filepath"]
     assert result["final_docx_filepath"]
+
+
+def test_preview_cli_exports_pdf_and_docx_to_output_dir(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from scripts import convert_markdown_to_pdf_docx
+
+    md_path = tmp_path / "sample.md"
+    md_path.write_text(
+        "---\n"
+        'title-meta: "Giáo trình kiểm thử"\n'
+        "---\n\n"
+        "# Lời nói đầu\n\n"
+        "Nội dung mở đầu.\n\n"
+        "# CHƯƠNG 1: MỞ ĐẦU\n\n"
+        "Nội dung chương.",
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "preview"
+
+    monkeypatch.setattr(
+        convert_markdown_to_pdf_docx.publisher,
+        "pypandoc",
+        _fake_pandoc(fail_pdf=False, fail_docx=False),
+    )
+    monkeypatch.setattr(
+        convert_markdown_to_pdf_docx.publisher,
+        "_get_word_reference_doc",
+        lambda path: None,
+    )
+    monkeypatch.setattr(
+        convert_markdown_to_pdf_docx.publisher,
+        "finalize_word_docx",
+        lambda *args, **kwargs: True,
+    )
+
+    artifacts = convert_markdown_to_pdf_docx.convert_markdown_to_pdf_docx(
+        md_path,
+        output_dir,
+        "vi",
+    )
+
+    assert artifacts["pdf"] == output_dir / "sample_preview.pdf"
+    assert artifacts["word"] == output_dir / "sample_preview.docx"
+    assert artifacts["pdf"].read_bytes().startswith(b"%PDF")
+    assert artifacts["word"].read_bytes().startswith(b"PK")
 
 
 def test_add_figure_numbers_uses_chapter_scoped_sequence() -> None:
@@ -150,9 +197,77 @@ def test_add_figure_numbers_supports_english_and_word_figure_list() -> None:
 
     assert "![Figure 3.1: First diagram](one.png)" in numbered
     assert "![Figure 3.2: Second diagram](two.png)" in numbered
-    assert "# List of Figures" in word_md
-    assert "- Figure 3.1: First diagram" in word_md
-    assert "- Figure 3.2: Second diagram" in word_md
+    assert "# List of Figures" not in word_md
+    assert re.search(r"(?m)^List of Figures$", word_md)
+    assert publisher._WORD_FIGURE_LIST_MARKER in word_md
+    assert "- Figure 3.1: First diagram" not in word_md
+
+
+def test_word_markdown_spacing_normalizes_lists_and_glued_math() -> None:
+    content = (
+        "Đoạn trước có mảng$M \\times N$chứa giá trị.\n"
+        "Giá trị $ C_{total} $ dùng với $ M $ và $N$liền chữ.\n"
+        "Ví dụ $L = 0,1$ H,$C = 100$ F.\n"
+        "- Công suất điện: $P = U \\cdot I$.\n"
+        "- Năng lượng điện: $W = P \\cdot t$ với $t$ là thời gian.\n"
+        "- Công suất điều hòa: `P_{đh} = 2,2` kW và P$_0$ = 15 W/m$^2$.\n"
+        "$$\nS = \\frac{P_{đh}}{cosφ}\n$$\n"
+        "Các đại lượng gồm số hàng ($M$) và số cột ($N$).\n"
+        "Sobel theo chiều ngang ($G_x$) và dọc ($G_y$).\n"
+        "Lỗi cũ có ($G_x $) và dọc ($ G_y$).\n"
+        "- Công suất biểu kiến: $S = U \\cdot I$ Trong đó $\\varphi$ là góc lệch pha.\n"
+        "Trong đó:\n"
+        "- $M$: chiều rộng\n"
+        "- $N$: chiều cao\n"
+        "Đoạn sau."
+    )
+
+    normalized = publisher.fix_math_formatting(content)
+    normalized = publisher.normalize_math_identifier_formatting(normalized)
+    normalized = publisher.normalize_formula_explanations(normalized)
+    normalized = publisher.normalize_markdown_list_spacing(normalized)
+
+    assert "mảng $M \\times N$ chứa" in normalized
+    assert "$C_{total}$" in normalized
+    assert "$M$" in normalized
+    assert "$N$ liền chữ" in normalized
+    assert "$L = 0,1$ H, $C = 100$ F" in normalized
+    assert "$P = U \\cdot I$.\n- Năng lượng" in normalized
+    assert "$P = U \\cdot I$. - Năng lượng" not in normalized
+    assert "$P_{dh} = 2,2$" in normalized
+    assert "$P_{đh}" not in normalized
+    assert "`P_{đh}" not in normalized
+    assert "$P_{0}$ = 15" in normalized
+    assert "W/m$^2$" in normalized
+    assert "\\frac{P_{dh}}{\\cos\\varphi}" in normalized
+    assert "$ C_{total} $" not in normalized
+    assert "số hàng ($M$) và số cột ($N$)" in normalized
+    assert "ngang ($G_x$) và dọc ($G_y$)" in normalized
+    assert "$G_x $" not in normalized
+    assert "$ G_y$" not in normalized
+    assert "vàsố" not in normalized
+    assert "- Công suất biểu kiến: $S = U \\cdot I$\n\nTrong đó:\n\n- $\\varphi$: góc lệch pha." in normalized
+    assert "Trong đó:\n\n- $M$: chiều rộng" in normalized
+    assert "- $N$: chiều cao\n\nĐoạn sau." in normalized
+
+
+def test_markdown_image_blocks_are_standalone_for_word_captions() -> None:
+    content = (
+        "Đoạn trước ![Sơ đồ mạch](outputs/images/a.png){width=70%} Đoạn sau.\n\n"
+        "> \n\n"
+        "![Ảnh thứ hai](outputs/images/b.png){width=70%}\n"
+    )
+
+    normalized = publisher.normalize_markdown_image_blocks(content)
+    numbered = publisher.add_figure_numbers(
+        "# CHƯƠNG 1: MỞ ĐẦU\n\n" + normalized,
+        language="vi",
+    )
+
+    assert "Đoạn trước\n\n![Sơ đồ mạch](outputs/images/a.png){width=70%}\n\nĐoạn sau." in normalized
+    assert ">" not in normalized
+    assert "![Hình 1.1: Sơ đồ mạch](outputs/images/a.png){width=70%}" in numbered
+    assert "![Hình 1.2: Ảnh thứ hai](outputs/images/b.png){width=70%}" in numbered
 
 
 def test_partial_markdown_checkpoint_preserves_reviewed_content(
@@ -201,13 +316,13 @@ def test_context_route_runs_targeted_recovery_once(monkeypatch) -> None:
     }
 
     assert (
-        orchestrator.route_after_context_evaluation(state)
+        orchestrator.route_after_context_evaluation(state) #type: ignore
         == orchestrator.WorkflowDecision.RECOVER_CONTEXT
     )
 
     state["rag_recovery_attempted"] = True
     assert (
-        orchestrator.route_after_context_evaluation(state)
+        orchestrator.route_after_context_evaluation(state) #type: ignore
         == orchestrator.WorkflowDecision.FINISHED
     )
 
@@ -232,18 +347,49 @@ def test_finalize_word_docx_localizes_toc_fonts_and_footer(tmp_path: Path) -> No
     docx = pytest.importorskip("docx")
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
+    from docx.enum.style import WD_STYLE_TYPE
 
     path = tmp_path / "book.docx"
     doc = docx.Document()
+    if "Source Code" not in [style.name for style in doc.styles]:
+        doc.styles.add_style("Source Code", WD_STYLE_TYPE.PARAGRAPH)
+    title = doc.add_paragraph("Giáo trình kiểm thử")
+    title.style = doc.styles["Title"]
     toc = doc.add_paragraph("Table of Contents")
     pstyle = OxmlElement("w:pStyle")
     pstyle.set(qn("w:val"), "TOCHeading")
     toc._p.get_or_add_pPr().append(pstyle)
+    doc.add_heading("Danh mục hình", level=1)
+    doc.add_paragraph(publisher._WORD_FIGURE_LIST_MARKER)
     doc.add_heading("Lời nói đầu", level=1)
     doc.add_paragraph("Nội dung lời nói đầu cần được căn đều như bản PDF.")
     doc.add_heading("CHƯƠNG 1: MỞ ĐẦU", level=1)
     doc.add_heading("1.1 Khái niệm", level=2)
     doc.add_heading("1.1.1 Chi tiết", level=3)
+    code = doc.add_paragraph("print('left aligned')")
+    code.style = doc.styles["Source Code"]
+    drawing_paragraph = doc.add_paragraph()
+    run = OxmlElement("w:r")
+    run.append(OxmlElement("w:drawing"))
+    drawing_paragraph._p.append(run)
+    caption = doc.add_paragraph("Hình 1.1: Sơ đồ kiểm thử")
+    caption.style = doc.styles["Caption"]
+    doc.add_paragraph("Hình 1.2: Caption không có style riêng")
+    missing_caption_drawing = doc.add_paragraph()
+    missing_run = OxmlElement("w:r")
+    missing_drawing = OxmlElement("w:drawing")
+    missing_inline = OxmlElement("wp:inline")
+    doc_pr = OxmlElement("wp:docPr")
+    doc_pr.set("id", "9")
+    doc_pr.set("name", "Picture 9")
+    doc_pr.set("descr", "Hình 1.3: Caption lấy từ alt text")
+    missing_inline.append(doc_pr)
+    missing_drawing.append(missing_inline)
+    missing_run.append(missing_drawing)
+    missing_caption_drawing._p.append(missing_run)
+    doc.add_paragraph("Trong đó:")
+    doc.add_paragraph("$M$: Số hàng điểm ảnh")
+    doc.add_paragraph("$N$: Số cột điểm ảnh")
     doc.save(path)
 
     assert publisher.finalize_word_docx(
@@ -262,11 +408,44 @@ def test_finalize_word_docx_localizes_toc_fonts_and_footer(tmp_path: Path) -> No
 
     assert "Mục lục" in document_xml
     assert "Table of Contents" not in document_xml
-    assert document_xml.count("<w:sectPr") >= 2
+    assert publisher._WORD_FIGURE_LIST_MARKER not in document_xml
+    assert document_xml.count("<w:sectPr") >= 3
+    assert 'w:vAlign w:val="center"' in document_xml
+    assert 'w:left="1417"' in document_xml
+    assert 'w:right="1417"' in document_xml
+    assert 'w:top="1134"' in document_xml
+    assert 'w:bottom="1134"' in document_xml
     assert 'w:start="1"' in document_xml
     assert "w:updateFields" in settings_xml
     assert "PAGE" in footer_xml
     assert 'w:jc w:val="center"' in footer_xml
+    assert "PAGEREF fig_1" in document_xml
+    assert "PAGEREF fig_3" in document_xml
+    assert "HYPERLINK" in document_xml
+    assert 'w:leader="dot"' in document_xml
+    assert 'w:name="fig_1"' in document_xml
+    assert 'w:name="fig_3"' in document_xml
+    title_idx = document_xml.index("Giáo trình kiểm thử")
+    toc_idx = document_xml.index("Mục lục")
+    figure_title_idx = document_xml.index("Danh mục hình")
+    preface_idx = document_xml.index("Lời nói đầu")
+    assert title_idx < toc_idx < figure_title_idx < preface_idx
+    assert (
+        'w:type w:val="nextPage"' in document_xml[:toc_idx]
+        or 'w:br w:type="page"' in document_xml[title_idx:toc_idx]
+    )
+    assert 'w:br w:type="page"' in document_xml[toc_idx:figure_title_idx]
+    assert 'w:br w:type="page"' in document_xml[figure_title_idx:preface_idx]
+    assert document_xml[figure_title_idx:preface_idx].count('w:type="page"') == 1
+
+    figure_list_title = re.search(
+        r'<w:p\b(?:(?!</w:p>).)*?Danh mục hình(?:(?!</w:p>).)*?</w:p>',
+        document_xml,
+    )
+    assert figure_list_title
+    assert 'w:pStyle w:val="Heading1"' not in figure_list_title.group(0)
+    assert 'w:jc w:val="center"' in figure_list_title.group(0)
+
     body_paragraph = re.search(
         r'<w:p\b(?:(?!</w:p>).)*?Nội dung lời nói đầu cần được căn đều như bản PDF'
         r'(?:(?!</w:p>).)*?</w:p>',
@@ -281,6 +460,65 @@ def test_finalize_word_docx_localizes_toc_fonts_and_footer(tmp_path: Path) -> No
     )
     assert heading_paragraph
     assert 'w:jc w:val="both"' not in heading_paragraph.group(0)
+    assert 'w:jc w:val="center"' in heading_paragraph.group(0)
+
+    code_paragraph = re.search(
+        r"<w:p\b(?:(?!</w:p>).)*?left aligned"
+        r'(?:(?!</w:p>).)*?</w:p>',
+        document_xml,
+    )
+    assert code_paragraph
+    assert 'w:jc w:val="left"' in code_paragraph.group(0)
+
+    drawing_paragraph_xml = re.search(
+        r'<w:p\b(?:(?!</w:p>).)*?<w:drawing/?>(?:(?!</w:p>).)*?</w:p>',
+        document_xml,
+    )
+    assert drawing_paragraph_xml
+    assert 'w:jc w:val="center"' in drawing_paragraph_xml.group(0)
+
+    caption_paragraphs = re.findall(
+        r'<w:p\b(?:(?!</w:p>).)*?Hình 1.1: Sơ đồ kiểm thử'
+        r'(?:(?!</w:p>).)*?</w:p>',
+        document_xml,
+    )
+    assert caption_paragraphs
+    assert any('w:jc w:val="center"' in paragraph for paragraph in caption_paragraphs)
+
+    pattern_caption_paragraphs = re.findall(
+        r'<w:p\b(?:(?!</w:p>).)*?Hình 1.2: Caption không có style riêng'
+        r'(?:(?!</w:p>).)*?</w:p>',
+        document_xml,
+    )
+    assert pattern_caption_paragraphs
+    assert any('w:jc w:val="center"' in paragraph for paragraph in pattern_caption_paragraphs)
+
+    inserted_caption_paragraphs = re.findall(
+        r'<w:p\b(?:(?!</w:p>).)*?Hình 1.3: Caption lấy từ alt text'
+        r'(?:(?!</w:p>).)*?</w:p>',
+        document_xml,
+    )
+    assert inserted_caption_paragraphs
+    assert any(
+        'w:jc w:val="center"' in paragraph and "fldChar" not in paragraph
+        for paragraph in inserted_caption_paragraphs
+    )
+
+    formula_intro = re.search(
+        r'<w:p\b(?:(?!</w:p>).)*?Trong đó:(?:(?!</w:p>).)*?</w:p>',
+        document_xml,
+    )
+    assert formula_intro
+    assert "w:keepNext" in formula_intro.group(0)
+    assert "w:keepLines" in formula_intro.group(0)
+
+    formula_item = re.search(
+        r'<w:p\b(?:(?!</w:p>).)*?Số hàng điểm ảnh(?:(?!</w:p>).)*?</w:p>',
+        document_xml,
+    )
+    assert formula_item
+    assert "w:keepNext" in formula_item.group(0)
+    assert "w:keepLines" in formula_item.group(0)
 
     for style_id in ("Heading1", "Heading2", "Heading3"):
         match = re.search(
@@ -380,7 +618,7 @@ def test_workflow_fails_when_a_required_export_is_missing(
             "language": "vi",
             "textbook_title": "C# Basics",
             "export_formats": ["PDF", "Word"],
-        },
+        }, #type: ignore
         db=None,
     ))
 
@@ -432,7 +670,7 @@ def test_workflow_reports_terminal_insufficient_context_before_export(
             "language": "vi",
             "textbook_title": "C# Basics",
             "export_formats": ["PDF", "Word"],
-        },
+        }, #type: ignore
         db=None,
     ))
 

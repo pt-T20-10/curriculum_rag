@@ -1,8 +1,11 @@
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { getOutputUrl } from '../../utils/helpers'
+import { WordFieldUpdateNoticeModal } from './WordFieldUpdateNoticeModal'
 
 export function CompletionModal({ isOpen, onClose, textbookData, onViewDashboard }) {
   const { t } = useTranslation()
+  const [showWordNotice, setShowWordNotice] = useState(false)
 
   if (!isOpen || !textbookData) return null
 
@@ -79,7 +82,7 @@ export function CompletionModal({ isOpen, onClose, textbookData, onViewDashboard
             {/* DOCX Download */}
             {textbookData.docx_path && (
               <button
-                onClick={() => handleDownload('docx')}
+                onClick={() => setShowWordNotice(true)}
                 className="flex flex-col items-center gap-2 p-4 bg-blue-50 border-2 border-blue-200 rounded-lg hover:bg-blue-100 transition-all group"
               >
                 <svg className="w-8 h-8 text-blue-600 group-hover:scale-110 transition-transform" fill="currentColor" viewBox="0 0 24 24">
@@ -122,6 +125,12 @@ export function CompletionModal({ isOpen, onClose, textbookData, onViewDashboard
           </p>
         </div>
       </div>
+
+      <WordFieldUpdateNoticeModal
+        isOpen={showWordNotice}
+        onClose={() => setShowWordNotice(false)}
+        onConfirm={() => handleDownload('docx')}
+      />
     </div>
   )
 }

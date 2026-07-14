@@ -565,6 +565,14 @@ export const en = {
       noteTitle: 'Note:',
       noteText: 'Please review and edit the content before official use.',
     },
+    wordNotice: {
+      title: 'Note when opening the Word file',
+      description: 'Because Microsoft Word and LibreOffice update document fields differently on each machine, the table of contents and list of figures may not show the correct page numbers the first time the file is opened.',
+      stepsTitle: 'After opening the Word file for the first time:',
+      steps: 'Press Ctrl+A, then F9 to update the table of contents, list of figures, and page numbers. Some keyboard layouts may use Alt+A, then F9.',
+      note: 'The PDF is exported with a fixed layout; this note only applies to the editable Word file.',
+      confirm: 'I understand, download Word',
+    },
     stopModal: {
       title: 'Stop textbook generation?',
       description: 'Are you sure you want to stop this process?',

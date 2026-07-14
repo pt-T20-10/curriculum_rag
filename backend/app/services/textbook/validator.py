@@ -4,7 +4,8 @@ Validator Agent for AI Textbook Generator.
 
 import json
 import re
-from langchain_groq import ChatGroq
+from langchain_openai import ChatOpenAI
+from app.config import settings
 from app.services.runtime_config import get_api_key
 from app.schemas.curriculum import AgentState
 from app.services.textbook.language import (
@@ -342,11 +343,11 @@ def validate_topic(topic: str, ui_language: str = "vi") -> dict:
         return _validation_fallback("unsupported_textbook_language", ui_language, language_info)
     
     try:
-        llm = ChatGroq(
-            model="llama-3.3-70b-versatile",
-            api_key=get_api_key("GROQ_API_KEY"), #type: ignore
+        llm = ChatOpenAI(
+            model=settings.LLM_MODEL_CHEAP,
+            api_key=get_api_key("OPENAI_API_KEY"), #type: ignore
             temperature=0,
-            max_tokens=700,
+            max_completion_tokens=700,
         )
 
         prompt = f"""

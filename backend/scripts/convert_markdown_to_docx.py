@@ -76,6 +76,11 @@ def convert_markdown_to_docx(md_path: Path, output_dir: Path, language: str) -> 
     _warn_em_dash_lines(markdown, source)
 
     title = _extract_title(markdown, source.stem)
+    markdown = publisher.prepare_markdown_for_standalone_export(
+        markdown,
+        language=profile.code,
+        enable_images=True,
+    )
     output_path = _unique_output_path(output_dir, source.stem)
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="docx_preview_"))

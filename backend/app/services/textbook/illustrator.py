@@ -32,6 +32,7 @@ import uuid
 import textwrap
 from xmlrpc import client
 import requests
+from dataclasses import dataclass
 
 from openai import OpenAI
 from langchain_openai import ChatOpenAI
@@ -66,6 +67,29 @@ IMAGE_MAX_HEIGHT = 500
 # Output directory for downloaded/generated images (relative to BASE_DIR).
 # Cleaned up by Publisher after PDF export.
 IMAGE_OUTPUT_DIR = BASE_DIR / "outputs" / "images"
+WIKIMEDIA_API_URL = "https://commons.wikimedia.org/w/api.php"
+WIKIMEDIA_USER_AGENT = (
+    "CurriculumRAG/1.0 (educational textbook image search; "
+    "https://github.com/openai/codex)"
+)
+
+
+@dataclass(frozen=True)
+class ImageCandidate:
+    url: str
+    source: str
+    page_url: str = ""
+    title: str = ""
+    credit: str = ""
+    license: str = ""
+
+
+def _wikimedia_get(*args, **kwargs) -> requests.Response:
+    response = requests.get(*args, **kwargs)
+    if response.status_code == 429:
+        raise requests.HTTPError("429 Too Many Requests from Wikimedia", response=response)
+    response.raise_for_status()
+    return response
 
 
 def _select_image_generation_settings(section_type: str) -> tuple[str, str]:
@@ -120,6 +144,46 @@ _VIETNAMESE_CHARS: frozenset[str] = frozenset(
     'òóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵđ'
 )
 
+_WIKIMEDIA_ENTITY_HINTS = (
+    "portrait",
+    "person",
+    "biography",
+    "historical",
+    "landmark",
+    "monument",
+    "museum",
+    "temple",
+    "church",
+    "palace",
+    "tower",
+    "bridge",
+    "city",
+    "country",
+    "map",
+    "flag",
+    "photo",
+    "photograph",
+)
+
+_WIKIMEDIA_GENERIC_TECHNICAL_TERMS = (
+    "diagram",
+    "matrix",
+    "histogram",
+    "pipeline",
+    "process",
+    "workflow",
+    "comparison",
+    "algorithm",
+    "model",
+    "architecture",
+    "edge detection",
+    "jpeg",
+    "compression",
+    "sampling",
+    "quantization",
+    "pixel",
+)
+
 
 def _is_vietnamese(text: str) -> bool:
     """
@@ -129,6 +193,17 @@ def _is_vietnamese(text: str) -> bool:
     the caption title is already in Vietnamese.
     """
     return any(c in _VIETNAMESE_CHARS for c in text.lower())
+
+
+def _looks_like_wikimedia_entity_query(query: str) -> bool:
+    lowered = query.lower()
+    if any(term in lowered for term in _WIKIMEDIA_GENERIC_TECHNICAL_TERMS):
+        return any(term in lowered for term in ("portrait", "photograph", "photo", "landmark"))
+    if any(term in lowered for term in _WIKIMEDIA_ENTITY_HINTS):
+        return True
+    words = re.findall(r"[A-Za-z][A-Za-z'-]+", query)
+    title_case_words = [word for word in words if word[:1].isupper()]
+    return len(title_case_words) >= 2
 
 
 class IllustratorAgent:
@@ -155,16 +230,15 @@ class IllustratorAgent:
         """
         Initialize API keys, LLM client, and prompt logger.
 
-        Warns at startup if SERPER_API_KEY or OPENAI_API_KEY are missing so
-        degraded mode (tags stripped without replacement) is visible in logs
-        rather than silently failing per-image later.
+        Warns at startup only when OpenAI is missing. Serper is optional because
+        Wikimedia Commons provides the default no-key image search path.
         """
         self.api_key = get_api_key("SERPER_API_KEY", required=False)
         openai_api_key = get_api_key("OPENAI_API_KEY", required=False)
         if not self.api_key:
-            logger.warning("⚠️ SERPER_API_KEY is missing — image search disabled.")
+            logger.info("SERPER_API_KEY not set — optional Google image search disabled.")
         if not openai_api_key:
-            logger.warning("OPENAI_API_KEY not set — DRAW mode disabled, SEARCH only.")
+            logger.warning("OPENAI_API_KEY not set — DRAW mode disabled; Wikimedia search remains available.")
 
         self.prompt_logger = setup_prompt_logger("illustrator")
         # temperature=0 for classification and query tasks — determinism is
@@ -201,6 +275,9 @@ class IllustratorAgent:
         Returns:
             Short English search query (5-7 words, no quotes, no Vietnamese).
         """
+        if self.llm is None:
+            return ' '.join(description.split()[:6])
+
         try:
             self.prompt_logger.log(
                 system_prompt="Convert image description to 5-7 word Google Image search query",
@@ -547,7 +624,7 @@ class IllustratorAgent:
 
     def find_image_urls(self, query: str) -> list[str]:
         """
-        Search Google Images via Serper and return a list of validated URLs.
+        Search no-key Wikimedia Commons first, then optional Serper.
 
         Validates each candidate URL for protocol, file extension, and domain
         without downloading — callers handle per-URL download retry.
@@ -563,11 +640,110 @@ class IllustratorAgent:
                    build_image_query() before sending to Serper.
 
         Returns:
-            List of validated URLs in Serper relevance rank order.
-            Empty list if API unavailable, no results, or all candidates rejected.
+            List of validated URLs in provider relevance order.
+            Empty list if no provider returns usable candidates.
         """
+        candidates = self.find_image_candidates(query)
+        return [candidate.url for candidate in candidates]
+
+    def find_image_candidates(self, query: str) -> list[ImageCandidate]:
+        serper_candidates = self.find_serper_image_candidates(query)
+        wikimedia_candidates: list[ImageCandidate] = []
+        if not serper_candidates and _looks_like_wikimedia_entity_query(query):
+            wikimedia_candidates = self.find_wikimedia_image_candidates(query)
+        elif not serper_candidates:
+            logger.info(
+                "Skipping Wikimedia fallback for generic/non-entity query: '%s'",
+                query[:60],
+            )
+        seen: set[str] = set()
+        combined: list[ImageCandidate] = []
+        for candidate in [*serper_candidates, *wikimedia_candidates]:
+            if candidate.url in seen:
+                continue
+            seen.add(candidate.url)
+            combined.append(candidate)
+        return combined
+
+    def find_wikimedia_image_candidates(self, query: str) -> list[ImageCandidate]:
+        optimized_query = self.build_image_query(query)
+        logger.info(f"Searching Wikimedia Commons for: '{optimized_query}'")
+
+        params = {
+            "action": "query",
+            "format": "json",
+            "generator": "search",
+            "gsrsearch": optimized_query,
+            "gsrnamespace": "6",
+            "gsrlimit": str(INDICATE_LINKS_FOR_PICS),
+            "prop": "imageinfo",
+            "iiprop": "url|mime|size|extmetadata",
+            "iiurlwidth": "1200",
+        }
+
+        try:
+            response = rate_limited_call(
+                lambda: _wikimedia_get(
+                    WIKIMEDIA_API_URL,
+                    params=params,
+                    headers={"User-Agent": WIKIMEDIA_USER_AGENT},
+                    timeout=10,
+                ),
+                provider="wikimedia",
+                bucket="search",
+                metadata={
+                    "agent": "Illustrator",
+                    "node": "illustrator",
+                    "operation": "wikimedia_search",
+                },
+            )
+            pages = response.json().get("query", {}).get("pages", {})
+            candidates: list[ImageCandidate] = []
+
+            for page in pages.values():
+                imageinfo = (page.get("imageinfo") or [{}])[0]
+                image_url = imageinfo.get("thumburl") or imageinfo.get("url") or ""
+                if not isinstance(image_url, str) or not image_url.startswith(("http://", "https://")):
+                    continue
+                if any(image_url.lower().endswith(ext) for ext in _REJECTED_EXTENSIONS):
+                    continue
+
+                metadata = imageinfo.get("extmetadata") or {}
+
+                def meta(name: str) -> str:
+                    value = metadata.get(name, {})
+                    return str(value.get("value", "") if isinstance(value, dict) else value)
+
+                candidates.append(
+                    ImageCandidate(
+                        url=image_url,
+                        source="wikimedia",
+                        page_url=imageinfo.get("descriptionurl", ""),
+                        title=str(page.get("title", "")),
+                        credit=re.sub(r"<[^>]+>", "", meta("Artist") or meta("Credit")),
+                        license=meta("LicenseShortName") or meta("UsageTerms"),
+                    )
+                )
+
+            logger.info(
+                "Wikimedia search complete: %s candidate(s) for '%s'",
+                len(candidates),
+                optimized_query[:40],
+            )
+            return candidates
+        except requests.exceptions.Timeout:
+            logger.warning(f"Wikimedia request timed out for '{optimized_query[:40]}'")
+            return []
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Wikimedia network error: {e}")
+            return []
+        except Exception as e:
+            logger.warning(f"Unexpected error in Wikimedia search: {e}", exc_info=True)
+            return []
+
+    def find_serper_image_candidates(self, query: str) -> list[ImageCandidate]:
         if not self.api_key:
-            logger.warning("SERPER_API_KEY not configured — skipping image search")
+            logger.info("SERPER_API_KEY not configured — skipping optional Serper search")
             return []
 
         optimized_query = self.build_image_query(query)
@@ -586,7 +762,7 @@ class IllustratorAgent:
                 logger.warning(f"No images returned by Serper for '{optimized_query[:40]}'")
                 return []
 
-            valid_urls: list[str] = []
+            valid_candidates: list[ImageCandidate] = []
 
             for i, candidate in enumerate(images_results[:INDICATE_LINKS_FOR_PICS]):
                 image_url = candidate.get("imageUrl", "")
@@ -614,14 +790,21 @@ class IllustratorAgent:
                     )
                     continue
 
-                valid_urls.append(image_url)
+                valid_candidates.append(
+                    ImageCandidate(
+                        url=image_url,
+                        source="serper",
+                        page_url=str(candidate.get("link", "")),
+                        title=str(candidate.get("title", "")),
+                    )
+                )
                 logger.debug(f"Candidate {i+1} validated: {image_url[:60]}")
 
             logger.info(
-                f"Validation complete: {len(valid_urls)}/5 candidates passed "
+                f"Validation complete: {len(valid_candidates)}/5 candidates passed "
                 f"for '{optimized_query[:40]}'"
             )
-            return valid_urls
+            return valid_candidates
 
         except requests.exceptions.Timeout:
             logger.error(f"Serper request timed out for '{optimized_query[:40]}'")
@@ -835,7 +1018,7 @@ class IllustratorAgent:
             # ── SEARCH / DIAGRAM (bao gồm fallback từ DRAW) ───────────────────
             if action in ("SEARCH", "DIAGRAM"):
                 _MAX_SEARCH_ROUNDS = 3   # số lần thử tối đa với các candidate khác nhau
-                candidate_urls     = self.find_image_urls(description)
+                candidate_urls     = [candidate.url for candidate in self.find_serper_image_candidates(description)]
                 
 
                 round_path   = ""
@@ -882,14 +1065,24 @@ class IllustratorAgent:
                     )
                     local_path = last_resort
                 else:
-                    # Serper hoàn toàn thất bại → thử DALL-E lần cuối
+                    # Serper hoàn toàn thất bại → thử DALL-E/OpenAI trước.
                     logger.info(
                         f"All candidates failed for '{label[:50]}' — "
-                        f"last-resort DALL-E DRAW"
+                        f"last-resort OpenAI DRAW"
                     )
                     local_path = self.generate_image_openai(
                         description, is_search_fallback=True, section_type=section_type
                     )
+                    if not local_path and _looks_like_wikimedia_entity_query(description):
+                        logger.info(
+                            "OpenAI fallback failed — trying limited Wikimedia fallback "
+                            "for entity-like query"
+                        )
+                        for candidate in self.find_wikimedia_image_candidates(description)[:_MAX_SEARCH_ROUNDS]:
+                            dl_path = download_and_convert_image(candidate.url, IMAGE_OUTPUT_DIR)
+                            if dl_path:
+                                local_path = dl_path
+                                break
             # -- Build figure block --------------------------------------------
             if local_path:
                 # Caption: prefer TITLE (short). Translate only when it does not
@@ -951,8 +1144,17 @@ def download_and_convert_image(image_url: str, output_dir: Path) -> str:
         Absolute path string to the saved PNG, or "" on any failure.
     """
     try:
-        headers  = {'User-Agent': 'Mozilla/5.0 (compatible; TextbookBot/1.0)'}
-        response = requests.get(image_url, headers=headers, timeout=10, stream=True)
+        headers = {'User-Agent': WIKIMEDIA_USER_AGENT}
+        response = rate_limited_call(
+            lambda: _wikimedia_get(image_url, headers=headers, timeout=10, stream=True),
+            provider="wikimedia",
+            bucket="download",
+            metadata={
+                "agent": "Illustrator",
+                "node": "illustrator",
+                "operation": "wikimedia_download",
+            },
+        )
 
         if response.status_code != 200:
             logger.warning(f"Image download failed ({response.status_code}): {image_url[:60]}")
@@ -1052,14 +1254,14 @@ def illustrate_section(state: AgentState) -> dict:
         cleaned = re.sub(r"> \[IMAGE(?:\s+SUGGESTION)?: .*?\]", "", current_content)
         return {"current_content": cleaned}
 
-    # Graceful degradation when both image APIs are unavailable.
-    # Tags are stripped so the PDF does not contain broken placeholders.
-    serper_api_key = get_api_key("SERPER_API_KEY", required=False)
+    # Graceful degradation: Wikimedia Commons search is no-key, so missing
+    # Serper is no longer a reason to strip image tags up front.
     openai_api_key = get_api_key("OPENAI_API_KEY", required=False)
-    if not serper_api_key and not openai_api_key:
-        logger.warning("No image API configured (SERPER + OPENAI both missing) — removing tags")
-        cleaned = re.sub(r"> \[IMAGE(?:\s+SUGGESTION)?: .*?\]", "", current_content)
-        return {"current_content": cleaned}
+    if not openai_api_key:
+        logger.warning(
+            "OPENAI_API_KEY missing — using Wikimedia Commons search only; "
+            "tags without search results will be removed per image"
+        )
 
     sec_type = "medium"
     try:

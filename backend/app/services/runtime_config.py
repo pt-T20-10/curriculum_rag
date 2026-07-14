@@ -141,3 +141,30 @@ def get_api_key(key: str, required: bool = True) -> str:
     """Resolve a credential-like setting as a string."""
     value = get_runtime_config(key, required=required)
     return "" if _is_missing(value) else str(value)
+
+
+def get_runtime_config_with_overrides(
+    key: str,
+    overrides: dict[str, Any] | None = None,
+    required: bool = False,
+) -> Any:
+    """
+    Resolve runtime config with an explicit per-request/user override layer.
+
+    This prepares BYOK plumbing without exposing user secret storage yet:
+    callers can pass already-authorized, already-decrypted overrides and this
+    helper falls back to the existing DB-first system config resolver.
+    """
+    if overrides and key in overrides and not _is_missing(overrides[key]):
+        return overrides[key]
+    return get_runtime_config(key, required=required)
+
+
+def get_api_key_with_overrides(
+    key: str,
+    overrides: dict[str, Any] | None = None,
+    required: bool = True,
+) -> str:
+    """Resolve a credential-like setting with optional per-request overrides."""
+    value = get_runtime_config_with_overrides(key, overrides=overrides, required=required)
+    return "" if _is_missing(value) else str(value)

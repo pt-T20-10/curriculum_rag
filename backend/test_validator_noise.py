@@ -59,15 +59,16 @@ def test_validate_topic_rejects_noise_even_if_llm_accepts(monkeypatch) -> None:
             "language_source": "input",
         })
 
-    class FakeChatGroq:
+    class FakeChatOpenAI:
         def __init__(self, **kwargs):
+            assert kwargs["api_key"] == "fake-openai-key"
             pass
 
         def invoke(self, prompt: str) -> FakeResponse:
             return FakeResponse()
 
-    monkeypatch.setattr(validator, "ChatGroq", FakeChatGroq)
-    monkeypatch.setattr(validator, "get_api_key", lambda key: "fake-key")
+    monkeypatch.setattr(validator, "ChatOpenAI", FakeChatOpenAI)
+    monkeypatch.setattr(validator, "get_api_key", lambda key: "fake-openai-key")
 
     result = validator.validate_topic("Lập trình Python abc", ui_language="vi")
 
