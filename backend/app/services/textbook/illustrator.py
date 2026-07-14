@@ -1281,10 +1281,23 @@ def illustrate_section(state: AgentState) -> dict:
     except Exception:
             pass
 
-    agent = IllustratorAgent()
-    illustrated_content = agent.illustrate_content(
-        current_content,
-        section_type=sec_type,
-        language=state.get("language", "vi"),
-    )
+    try:
+        agent = IllustratorAgent()
+        illustrated_content = agent.illustrate_content(
+            current_content,
+            section_type=sec_type,
+            language=state.get("language", "vi"),
+        )
+    except Exception as e:
+        logger.warning(
+            "Illustrator failed unexpectedly; stripping image tags and "
+            "continuing section: %s",
+            e,
+            exc_info=True,
+        )
+        illustrated_content = re.sub(
+            r"> \[IMAGE(?:\s+SUGGESTION)?: .*?\]",
+            "",
+            current_content,
+        )
     return {"current_content": illustrated_content}

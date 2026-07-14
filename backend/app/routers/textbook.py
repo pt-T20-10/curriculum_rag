@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
 from app.database import get_async_db
+from app.ingestion.source_policy import normalize_source_preferences
 from app.models.credit_history import CreditHistory
 from app.models.textbook import Textbook, TextbookStatus
 from app.models.user import User, UserRole
@@ -266,6 +267,9 @@ async def create_textbook(
     user_requirements = validation.get("user_requirements", "")
     textbook_language = normalize_language(validation.get("target_language"), ui_language)
     planning_mode = textbook_data.planning_mode
+    source_preferences = normalize_source_preferences(
+        textbook_data.source_preferences.model_dump()
+    )
     initial_curriculum: dict[str, Any] | None = None
     initial_total_subsections = 0
 
@@ -327,17 +331,20 @@ async def create_textbook(
         total_subsections=initial_total_subsections,
         content_type=detected_type,
         textbook_mode=textbook_data.textbook_mode,
+        source_preferences=source_preferences,
         status=TextbookStatus.PENDING,
         credits_used=0,
         progress_data={
             "planning_mode": planning_mode,
             "textbook_mode": textbook_data.textbook_mode,
+            "source_preferences": source_preferences,
             "curriculum_data": initial_curriculum,
             "total_chapters": len(initial_curriculum["chapters"]) if initial_curriculum else 0,
             "total_subsections": initial_total_subsections,
         } if initial_curriculum else {
             "planning_mode": planning_mode,
             "textbook_mode": textbook_data.textbook_mode,
+            "source_preferences": source_preferences,
         },
     )
 
@@ -537,6 +544,10 @@ async def get_textbook_progress(
         progress_data.setdefault("language", textbook.language)  # type: ignore
     if textbook.textbook_mode:  # type: ignore
         progress_data.setdefault("textbook_mode", textbook.textbook_mode)  # type: ignore
+    progress_data.setdefault(
+        "source_preferences",
+        normalize_source_preferences(getattr(textbook, "source_preferences", None)),
+    )
 
     return TextbookProgressResponse(
         id=textbook.id,  # type: ignore

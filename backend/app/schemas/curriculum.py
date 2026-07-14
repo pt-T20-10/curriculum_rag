@@ -327,6 +327,7 @@ class AgentState(TypedDict):
     language: str
     textbook_mode: str
     advanced_config: dict[str, Any]
+    source_preferences: dict[str, Any]
 
     # ---- Planning ----
     curriculum: Any
@@ -520,6 +521,7 @@ def build_initial_state(
     content_level: str = "Trung Bình",
     content_type: str = "technical",
     textbook_mode: str = "standard",
+    source_preferences: dict[str, Any] | None = None,
     core_topic: str = "",
     user_requirements: str = "",
     language: str = "vi",
@@ -567,6 +569,7 @@ def build_initial_state(
         "textbook_mode":               textbook_mode,
         "language":                    language,
         "advanced_config":             advanced_config or {},
+        "source_preferences":          source_preferences or {},
         # ---- Planning ----
         "curriculum":      None,
         "initial_curriculum_structure": initial_curriculum_structure,

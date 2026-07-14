@@ -1,7 +1,14 @@
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from app.ingestion.source_policy import (
+    default_source_preferences,
+    normalize_domain,
+    normalize_url,
+    source_catalog,
+)
 
 
 class ValidationResult(BaseModel):
@@ -21,8 +28,50 @@ class ValidationResult(BaseModel):
     unsupported_language_name_vi: str = ""
 
 
+class SourcePreferences(BaseModel):
+    source_mode: Literal["system_default", "custom_hybrid", "custom_only"] = "system_default"
+    selected_source_ids: List[str] = Field(default_factory=list, max_length=20)
+    custom_urls: List[str] = Field(default_factory=list, max_length=30)
+    custom_domains: List[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator("selected_source_ids")
+    @classmethod
+    def validate_source_ids(cls, value: List[str]) -> List[str]:
+        valid_ids = {item["id"] for item in source_catalog()}
+        normalized: List[str] = []
+        for raw_id in value or []:
+            source_id = str(raw_id or "").strip()
+            if not source_id:
+                continue
+            if source_id not in valid_ids:
+                raise ValueError(f"Unknown source id: {source_id}")
+            if source_id not in normalized:
+                normalized.append(source_id)
+        return normalized
+
+    @field_validator("custom_urls")
+    @classmethod
+    def validate_custom_urls(cls, value: List[str]) -> List[str]:
+        normalized: List[str] = []
+        for raw_url in value or []:
+            url = normalize_url(raw_url)
+            if url not in normalized:
+                normalized.append(url)
+        return normalized
+
+    @field_validator("custom_domains")
+    @classmethod
+    def validate_custom_domains(cls, value: List[str]) -> List[str]:
+        normalized: List[str] = []
+        for raw_domain in value or []:
+            domain = normalize_domain(raw_domain)
+            if domain not in normalized:
+                normalized.append(domain)
+        return normalized
+
+
 class TextbookCreate(BaseModel):
-    topic: str = Field(..., min_length=1, max_length=500)
+    topic: str = Field(..., min_length=1, max_length=2500)
     num_chapters: int = Field(default=3, ge=1, le=50)
     content_level: str = Field(default="Trung Bình")
     max_subsections_per_chapter: int = Field(default=3, ge=1, le=30)
@@ -31,6 +80,7 @@ class TextbookCreate(BaseModel):
     export_formats: List[str] = Field(default_factory=lambda: ["PDF", "Word"])
     planning_mode: Literal["auto", "structured"] = "auto"
     textbook_mode: Literal["standard", "practice"] = "standard"
+    source_preferences: SourcePreferences = Field(default_factory=SourcePreferences)
     initial_structure_markdown: Optional[str] = Field(default=None, max_length=20000)
 
 
@@ -47,6 +97,7 @@ class TextbookResponse(BaseModel):
     language: str = "vi"
     content_type: str
     textbook_mode: str = "standard"
+    source_preferences: Optional[Dict[str, Any]] = Field(default_factory=default_source_preferences)
     status: str
     pdf_path: Optional[str] = None
     docx_path: Optional[str] = None

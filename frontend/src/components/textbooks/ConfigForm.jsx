@@ -23,6 +23,37 @@ const LANGUAGE_LABEL_KEYS = {
   en: 'textbook.language.en',
 }
 
+const SOURCE_GROUPS = [
+  {
+    key: 'english_academic',
+    labelKey: 'textbook.form.sourceGroupEnglishAcademic',
+    items: [
+      ['en_academic_open_textbooks', 'OpenStax, LibreTexts, MIT OCW'],
+      ['en_academic_universities', 'Stanford, Berkeley, CMU, Ivy League'],
+    ],
+  },
+  {
+    key: 'english_technical',
+    labelKey: 'textbook.form.sourceGroupEnglishTechnical',
+    items: [
+      ['en_technical_official_docs', 'Official technical docs'],
+    ],
+  },
+  {
+    key: 'vietnamese_academic',
+    labelKey: 'textbook.form.sourceGroupVietnameseAcademic',
+    items: [
+      ['vi_academic_universities', '.edu.vn, VNU, HUST, HCMUT, PTIT'],
+    ],
+  },
+]
+
+const SOURCE_MODE_OPTIONS = [
+  ['system_default', 'textbook.form.sourceModeSystem'],
+  ['custom_hybrid', 'textbook.form.sourceModeHybrid'],
+  ['custom_only', 'textbook.form.sourceModeCustomOnly'],
+]
+
 const RECOMMENDED_CONFIG = {
   num_chapters: { min: 2, max: 12 },
   max_subsections_per_chapter: { min: 2, max: 8 },
@@ -34,6 +65,7 @@ const ABSOLUTE_CONFIG_LIMITS = {
 }
 
 const VI_DIACRITIC_RE = /[ăâđêôơưáàảãạắằẳẵặấầẩẫậéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựýỳỷỹỵ]/i
+const DOMAIN_RE = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i
 
 const UNACCENTED_VI_PATTERNS = [
   /\bhoc\b/,
@@ -100,6 +132,50 @@ function looksLikeUnaccentedVietnameseTopic(topic) {
   return UNACCENTED_VI_PATTERNS.some(pattern => pattern.test(normalized))
 }
 
+function defaultSourcePreferences() {
+  return {
+    source_mode: 'system_default',
+    selected_source_ids: [],
+    custom_urls: [],
+    custom_domains: [],
+  }
+}
+
+function parseSourceLines(value, t) {
+  const urls = []
+  const domains = []
+  const errors = []
+  String(value || '').split(/\r?\n/).forEach((rawLine, index) => {
+    const line = rawLine.trim()
+    if (!line) return
+
+    if (/^https?:\/\//i.test(line)) {
+      try {
+        const parsed = new URL(line)
+        if (!parsed.hostname) throw new Error('missing hostname')
+        if (!urls.includes(line)) urls.push(line)
+      } catch {
+        errors.push(t('textbook.form.sourceLineUrlInvalid', { line: index + 1 }))
+      }
+      return
+    }
+
+    if (line.includes('://') || line.includes('/') || line.includes('?') || line.includes('#')) {
+      errors.push(t('textbook.form.sourceLineDomainInvalid', { line: index + 1 }))
+      return
+    }
+
+    const domain = line.toLowerCase().replace(/^www\./, '')
+    if (!DOMAIN_RE.test(domain)) {
+      errors.push(t('textbook.form.sourceLineDomainInvalid', { line: index + 1 }))
+      return
+    }
+    if (!domains.includes(domain)) domains.push(domain)
+  })
+
+  return { urls, domains, errors }
+}
+
 export function ConfigForm({
   onSubmit,
   loading,
@@ -116,12 +192,14 @@ export function ConfigForm({
     topic: '',
     planning_mode: 'auto',
     textbook_mode: 'standard',
+    source_preferences: defaultSourcePreferences(),
     num_chapters: 3,
     content_level: CONTENT_LEVEL.MEDIUM,
     max_subsections_per_chapter: 5,
     enable_images: true
   })
   const [initialStructure, setInitialStructure] = useState(() => createDefaultStructure(t))
+  const [sourceInput, setSourceInput] = useState('')
   const [fieldErrors, setFieldErrors] = useState({})
   const [confirmWarnings, setConfirmWarnings] = useState([])
   const [pendingSubmitData, setPendingSubmitData] = useState(null)
@@ -196,6 +274,34 @@ export function ConfigForm({
       num_chapters: parseIntegerInput(formData.num_chapters),
       max_subsections_per_chapter: parseIntegerInput(formData.max_subsections_per_chapter),
     }
+    const shouldUseCustomSources = (formData.source_preferences?.source_mode || 'system_default') !== 'system_default'
+    const parsedSources = shouldUseCustomSources
+      ? parseSourceLines(sourceInput, t)
+      : { urls: [], domains: [], errors: [] }
+    const sourcePreferences = {
+      ...defaultSourcePreferences(),
+      ...(formData.source_preferences || {}),
+      selected_source_ids: shouldUseCustomSources
+        ? (formData.source_preferences?.selected_source_ids || [])
+        : [],
+      custom_urls: shouldUseCustomSources ? parsedSources.urls : [],
+      custom_domains: shouldUseCustomSources ? parsedSources.domains : [],
+    }
+    submitData.source_preferences = sourcePreferences
+
+    if (parsedSources.errors.length > 0) {
+      setFieldErrors({ source_preferences: parsedSources.errors.join(' ') })
+      return
+    }
+    if (
+      sourcePreferences.source_mode === 'custom_only' &&
+      sourcePreferences.selected_source_ids.length === 0 &&
+      sourcePreferences.custom_urls.length === 0 &&
+      sourcePreferences.custom_domains.length === 0
+    ) {
+      setFieldErrors({ source_preferences: t('textbook.form.sourceCustomOnlyRequired') })
+      return
+    }
 
     if (submitData.planning_mode === 'structured') {
       const structureError = validateStructure(initialStructure, t)
@@ -249,6 +355,42 @@ export function ConfigForm({
         return next
       })
     }
+  }
+
+  const setSourceMode = (mode) => {
+    setFormData(prev => ({
+      ...prev,
+      source_preferences: {
+        ...defaultSourcePreferences(),
+        ...(prev.source_preferences || {}),
+        source_mode: mode,
+      },
+    }))
+  }
+
+  const toggleSourceId = (sourceId) => {
+    setFormData(prev => {
+      const prefs = {
+        ...defaultSourcePreferences(),
+        ...(prev.source_preferences || {}),
+      }
+      const current = prefs.selected_source_ids || []
+      const selected = current.includes(sourceId)
+        ? current.filter(id => id !== sourceId)
+        : [...current, sourceId]
+      return {
+        ...prev,
+        source_preferences: {
+          ...prefs,
+          selected_source_ids: selected,
+        },
+      }
+    })
+  }
+
+  const sourcePrefs = {
+    ...defaultSourcePreferences(),
+    ...(formData.source_preferences || {}),
   }
 
   if (isActive) {
@@ -339,6 +481,24 @@ export function ConfigForm({
                   <span className="text-xs text-gray-500">{t('textbook.form.textbookLanguage')}</span>
                   <span className="font-semibold text-gray-800">
                     {t(LANGUAGE_LABEL_KEYS[submittedConfig.language] || 'textbook.language.vi')}
+                  </span>
+                </div>
+              )}
+              <div className="flex flex-col gap-0.5">
+                <span className="text-xs text-gray-500">{t('textbook.form.sourceSettings')}</span>
+                <span className="font-semibold text-gray-800">
+                  {t(`textbook.form.sourceModeValue.${submittedConfig?.source_preferences?.source_mode || 'system_default'}`)}
+                </span>
+              </div>
+              {submittedConfig?.source_preferences && (
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-xs text-gray-500">{t('textbook.form.customSources')}</span>
+                  <span className="font-semibold text-gray-800">
+                    {(
+                      (submittedConfig.source_preferences.custom_urls?.length || 0) +
+                      (submittedConfig.source_preferences.custom_domains?.length || 0) +
+                      (submittedConfig.source_preferences.selected_source_ids?.length || 0)
+                    )}
                   </span>
                 </div>
               )}
@@ -507,6 +667,99 @@ export function ConfigForm({
               </p>
             </div>
           )}
+
+          <div className="space-y-3 rounded-lg border border-gray-200 bg-white p-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                {t('textbook.form.sourceSettings')}
+              </label>
+              <div className="grid grid-cols-1 gap-2 rounded-lg border border-gray-200 bg-gray-50 p-1 sm:grid-cols-3">
+                {SOURCE_MODE_OPTIONS.map(([value, labelKey]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setSourceMode(value)}
+                    disabled={loading}
+                    className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                      sourcePrefs.source_mode === value
+                        ? 'bg-white text-blue-700 shadow-sm ring-1 ring-blue-200'
+                        : 'text-gray-600 hover:bg-white/70'
+                    }`}
+                  >
+                    {t(labelKey)}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-1 text-xs text-gray-500">
+                {t(`textbook.form.sourceModeHint.${sourcePrefs.source_mode}`)}
+              </p>
+            </div>
+
+            {sourcePrefs.source_mode !== 'system_default' && (
+              <>
+                <div className="space-y-3">
+                  {SOURCE_GROUPS.map(group => (
+                    <div key={group.key}>
+                      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                        {t(group.labelKey)}
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {group.items.map(([sourceId, label]) => {
+                          const checked = sourcePrefs.selected_source_ids.includes(sourceId)
+                          return (
+                            <button
+                              key={sourceId}
+                              type="button"
+                              onClick={() => toggleSourceId(sourceId)}
+                              disabled={loading}
+                              className={`rounded-md border px-3 py-2 text-xs font-medium transition-colors ${
+                                checked
+                                  ? 'border-blue-300 bg-blue-50 text-blue-700'
+                                  : 'border-gray-200 bg-white text-gray-700 hover:border-blue-200'
+                              }`}
+                            >
+                              {label}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    {t('textbook.form.customSources')}
+                  </label>
+                  <textarea
+                    value={sourceInput}
+                    onChange={(e) => {
+                      setSourceInput(e.target.value)
+                      if (fieldErrors.source_preferences) {
+                        setFieldErrors(prev => {
+                          const next = { ...prev }
+                          delete next.source_preferences
+                          return next
+                        })
+                      }
+                    }}
+                    placeholder={t('textbook.form.customSourcesPlaceholder')}
+                    className="w-full resize-none rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:ring-2 focus:ring-blue-500"
+                    rows={4}
+                    disabled={loading}
+                  />
+                  {fieldErrors.source_preferences && (
+                    <p className="mt-1 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
+                      {fieldErrors.source_preferences}
+                    </p>
+                  )}
+                  <p className="mt-1 text-xs text-gray-500">
+                    {t('textbook.form.customSourcesHint')}
+                  </p>
+                </div>
+              </>
+            )}
+          </div>
 
           {/* Content Level */}
           <div>

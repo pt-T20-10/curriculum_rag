@@ -13,8 +13,57 @@ def test_registry_defaults_match_settings_class_defaults() -> None:
 
     assert "API_COST_PROFILE" in get_user_registry()
     assert "API_COST_PROFILE" in get_admin_registry()
-    assert "RAG_TOOL_MAX_ROUNDS" not in get_user_registry()
-    assert "RAG_TOOL_MAX_ROUNDS" not in get_admin_registry()
+    assert "RAG_TOOL_MAX_ROUNDS" in get_user_registry()
+    assert "RAG_TOOL_MAX_ROUNDS" in get_admin_registry()
+
+
+def test_optimized_academic_defaults_are_registered() -> None:
+    from app.config import Settings
+    from app.config_registry import PARAMETER_REGISTRY
+
+    expected = {
+        "API_COST_PROFILE": "balanced_cost",
+        "CHUNK_SIZE": 2000,
+        "CHUNK_OVERLAP": 300,
+        "MAX_CHUNKS_TO_EMBED": 1200,
+        "SEARCH_QUERIES_PER_LANGUAGE": 6,
+        "SEARCH_RESULTS_PER_QUERY": 20,
+        "SEARCH_MAX_WORKERS": 4,
+        "TARGETED_CRAWL_QUERIES_PER_CHAPTER": 2,
+        "TARGETED_CRAWL_MAX_QUERIES": 16,
+        "CRAWL_MAX_ROOT_URLS": 80,
+        "URL_FILTER_MAX_WORKERS": 6,
+        "CRAWL_MAX_WORKERS": 5,
+        "VI_DOMAIN_CAP": 80,
+        "EN_DOMAIN_CAP": 80,
+        "MAX_CHUNKS_PER_DOMAIN": 35,
+        "RAG_INITIAL_K": 8,
+        "RAG_TOOL_K": 8,
+        "RAG_TOP_K": 8,
+        "RAG_TOOL_MAX_ROUNDS": 4,
+        "CRAG_CONTEXT_QUALITY_MIN_CHARS": 3500,
+        "CRAG_MAX_CONTEXT_RETRIES": 4,
+        "CRAG_BEST_EFFORT_AFTER_RETRIES": True,
+        "CRAG_TARGETED_RECOVERY_ENABLED": True,
+        "CRAG_TARGETED_RECOVERY_RESULTS_PER_QUERY": 6,
+        "CRAG_TARGETED_RECOVERY_MAX_ROOT_URLS": 5,
+        "RAG_TRUSTED_DOMAIN_QUOTA": 4,
+        "RAG_DEFAULT_DOMAIN_QUOTA": 2,
+        "WRITER_MAX_PRIOR_SUMMARIES": 6,
+        "OPENAI_RATE_LIMIT_ENABLED": True,
+        "MIN_EMBEDDED_UNIQUE_SOURCES": 12,
+        "MIN_EMBEDDED_UNIQUE_DOMAINS": 8,
+        "TARGET_EMBEDDED_UNIQUE_SOURCES": 15,
+        "MAX_CHUNKS_PER_SOURCE_DEFAULT": 180,
+        "MAX_CHUNKS_PER_PRIORITY_PDF": 300,
+        "MAX_SINGLE_SOURCE_CHUNK_RATIO": 0.30,
+        "CUSTOM_URL_DIRECT_SOURCE_CAP": 500,
+        "MIN_CITABLE_SOURCES": 10,
+    }
+
+    for key, value in expected.items():
+        assert Settings.model_fields[key].default == value
+        assert PARAMETER_REGISTRY[key]["default"] == value
 
 
 def test_cost_profile_selects_auxiliary_model() -> None:
@@ -140,7 +189,7 @@ def test_evaluator_calls_llm_when_context_is_missing(monkeypatch) -> None:
             calls["count"] += 1
             return (
                 "Document 1 (Source: https://a.example | Score: 0.700):\n"
-                + ("A" * 3000)
+                + ("A" * 4000)
             ), ["q2"]
 
     monkeypatch.setattr(evaluator, "EvaluatorAgent", FakeEvaluator)
@@ -166,6 +215,25 @@ def test_evaluator_calls_llm_when_context_is_missing(monkeypatch) -> None:
     assert calls["count"] == 1
     assert result["context_quality"] == "sufficient"
     assert result["used_rag_queries"] == ["q1", "q2"]
+
+
+def test_orchestrator_continues_with_best_effort_after_retry_budget() -> None:
+    from app.services.textbook.orchestrator import (
+        WorkflowDecision,
+        route_after_context_evaluation,
+    )
+
+    decision = route_after_context_evaluation(
+        {
+            "context_quality": "insufficient",
+            "rag_retrieval_attempts": 4,
+            "used_rag_queries": ["q1", "q2"],
+            "rag_recovery_attempted": True,
+            "rag_best_effort_context": "Document 1 (Source: https://a.edu): useful context",
+        }
+    )
+
+    assert decision == WorkflowDecision.CONTINUE_SUBSECTION
 
 
 def test_ingestion_reuses_query_expansion_in_balanced_cost(monkeypatch) -> None:

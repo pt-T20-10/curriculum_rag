@@ -139,9 +139,9 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     
     # ==================== RAG Settings ====================
-    RAG_TOP_K: int = 5
-    RAG_INITIAL_K: int = 5 
-    RAG_TOOL_K: int = 5
+    RAG_TOP_K: int = 8
+    RAG_INITIAL_K: int = 8
+    RAG_TOOL_K: int = 8
     RAG_TOOL_MAX_ROUNDS: int = 4
     
     # ==================== LLM Models ====================
@@ -171,17 +171,17 @@ class Settings(BaseSettings):
     #   - "local":  bge-m3 local model, slower but free, 1024 dims
     EMBEDDING_PROVIDER: str = "openai" 
     # ==================== Chunking ====================
-    CHUNK_SIZE: int = 1500
+    CHUNK_SIZE: int = 2000
     CHUNK_OVERLAP: int = 300
     
     # ==================== Ingestion Speed Controls ====================
-    SEARCH_QUERIES_PER_LANGUAGE: int = 4  #6
-    SEARCH_RESULTS_PER_QUERY: int = 15  #30
-    SEARCH_MAX_WORKERS: int = 6
+    SEARCH_QUERIES_PER_LANGUAGE: int = 6
+    SEARCH_RESULTS_PER_QUERY: int = 20
+    SEARCH_MAX_WORKERS: int = 4
     CRAWL_MAX_WORKERS: int = 5
     CRAWL_MAX_SUB_LINKS: int = 3 #5
-    CRAWL_MAX_ROOT_URLS: int = 50 #0
-    URL_FILTER_MAX_WORKERS: int = 5
+    CRAWL_MAX_ROOT_URLS: int = 80
+    URL_FILTER_MAX_WORKERS: int = 6
     INDICATE_LINKS_FOR_PICS: int = 12
     CRAWL_MAX_DEPTH2_LINKS: int = 1 #3
     
@@ -203,13 +203,25 @@ class Settings(BaseSettings):
     # ==================== Phase 1: Language-Aware Domain Caps ====================
     
     # Base domain cap - applies to most domains
-    MAX_CHUNKS_PER_DOMAIN: int = 25  # ✅ FIX: Only define once
+    MAX_CHUNKS_PER_DOMAIN: int = 35
     
     # Vietnamese content is scarcer → allow more chunks per domain
     VI_DOMAIN_CAP: int = 80
     
-    # English content is abundant → moderate restriction
-    EN_DOMAIN_CAP: int = 35
+    # English content is abundant, but source-level caps now do the sharper
+    # anti-dominance work, so keep parity with VI for trusted academic corpora.
+    EN_DOMAIN_CAP: int = 80
+
+    # Final Chroma corpus diversity controls. These apply after quality and
+    # relevance filtering, before persistence.
+    MIN_EMBEDDED_UNIQUE_SOURCES: int = 12
+    MIN_EMBEDDED_UNIQUE_DOMAINS: int = 8
+    TARGET_EMBEDDED_UNIQUE_SOURCES: int = 15
+    MAX_CHUNKS_PER_SOURCE_DEFAULT: int = 180
+    MAX_CHUNKS_PER_PRIORITY_PDF: int = 300
+    MAX_SINGLE_SOURCE_CHUNK_RATIO: float = 0.30
+    CUSTOM_URL_DIRECT_SOURCE_CAP: int = 500
+    MIN_CITABLE_SOURCES: int = 10
     
     # Academic domains bypass all caps (verified high-quality sources)
     UNLIMITED_CAP_DOMAINS: tuple = (
@@ -231,7 +243,7 @@ class Settings(BaseSettings):
     
     
     # ==================== CRAG Pipeline ====================
-    CRAG_CONTEXT_QUALITY_MIN_CHARS: int = 2500
+    CRAG_CONTEXT_QUALITY_MIN_CHARS: int = 3500
     """
     Minimum total chars of enriched RAG context for ContextEvaluator to mark
     context_quality='sufficient'. Below this → 'insufficient' → retry or fail-open.
@@ -254,8 +266,8 @@ class Settings(BaseSettings):
     crawl a small set of URLs for the current subsection and ingest them into
     the same Chroma collection before retrying QueryFormulator once.
     """
-    CRAG_TARGETED_RECOVERY_RESULTS_PER_QUERY: int = 5
-    CRAG_TARGETED_RECOVERY_MAX_ROOT_URLS: int = 4
+    CRAG_TARGETED_RECOVERY_RESULTS_PER_QUERY: int = 6
+    CRAG_TARGETED_RECOVERY_MAX_ROOT_URLS: int = 5
 
     # ==================== Content Generation ====================
     CHECKPOINT_MARKDOWN_AFTER_SECTION: bool = True
@@ -303,9 +315,9 @@ class Settings(BaseSettings):
     """Minimum sentence count for a chunk to pass the heuristic quality filter."""
     RAG_MIN_AVG_SENTENCE_LEN: int = 30
     """Minimum average sentence length (chars) for heuristic quality filter."""
-    RAG_TRUSTED_DOMAIN_QUOTA: int = 3
+    RAG_TRUSTED_DOMAIN_QUOTA: int = 4
     """Max chunks from a single trusted edu domain (wikipedia, arxiv, etc.)."""
-    RAG_DEFAULT_DOMAIN_QUOTA: int = 1
+    RAG_DEFAULT_DOMAIN_QUOTA: int = 2
     """Max chunks from a single non-trusted domain (prevents single-source bias)."""
     RAG_SEMANTIC_DEDUP_THRESHOLD: float = 0.85
     """Cosine similarity ceiling for semantic deduplication (0.0–1.0).
@@ -336,12 +348,12 @@ class Settings(BaseSettings):
     """
 
     # ==================== Targeted Crawling (Shift 3) ====================
-    TARGETED_CRAWL_QUERIES_PER_CHAPTER: int =  1 #2
+    TARGETED_CRAWL_QUERIES_PER_CHAPTER: int = 2
     """
     Number of subsection search_query fields extracted per chapter for
     curriculum-grounded ingestion. Keeps targeted queries focused per chapter.
     """
-    TARGETED_CRAWL_MAX_QUERIES: int = 6  #12
+    TARGETED_CRAWL_MAX_QUERIES: int = 16
     """
     Hard cap on total curriculum-derived queries appended to the ingestion search.
     Prevents over-querying on textbooks with many chapters/subsections.
@@ -356,7 +368,7 @@ class Settings(BaseSettings):
     CHROMADB_BATCH_SIZE: int = 100
     
     # Maximum chunks to embed (pre-filter with heuristics to save time)
-    MAX_CHUNKS_TO_EMBED: int = 500  #1000
+    MAX_CHUNKS_TO_EMBED: int = 1200
 
     # ==================== LangGraph Workflow Runtime ====================
     PLANNING_WORKFLOW_RECURSION_LIMIT: int = 250
@@ -368,7 +380,7 @@ class Settings(BaseSettings):
     CLEANUP_RAG_COLLECTION_AFTER_EXPORT: bool = True
 
     # ==================== Shared API Rate Limiting ====================
-    OPENAI_RATE_LIMIT_ENABLED: bool = False
+    OPENAI_RATE_LIMIT_ENABLED: bool = True
     OPENAI_SHARED_RATE_LIMIT_ENABLED: bool = True
     OPENAI_REQUEST_MIN_INTERVAL_SECONDS: float = 0.0
     OPENAI_CHAT_MIN_INTERVAL_SECONDS: float = 0.0
@@ -413,12 +425,12 @@ class Settings(BaseSettings):
     # Format: field_name → (default_value, reason)
     _CRITICAL_DEFAULTS: dict = {
         "REVIEWER_MAX_REVISIONS":        (2,    "Controls quality gate depth — 0 disables review entirely"),
-        "CRAG_CONTEXT_QUALITY_MIN_CHARS":(1200, "Too low = ContentWriter gets sparse context"),
+        "CRAG_CONTEXT_QUALITY_MIN_CHARS":(3500, "Too low = ContentWriter gets sparse context"),
         "MIN_SNIPPET_SCORE":             (0.3,  "Too low floods ingestion; too high starves niche topics"),
         "RAG_TOP_K":                     (8,    "Affects retrieval diversity — changes output quality"),
         "CHUNK_SIZE":                    (2000, "Affects all downstream RAG quality"),
         "MIN_RELEVANCE_SCORE":           (0.22, "Controls ChromaDB post-filter — affects context richness"),
-        "RAG_TRUSTED_DOMAIN_QUOTA":      (3,    "Controls single-source dominance in retrieved context"),
+        "RAG_TRUSTED_DOMAIN_QUOTA":      (4,    "Controls single-source dominance in retrieved context"),
         "WRITER_MAX_PRIOR_SUMMARIES":    (6,    "Affects token budget — raising may cause context overflow"),
     }
 

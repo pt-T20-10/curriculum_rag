@@ -118,6 +118,7 @@ Ingestion chạy sau khi curriculum đã được xác nhận. Mỗi lượt gen
 prepare backend/data/chroma_db
   -> create/use per-textbook Chroma collection
   -> QueryExpansionAgent
+  -> source policy routing (system/default/custom)
   -> parallel DuckDuckGo search
   -> URL filter
   -> deep crawl HTML/PDF
@@ -131,9 +132,10 @@ prepare backend/data/chroma_db
 
 `QueryExpansionAgent` tạo:
 
-- 6 Vietnamese queries cho DuckDuckGo region `vn-vn`
-- 6 English queries cho region `us-en`
+- với `technical`/`scholarly`: mặc định dùng 3 Vietnamese queries và 6 English queries để ưu tiên nguồn học thuật tiếng Anh
+- với nhóm khác: dùng `SEARCH_QUERIES_PER_LANGUAGE`
 - thêm curriculum-targeted queries lấy từ `search_query` của subsection sau khi user confirm
+- thêm site-scoped queries dạng `site:<domain> <topic>` cho whitelist học thuật mặc định hoặc nguồn người dùng chọn
 
 Các targeted query bị giới hạn bởi:
 
@@ -146,16 +148,24 @@ Các targeted query bị giới hạn bởi:
 
 `url_filter.py` lọc URL theo nhiều lớp:
 
-- whitelist theo `content_type` để giữ nguồn đáng tin cậy như Wikipedia, OpenStax, arXiv, docs chính thức, wikiHow
+- whitelist theo `content_type` và `source_preferences` để giữ nguồn đáng tin cậy như OpenStax, LibreTexts, MIT OCW, arXiv, university domains, official docs, `.edu.vn`
 - snippet score bằng `MIN_SNIPPET_SCORE`
+- direct custom URLs bỏ qua snippet score nhưng vẫn qua static/dynamic validation
 - static blocklist domain/path/extension
 - dynamic content-type probe qua HTTP để chỉ nhận `text/html` và `application/pdf`
+
+`source_preferences` lưu theo từng textbook:
+
+- `system_default`: dùng whitelist học thuật mặc định, EN-heavy cho `technical`/`scholarly`
+- `custom_hybrid`: crawl URL/domain user chọn trước, thiếu thì bổ sung nguồn mặc định
+- `custom_only`: chỉ crawl URL/domain hoặc nhóm nguồn user chọn
 
 ### Crawler
 
 `crawler.py` xử lý:
 
 - PDF bằng PyMuPDF (`fitz`), fallback `pypdf`
+- priority textbook PDF: PDF trusted có tín hiệu `textbook`, `course notes`, `lecture notes`, `giáo trình`, `bài giảng` được giữ trọn sau quality/relevance filter và bỏ qua domain cap
 - HTML bằng Requests + BeautifulSoup
 - phân loại trang thành `educational`, `navigation`, `junk`
 - trang educational được lưu và crawl sublinks
@@ -176,6 +186,13 @@ Sau khi crawl:
   - Vietnamese chunks: `VI_DOMAIN_CAP=80`
   - English chunks: `EN_DOMAIN_CAP=35`
   - academic trusted domains trong `UNLIMITED_CAP_DOMAINS` không bị cap
+  - priority textbook PDF chunks không bị cap theo domain
+
+Sau mỗi lần lưu ChromaDB, crawler append một JSON record vào
+`backend/logs/embedded_sources_audit.jsonl`. File này ghi `run_id`,
+`collection_name`, `trusted_chunk_ratio`, `top_domains` và danh sách `sources`
+cuối cùng đã được embedding để audit nhanh nguồn có chủ yếu đến từ whitelist hay
+không.
 
 ### Retrieval
 

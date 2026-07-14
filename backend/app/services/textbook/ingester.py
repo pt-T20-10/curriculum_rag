@@ -38,6 +38,12 @@ from app.services.cost_profile import should_reuse_ingestion_query_expansion
 
 from app.ingestion.query_expansion import QueryExpansionAgent
 from app.ingestion.search_engine import search_web
+from app.ingestion.source_policy import (
+    default_domains_for_content_type,
+    domains_for_preferences,
+    domains_for_source_ids,
+    normalize_source_preferences,
+)
 from app.ingestion.url_filter import filter_and_classify_urls
 from app.ingestion.crawler import ingest_dynamic_data
 from app.utils import stop_signal
@@ -90,6 +96,33 @@ def _run_id_from_collection(collection_name: str) -> str:
     """Derive a compact run id from the per-textbook Chroma collection name."""
     match = re.match(r"^dynamic_context_(.+)$", collection_name or "")
     return match.group(1) if match else (collection_name or "dynamic_context")
+
+
+def _site_search_domain(domain: str) -> str:
+    return str(domain or "").strip().lower().lstrip(".")
+
+
+def _region_for_domain(domain: str) -> str:
+    normalized = domain.lower()
+    return "vn-vn" if normalized.endswith(".vn") or ".edu.vn" in normalized else "us-en"
+
+
+def _domain_queries(
+    domains: list[str] | tuple[str, ...],
+    topic: str,
+    limit: int,
+) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for domain in domains:
+        clean_domain = _site_search_domain(domain)
+        if not clean_domain or clean_domain in seen:
+            continue
+        seen.add(clean_domain)
+        pairs.append((f"site:{clean_domain} {topic}", _region_for_domain(domain)))
+        if len(pairs) >= limit:
+            break
+    return pairs
 
 
 def cleanup_rag_collection(collection_name: str) -> bool:
@@ -147,6 +180,7 @@ def recover_rag_for_current_section(state: AgentState) -> dict:
     content_type = state.get("content_type", "technical")
     collection_name = state.get("rag_collection_name", "dynamic_context")
     runtime_config = state.get("advanced_config", {}) or {}
+    source_preferences = normalize_source_preferences(state.get("source_preferences"))
 
     try:
         chapter, subsection = get_chapter_and_subsection(curriculum, chap_idx, sub_idx)
@@ -250,6 +284,11 @@ def recover_rag_for_current_section(state: AgentState) -> dict:
         content_type=content_type,
         min_snippet_score=min_snippet_score,
         max_workers=url_filter_max_workers,
+        trusted_domains=list(domains_for_preferences(
+            source_preferences,
+            content_type,
+            include_defaults=source_preferences["source_mode"] != "custom_only",
+        )),
     )
     clean_links = clean_links[:max_root_urls]
     if not clean_links:
@@ -326,6 +365,8 @@ def perform_ingestion(state: AgentState) -> dict:
     topic        = state.get("core_topic", "") or state["request"]
     content_type = state.get("content_type", "technical")
     runtime_config = state.get("advanced_config", {}) or {}
+    source_preferences = normalize_source_preferences(state.get("source_preferences"))
+    source_mode = source_preferences["source_mode"]
     collection_name = state.get("rag_collection_name", "dynamic_context")
     targeted_per_chapter = _config_int(
         runtime_config,
@@ -413,8 +454,15 @@ def perform_ingestion(state: AgentState) -> dict:
         else None
     )
 
-    vi_queries = expanded["vi"][:search_queries_per_language]
-    en_queries = expanded["en"][:search_queries_per_language]
+    if content_type in {"technical", "scholarly"}:
+        vi_query_limit = min(3, len(expanded["vi"]))
+        en_query_limit = min(6, len(expanded["en"]))
+    else:
+        vi_query_limit = min(search_queries_per_language, len(expanded["vi"]))
+        en_query_limit = min(search_queries_per_language, len(expanded["en"]))
+
+    vi_queries = expanded["vi"][:vi_query_limit]
+    en_queries = expanded["en"][:en_query_limit]
 
     logger.info(f"Query expansion with content_type: '{content_type}'")
     logger.info(f"VI queries: {vi_queries}")
@@ -463,15 +511,73 @@ def perform_ingestion(state: AgentState) -> dict:
         f"{len(vi_queries)+len(en_queries)+len(targeted_queries)} total queries)",
         flush=True,
     )
+    selected_domains = list(domains_for_source_ids(source_preferences["selected_source_ids"]))
+    custom_domains = list(source_preferences["custom_domains"])
+    custom_url_domains = []
+    for custom_url in source_preferences["custom_urls"]:
+        try:
+            from urllib.parse import urlparse
+            custom_url_domains.append(urlparse(custom_url).netloc.lower())
+        except Exception:
+            pass
+    trusted_domains = list(domains_for_preferences(
+        source_preferences,
+        content_type,
+        include_defaults=source_mode != "custom_only",
+    ))
+    trusted_domains.extend(custom_url_domains)
+
+    custom_domain_pairs = _domain_queries(
+        [*selected_domains, *custom_domains],
+        topic,
+        limit=20,
+    )
+    default_domain_pairs = []
+    if source_mode in {"system_default", "custom_hybrid"} and content_type in {"technical", "scholarly"}:
+        default_domain_pairs = _domain_queries(
+            list(default_domains_for_content_type(content_type)),
+            en_queries[0] if en_queries else topic,
+            limit=_config_int(
+                runtime_config,
+                "TARGET_EMBEDDED_UNIQUE_SOURCES",
+                getattr(settings, "TARGET_EMBEDDED_UNIQUE_SOURCES", 15),
+                minimum=1,
+            ),
+        )
+
+    default_region_pairs: list[tuple[str, str]] = []
+    if source_mode != "custom_only":
+        default_region_pairs = (
+            [(q, "vn-vn") for q in vi_queries]      +
+            [(q, "us-en") for q in en_queries]       +
+            [(q, "us-en") for q in targeted_queries]   # curriculum-specific seeds
+        )
+
     region_query_pairs: list[tuple[str, str]] = (
-        [(q, "vn-vn") for q in vi_queries]      +
-        [(q, "us-en") for q in en_queries]       +
-        [(q, "us-en") for q in targeted_queries]   # curriculum-specific seeds
+        custom_domain_pairs +
+        default_domain_pairs +
+        default_region_pairs
     )
 
     seen_urls:             set[str]  = set()
     all_raw_urls:          list[str] = []
     all_results_with_meta: list[dict] = []
+    skip_snippet_urls:     set[str] = set()
+
+    for custom_url in source_preferences["custom_urls"]:
+        if custom_url in seen_urls:
+            continue
+        seen_urls.add(custom_url)
+        skip_snippet_urls.add(custom_url)
+        all_raw_urls.append(custom_url)
+        all_results_with_meta.append({
+            "href": custom_url,
+            "title": "User selected source",
+            "body": f"Direct user selected source for {topic}",
+            "_query": "custom_url",
+            "_region": "custom",
+            "_direct_custom_url": "true",
+        })
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=search_max_workers) as executor:
         futures = {
@@ -521,6 +627,12 @@ def perform_ingestion(state: AgentState) -> dict:
     if not all_raw_urls:
         print(f"[DEBUG INGESTER] Step 3 FAILED: no search results", flush=True)
         logger.error("No search results found from any region")
+        if source_mode == "custom_only":
+            return {
+                "messages": [
+                    "✗ Ingestion failed: No custom sources were provided or found"
+                ]
+            }
         return {"messages": ["✗ Ingestion failed: No search results"]}
 
     if callback:
@@ -543,6 +655,8 @@ def perform_ingestion(state: AgentState) -> dict:
         content_type=content_type,
         min_snippet_score=min_snippet_score,
         max_workers=url_filter_max_workers,
+        trusted_domains=trusted_domains,
+        skip_snippet_urls=skip_snippet_urls,
     )
     if crawl_max_root_urls > 0 and len(clean_links) > crawl_max_root_urls:
         logger.info(
@@ -565,6 +679,12 @@ def perform_ingestion(state: AgentState) -> dict:
     if not clean_links:
         print(f"[DEBUG INGESTER] Step 4 FAILED: all URLs filtered out", flush=True)
         logger.error("No valid links after filtering")
+        if source_mode == "custom_only":
+            return {
+                "messages": [
+                    "✗ Ingestion failed: No valid URLs from selected custom sources"
+                ]
+            }
         return {"messages": ["✗ Ingestion failed: All URLs filtered out"]}
 
     if callback:

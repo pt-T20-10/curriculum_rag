@@ -180,6 +180,7 @@ async def run_textbook_workflow(
         content_type_val = textbook_record.content_type if textbook_record else "technical"
         textbook_mode_val = textbook_record.textbook_mode if textbook_record else "standard"
         language_val = textbook_record.language if textbook_record else language
+        source_preferences_val = textbook_record.source_preferences if textbook_record else {}
         progress_data_val = dict(textbook_record.progress_data or {}) if textbook_record else {}
         planning_mode_val = str(
             progress_data_val.get("planning_mode")
@@ -196,6 +197,7 @@ async def run_textbook_workflow(
         content_type_val = "technical"
         textbook_mode_val = "standard"
         language_val = language
+        source_preferences_val = {}
         planning_mode_val = "auto"
         initial_structure_val = None
     # Build initial state
@@ -211,6 +213,7 @@ async def run_textbook_workflow(
         user_requirements=user_req_val, #type: ignore
         language=language_val, #type: ignore
         advanced_config=advanced_config,
+        source_preferences=source_preferences_val, #type: ignore[arg-type]
         initial_curriculum_structure=initial_structure_val, #type: ignore
         planning_mode=planning_mode_val,
         export_formats=export_formats,
@@ -237,6 +240,7 @@ async def run_textbook_workflow(
                 "language": language_val,
                 "planning_mode": planning_mode_val,
                 "textbook_mode": textbook_mode_val,
+                "source_preferences": source_preferences_val,
             })
 
         cumulative_state: Dict[str, Any] = dict(initial_state)

@@ -465,7 +465,10 @@ def evaluate_context(state: AgentState) -> dict:
         if (
             context_quality == "insufficient"
             and allow_best_effort
-            and retrieval_attempts >= max_retries
+            and (
+                retrieval_attempts >= max_retries
+                or state.get("rag_recovery_attempted", False)
+            )
             and best_context.strip()
         ):
             context_quality = "best_effort"
@@ -502,8 +505,35 @@ def evaluate_context(state: AgentState) -> dict:
 
     except Exception as e:
         logger.error(f"ContextEvaluator unexpected error: {e}", exc_info=True)
+        best_context = state.get("rag_best_effort_context", "") or ""
+        if allow_best_effort and best_context.strip():
+            best_audit = dict(state.get("rag_best_effort_audit", {}) or {})
+            if not best_audit:
+                best_audit = build_source_audit_summary(
+                    best_context,
+                    used_queries=used_queries,
+                    context_quality="best_effort",
+                    chapter_index=chap_idx,
+                    subsection_index=sub_idx,
+                    discarded_chunks=prior_discarded_chunks,
+                )
+            best_audit["context_quality"] = "best_effort"
+            best_audit.setdefault("warnings", []).append(
+                f"ContextEvaluator error fallback used best available context: {e}"
+            )
+            return {
+                "rag_context":            best_context,
+                "context_quality":        "best_effort",
+                "web_supplement_context": "",
+                "rag_source_audit":       best_audit,
+                "rag_best_effort_context": best_context,
+                "rag_best_effort_audit":   best_audit,
+                "rag_best_effort_score":   float(state.get("rag_best_effort_score", 0.0) or 0.0),
+                "messages": [f"⚠️ ContextEvaluator fallback: best_effort after error: {e}"],
+            }
+
         # Strict gate: retrieval/evaluation errors must not be treated as
-        # sufficient source evidence.
+        # sufficient source evidence when no prior context exists.
         return {
             "rag_context":            initial_context,
             "context_quality":        "insufficient",

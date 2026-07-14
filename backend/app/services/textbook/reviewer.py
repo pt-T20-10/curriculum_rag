@@ -1328,7 +1328,8 @@ def review_section(state: AgentState) -> dict:
         char_max = max(char_max, char_min + 250)
 
         source_audit = state.get("rag_source_audit", {}) or {}
-        if source_audit.get("context_quality") == "insufficient":
+        source_context_quality = source_audit.get("context_quality")
+        if source_context_quality == "insufficient":
             feedback = (
                 "RAG source audit is insufficient for this section; "
                 "retrieve more relevant external sources before approving."
@@ -1344,6 +1345,11 @@ def review_section(state: AgentState) -> dict:
                     "[missing_context]: source audit insufficient"
                 ],
             }
+        if source_context_quality == "best_effort":
+            logger.warning(
+                "RAG source audit is best_effort for this section; reviewer will "
+                "continue and preserve source-faithful wording."
+            )
 
         # ------------------------------------------------------------------
         # Step 1 — Polish content.

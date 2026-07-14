@@ -26,7 +26,7 @@ export function CreateTextbookPage() {
   const [textbookId, setTextbookId] = useState(urlTextbookId || null)
   const [phase, setPhase] = useState('idle')
   const [progressData, setProgressData] = useState(null)
-  const [configExpanded, setConfigExpanded] = useState(false)
+  const [configExpanded, setConfigExpanded] = useState(true)
   const [error, setError] = useState(null)
   const [textbookTitle, setTextbookTitle] = useState('')
   const [submittedConfig, setSubmittedConfig] = useState(null) // ⭐ NEW - actual config
@@ -37,6 +37,7 @@ export function CreateTextbookPage() {
   const [showCompletionModal, setShowCompletionModal] = useState(false)
   const [completedTextbookData, setCompletedTextbookData] = useState(null)
   const [confirmingCurriculum, setConfirmingCurriculum] = useState(false)
+  const [creatingTextbook, setCreatingTextbook] = useState(false)
   const pollingRef = useRef(null)
 
   const clearDraftState = () => {
@@ -50,7 +51,8 @@ export function CreateTextbookPage() {
     setShowCompletionModal(false)
     setError(null)
     setConfirmingCurriculum(false)
-    setConfigExpanded(false)
+    setCreatingTextbook(false)
+    setConfigExpanded(true)
 
     if (pollingRef.current) {
       clearInterval(pollingRef.current)
@@ -88,6 +90,12 @@ export function CreateTextbookPage() {
               language: data.language || 'vi',
               planning_mode: data.planning_mode || 'auto',
               textbook_mode: data.textbook_mode || 'standard',
+              source_preferences: data.source_preferences || {
+                source_mode: 'system_default',
+                selected_source_ids: [],
+                custom_urls: [],
+                custom_domains: [],
+              },
             })
 
             const curriculum = data.curriculum_data
@@ -147,7 +155,9 @@ export function CreateTextbookPage() {
   }, [textbookId, phase, navigate, textbookTitle])
 
   const handleSubmit = async (formData) => {
+    if (creatingTextbook) return
     setError(null)
+    setCreatingTextbook(true)
     const uiLanguage = (i18n.resolvedLanguage || i18n.language || 'vi').split('-')[0]
 
     try {
@@ -166,11 +176,18 @@ export function CreateTextbookPage() {
         language: textbook.language || uiLanguage,
         planning_mode: formData.planning_mode || 'auto',
         textbook_mode: formData.textbook_mode || 'standard',
+        source_preferences: formData.source_preferences || {
+          source_mode: 'system_default',
+          selected_source_ids: [],
+          custom_urls: [],
+          custom_domains: [],
+        },
       }) // ⭐ Save actual submitted config
       setConfigExpanded(false)
 
       navigate(`/create/${textbook.id}`, { replace: true })
     } catch (err) {
+      setCreatingTextbook(false)
       console.error('Create error:', err)
       const errorDetail = err.response?.data?.detail
 
@@ -338,7 +355,7 @@ export function CreateTextbookPage() {
 
                 <ConfigForm
                   onSubmit={handleSubmit}
-                  loading={false}
+                  loading={creatingTextbook}
                   error={error}
                   user={user}
                   configExpanded={configExpanded}

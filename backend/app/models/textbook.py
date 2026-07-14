@@ -33,6 +33,16 @@ class Textbook(Base):
     enable_images = Column(Boolean, default=False, nullable=False)
     content_type = Column(String(50), nullable=False, default="technical", index=True)
     textbook_mode = Column(String(20), nullable=False, default="standard", index=True)
+    source_preferences = Column(
+        JSON,
+        nullable=True,
+        default=lambda: {
+            "source_mode": "system_default",
+            "selected_source_ids": [],
+            "custom_urls": [],
+            "custom_domains": [],
+        },
+    )
     status = Column(String(20), default=TextbookStatus.PENDING.value, nullable=False)
     pdf_path = Column(String(1000), nullable=True)
     docx_path = Column(String(1000), nullable=True)

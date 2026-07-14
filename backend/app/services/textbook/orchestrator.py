@@ -172,12 +172,26 @@ def route_after_context_evaluation(state: AgentState) -> str:
             )
             return WorkflowDecision.RECOVER_CONTEXT
 
+        best_effort_context = (state.get("rag_best_effort_context", "") or "").strip()
+        if (
+            getattr(settings, "CRAG_BEST_EFFORT_AFTER_RETRIES", True)
+            and best_effort_context
+        ):
+            logger.warning(
+                "Context quality: INSUFFICIENT after retry/recovery budget, "
+                "but best-effort context exists — proceeding to ContentWriter"
+            )
+            state["context_quality"] = "best_effort"
+            return WorkflowDecision.CONTINUE_SUBSECTION
+
         logger.error(
             f"Context quality: still INSUFFICIENT after {retrieval_attempts} "
             f"main retrieval attempt(s) and {len(used_queries)} total RAG "
             "queries — stopping before ContentWriter"
         )
         return WorkflowDecision.FINISHED
+    elif context_quality == "best_effort":
+        logger.warning("Context quality: BEST_EFFORT — proceeding to ContentWriter")
     else:
         logger.info("Context quality: SUFFICIENT — proceeding to ContentWriter")
 

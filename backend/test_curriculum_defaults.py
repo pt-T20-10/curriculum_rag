@@ -34,6 +34,32 @@ def test_initial_state_exports_pdf_and_word_by_default() -> None:
     assert state["export_formats"] == ["PDF", "Word"]
 
 
+def test_illustrator_failure_strips_image_tags_and_continues(monkeypatch) -> None:
+    from app.services.textbook import illustrator
+
+    class FailingIllustrator:
+        def illustrate_content(self, *args, **kwargs):
+            raise RuntimeError("image service failed")
+
+    monkeypatch.setattr(illustrator, "IllustratorAgent", lambda: FailingIllustrator())
+    monkeypatch.setattr(illustrator, "get_api_key", lambda *args, **kwargs: "test-key")
+
+    result = illustrator.illustrate_section(
+        {
+            "current_content": (
+                "## 1.1 Basics\n\n"
+                + ("Academic content. " * 10)
+                + "\n\n> [IMAGE: Test | useful diagram]"
+            ),
+            "enable_images": True,
+            "language": "vi",
+        }
+    )
+
+    assert "[IMAGE:" not in result["current_content"]
+    assert "Academic content" in result["current_content"]
+
+
 def test_content_level_min_words_raise_character_floor(monkeypatch) -> None:
     from app.schemas import curriculum
     from app.services import runtime_config

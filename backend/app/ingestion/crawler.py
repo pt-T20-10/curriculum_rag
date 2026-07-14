@@ -14,7 +14,10 @@ This ensures ChromaDB stays dense and relevant rather than large and noisy.
 
 import time
 import io
+import json
 import re
+from collections import Counter, defaultdict
+from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
 from typing import Any, List, Dict, Set, Optional
 
@@ -53,12 +56,32 @@ UNLIMITED_CAP_DOMAINS = settings.UNLIMITED_CAP_DOMAINS
 EMBEDDING_BATCH_SIZE = settings.EMBEDDING_BATCH_SIZE
 CHUNK_SIZE = settings.CHUNK_SIZE
 CHUNK_OVERLAP = settings.CHUNK_OVERLAP
+MIN_EMBEDDED_UNIQUE_SOURCES = settings.MIN_EMBEDDED_UNIQUE_SOURCES
+MIN_EMBEDDED_UNIQUE_DOMAINS = settings.MIN_EMBEDDED_UNIQUE_DOMAINS
+TARGET_EMBEDDED_UNIQUE_SOURCES = settings.TARGET_EMBEDDED_UNIQUE_SOURCES
+MAX_CHUNKS_PER_SOURCE_DEFAULT = settings.MAX_CHUNKS_PER_SOURCE_DEFAULT
+MAX_CHUNKS_PER_PRIORITY_PDF = settings.MAX_CHUNKS_PER_PRIORITY_PDF
+MAX_SINGLE_SOURCE_CHUNK_RATIO = settings.MAX_SINGLE_SOURCE_CHUNK_RATIO
+CUSTOM_URL_DIRECT_SOURCE_CAP = settings.CUSTOM_URL_DIRECT_SOURCE_CAP
+MIN_CITABLE_SOURCES = settings.MIN_CITABLE_SOURCES
 MIN_RELEVANCE_BY_TYPE: dict[str, float] = {
     "scholarly": 0.30,
     "technical": 0.25,
     "practical": 0.22,
     "lifestyle": 0.22,
 }
+
+TEXTBOOK_PDF_SIGNAL_PATTERN = re.compile(
+    r"\b(textbook|open\s+textbook|course\s+notes|lecture\s+notes|course\s+reader|"
+    r"gi[aá]o\s+tr[ìi]nh|b[aà]i\s+gi[aả]ng)\b",
+    re.IGNORECASE,
+)
+ADMINISTRATIVE_PDF_SIGNAL_PATTERN = re.compile(
+    r"\b(registrar|bulletin|catalog|catalogue|plan\s+of\s+study|syllabus|"
+    r"degree\s+requirements?|program\s+requirements?|press\s+kit|"
+    r"curriculum\s+sheet)\b",
+    re.IGNORECASE,
+)
 
 logger = setup_logger(name="Crawler", logfile="logs/crawler.log")
 
@@ -75,6 +98,54 @@ def _config_float(config: dict[str, Any], key: str, default: float) -> float:
         return float(config.get(key, default))
     except (TypeError, ValueError):
         return default
+
+
+def _source_url_for_chunk(chunk: Document) -> str:
+    meta = chunk.metadata or {}
+    return str(meta.get("source_url") or meta.get("source") or "unknown")
+
+
+def _source_domain_for_chunk(chunk: Document) -> str:
+    meta = chunk.metadata or {}
+    source = _source_url_for_chunk(chunk)
+    return urlparse(source).netloc.lower() or str(meta.get("domain") or "unknown")
+
+
+def _is_direct_custom_url_chunk(chunk: Document) -> bool:
+    meta = chunk.metadata or {}
+    return str(meta.get("direct_custom_url", "")).lower() == "true"
+
+
+def _runtime_diversity_config(runtime_config: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "MIN_EMBEDDED_UNIQUE_SOURCES": _config_int(
+            runtime_config, "MIN_EMBEDDED_UNIQUE_SOURCES", MIN_EMBEDDED_UNIQUE_SOURCES, minimum=1
+        ),
+        "MIN_EMBEDDED_UNIQUE_DOMAINS": _config_int(
+            runtime_config, "MIN_EMBEDDED_UNIQUE_DOMAINS", MIN_EMBEDDED_UNIQUE_DOMAINS, minimum=1
+        ),
+        "TARGET_EMBEDDED_UNIQUE_SOURCES": _config_int(
+            runtime_config, "TARGET_EMBEDDED_UNIQUE_SOURCES", TARGET_EMBEDDED_UNIQUE_SOURCES, minimum=1
+        ),
+        "MAX_CHUNKS_PER_SOURCE_DEFAULT": _config_int(
+            runtime_config, "MAX_CHUNKS_PER_SOURCE_DEFAULT", MAX_CHUNKS_PER_SOURCE_DEFAULT, minimum=1
+        ),
+        "MAX_CHUNKS_PER_PRIORITY_PDF": _config_int(
+            runtime_config, "MAX_CHUNKS_PER_PRIORITY_PDF", MAX_CHUNKS_PER_PRIORITY_PDF, minimum=1
+        ),
+        "MAX_SINGLE_SOURCE_CHUNK_RATIO": max(
+            0.01,
+            min(1.0, _config_float(
+                runtime_config, "MAX_SINGLE_SOURCE_CHUNK_RATIO", MAX_SINGLE_SOURCE_CHUNK_RATIO
+            )),
+        ),
+        "CUSTOM_URL_DIRECT_SOURCE_CAP": _config_int(
+            runtime_config, "CUSTOM_URL_DIRECT_SOURCE_CAP", CUSTOM_URL_DIRECT_SOURCE_CAP, minimum=1
+        ),
+        "MIN_CITABLE_SOURCES": _config_int(
+            runtime_config, "MIN_CITABLE_SOURCES", MIN_CITABLE_SOURCES, minimum=1
+        ),
+    }
 
 
 def _rate_limited_embed_query(embedding_model, query: str):
@@ -107,6 +178,168 @@ _VI_DIACRITIC_PATTERN = re.compile(
 def _detect_language(text: str) -> str:
     """Fast VI/EN language marker for retrieval audit metadata."""
     return "vi" if _VI_DIACRITIC_PATTERN.search(text[:500]) else "en"
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_embedding_source_audit_record(
+    *,
+    topic: str,
+    content_type: str,
+    collection_name: str,
+    run_id: str,
+    chunks: List[Document],
+    raw_chunk_count: int,
+    quality_chunk_count: int,
+    relevant_chunk_count: int,
+    saved_chunk_count: int,
+    config_snapshot: dict[str, Any] | None = None,
+    diversity_status: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Summarize final chunks that were written to ChromaDB, grouped by source."""
+    source_groups: dict[str, list[Document]] = defaultdict(list)
+    domain_counts: Counter[str] = Counter()
+    language_counts: Counter[str] = Counter()
+    trusted_chunk_count = 0
+    priority_pdf_chunk_count = 0
+
+    for chunk in chunks:
+        meta = chunk.metadata or {}
+        source = _source_url_for_chunk(chunk)
+        domain = _source_domain_for_chunk(chunk)
+        language = str(meta.get("language") or _detect_language(chunk.page_content))
+        source_groups[source].append(chunk)
+        domain_counts[domain] += 1
+        language_counts[language] += 1
+        if meta.get("trusted_source") == "true":
+            trusted_chunk_count += 1
+        if meta.get("source_quality") == "priority_textbook_pdf":
+            priority_pdf_chunk_count += 1
+
+    sources: list[dict[str, Any]] = []
+    for source, source_chunks in sorted(
+        source_groups.items(),
+        key=lambda item: (-len(item[1]), item[0]),
+    ):
+        first_meta = source_chunks[0].metadata or {}
+        scores = [
+            score
+            for score in (
+                _safe_float((chunk.metadata or {}).get("relevance_score"))
+                for chunk in source_chunks
+            )
+            if score is not None
+        ]
+        languages = Counter(
+            str((chunk.metadata or {}).get("language") or _detect_language(chunk.page_content))
+            for chunk in source_chunks
+        )
+        sources.append({
+            "url": source,
+            "domain": urlparse(source).netloc.lower() or first_meta.get("domain", ""),
+            "type": first_meta.get("type", ""),
+            "chunk_count": len(source_chunks),
+            "languages": dict(languages),
+            "avg_relevance_score": round(sum(scores) / len(scores), 4) if scores else None,
+            "trusted_source": first_meta.get("trusted_source") == "true",
+            "source_quality": first_meta.get("source_quality", ""),
+            "cap_bypass_reason": first_meta.get("cap_bypass_reason", ""),
+            "direct_custom_url": first_meta.get("direct_custom_url") == "true",
+            "search_region": first_meta.get("search_region", ""),
+            "source_query": first_meta.get("source_query", ""),
+            "search_title": first_meta.get("search_title", ""),
+        })
+
+    total_chunks = len(chunks)
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "run_id": run_id,
+        "collection_name": collection_name,
+        "topic": topic,
+        "content_type": content_type,
+        "raw_chunk_count": raw_chunk_count,
+        "quality_chunk_count": quality_chunk_count,
+        "relevant_chunk_count_before_cap": relevant_chunk_count,
+        "saved_chunk_count": saved_chunk_count,
+        "final_chunk_count": total_chunks,
+        "trusted_chunk_count": trusted_chunk_count,
+        "trusted_chunk_ratio": round(trusted_chunk_count / total_chunks, 4) if total_chunks else 0.0,
+        "priority_pdf_chunk_count": priority_pdf_chunk_count,
+        "unique_sources": len(source_groups),
+        "unique_domains": len(domain_counts),
+        "language_counts": dict(language_counts),
+        "config_snapshot": config_snapshot or {},
+        "diversity_status": diversity_status or {},
+        "top_domains": [
+            {"domain": domain, "chunk_count": count}
+            for domain, count in domain_counts.most_common(20)
+        ],
+        "sources": sources,
+    }
+
+
+def _write_embedding_source_audit(record: dict[str, Any]) -> None:
+    """Append one ChromaDB embedding-source audit record as JSONL."""
+    try:
+        audit_path = settings.BASE_DIR / "logs" / "embedded_sources_audit.jsonl"
+        audit_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(audit_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        logger.info(
+            "Embedded source audit written: %s "
+            "(run_id=%s, sources=%s, trusted_ratio=%.1f%%)",
+            audit_path,
+            record.get("run_id"),
+            record.get("unique_sources"),
+            float(record.get("trusted_chunk_ratio") or 0.0) * 100,
+        )
+    except Exception as e:
+        logger.warning("Could not write embedded source audit: %s", e)
+
+
+def _has_textbook_pdf_signal(*parts: str) -> bool:
+    haystack = " ".join(str(part or "") for part in parts)
+    return bool(TEXTBOOK_PDF_SIGNAL_PATTERN.search(haystack))
+
+
+def _has_administrative_pdf_signal(*parts: str) -> bool:
+    haystack = " ".join(str(part or "") for part in parts)
+    return bool(ADMINISTRATIVE_PDF_SIGNAL_PATTERN.search(haystack))
+
+
+def _is_priority_textbook_pdf(
+    url: str,
+    text: str,
+    metadata: dict[str, Any],
+) -> bool:
+    """Identify trusted full-textbook PDFs after extraction."""
+    if not (urlparse(url).path.lower().endswith(".pdf") or metadata.get("type") == "pdf"):
+        return False
+    if metadata.get("trusted_source") != "true":
+        return False
+    if _has_administrative_pdf_signal(
+        url,
+        metadata.get("search_title", ""),
+        metadata.get("source_query", ""),
+        text[:5000],
+    ):
+        logger.info(
+            "[PDF/NORMAL] %s is trusted but has administrative signals; "
+            "not marking as priority textbook PDF",
+            url[:100],
+        )
+        return False
+    return _has_textbook_pdf_signal(
+        url,
+        metadata.get("search_title", ""),
+        metadata.get("source_query", ""),
+        text[:5000],
+    )
 
 
 
@@ -781,6 +1014,12 @@ def _apply_domain_diversity_cap(
             lambda m: m.group(1) or '',
             raw_domain,
         )
+
+        if chunk.metadata.get("source_quality") == "priority_textbook_pdf":
+            domain_counts[domain] = domain_counts.get(domain, 0) + 1
+            capped.append(chunk)
+            unlimited_domains.add(domain)
+            continue
         
         # Determine cap for this domain
         if any(trusted in domain for trusted in UNLIMITED_CAP_DOMAINS):
@@ -851,6 +1090,141 @@ def _apply_domain_diversity_cap(
     )
     
     return capped
+
+
+def _chunk_relevance(chunk: Document) -> float:
+    return _safe_float((chunk.metadata or {}).get("relevance_score")) or 0.0
+
+
+def _apply_source_diversity_controls(
+    chunks: List[Document],
+    runtime_config: dict[str, Any],
+) -> tuple[List[Document], dict[str, Any]]:
+    """
+    Cap dominant individual sources after relevance filtering.
+
+    Domain caps prevent one host from dominating; this source-level pass prevents
+    one large PDF or HTML page from dominating the final Chroma corpus.
+    """
+    if not chunks:
+        return [], {}
+
+    cfg = _runtime_diversity_config(runtime_config)
+    by_source: dict[str, list[Document]] = defaultdict(list)
+    for chunk in chunks:
+        by_source[_source_url_for_chunk(chunk)].append(chunk)
+
+    per_source_limited: dict[str, list[Document]] = {}
+    removed_by_source_cap = 0
+    source_cap_details: list[dict[str, Any]] = []
+
+    for source, source_chunks in by_source.items():
+        sorted_chunks = sorted(source_chunks, key=_chunk_relevance, reverse=True)
+        first = sorted_chunks[0]
+        if _is_direct_custom_url_chunk(first):
+            cap = int(cfg["CUSTOM_URL_DIRECT_SOURCE_CAP"])
+            cap_type = "direct_custom_url"
+        elif (first.metadata or {}).get("source_quality") == "priority_textbook_pdf":
+            cap = int(cfg["MAX_CHUNKS_PER_PRIORITY_PDF"])
+            cap_type = "priority_textbook_pdf"
+        else:
+            cap = int(cfg["MAX_CHUNKS_PER_SOURCE_DEFAULT"])
+            cap_type = "default"
+
+        kept = sorted_chunks[:cap]
+        per_source_limited[source] = kept
+        removed = max(0, len(sorted_chunks) - len(kept))
+        removed_by_source_cap += removed
+        if removed:
+            source_cap_details.append({
+                "source": source,
+                "cap_type": cap_type,
+                "cap": cap,
+                "before": len(sorted_chunks),
+                "after": len(kept),
+                "removed": removed,
+            })
+
+    ratio = float(cfg["MAX_SINGLE_SOURCE_CHUNK_RATIO"])
+    removed_by_ratio_cap = 0
+    ratio_cap_details: list[dict[str, Any]] = []
+
+    for source, kept in list(per_source_limited.items()):
+        if not kept or _is_direct_custom_url_chunk(kept[0]):
+            continue
+        total = sum(len(group) for group in per_source_limited.values())
+        current = len(kept)
+        if total <= 0 or current / total <= ratio:
+            continue
+        other_count = total - current
+        if other_count <= 0:
+            continue
+        allowed = max(1, int((other_count * ratio) / max(0.01, 1.0 - ratio)))
+        allowed = min(current, allowed)
+        if allowed < current:
+            per_source_limited[source] = kept[:allowed]
+            removed = current - allowed
+            removed_by_ratio_cap += removed
+            ratio_cap_details.append({
+                "source": source,
+                "ratio": round(current / total, 4),
+                "max_ratio": ratio,
+                "before": current,
+                "after": allowed,
+                "removed": removed,
+            })
+
+    kept_ids = {id(chunk) for group in per_source_limited.values() for chunk in group}
+    capped = [chunk for chunk in chunks if id(chunk) in kept_ids]
+    source_counts = Counter(_source_url_for_chunk(chunk) for chunk in capped)
+    domain_counts = Counter(_source_domain_for_chunk(chunk) for chunk in capped)
+
+    status = {
+        "unique_sources": len(source_counts),
+        "unique_domains": len(domain_counts),
+        "min_unique_sources": cfg["MIN_EMBEDDED_UNIQUE_SOURCES"],
+        "min_unique_domains": cfg["MIN_EMBEDDED_UNIQUE_DOMAINS"],
+        "target_unique_sources": cfg["TARGET_EMBEDDED_UNIQUE_SOURCES"],
+        "min_citable_sources": cfg["MIN_CITABLE_SOURCES"],
+        "meets_min_sources": len(source_counts) >= int(cfg["MIN_EMBEDDED_UNIQUE_SOURCES"]),
+        "meets_min_domains": len(domain_counts) >= int(cfg["MIN_EMBEDDED_UNIQUE_DOMAINS"]),
+        "removed_by_source_cap": removed_by_source_cap,
+        "removed_by_ratio_cap": removed_by_ratio_cap,
+        "source_cap_details": source_cap_details[:20],
+        "ratio_cap_details": ratio_cap_details[:20],
+    }
+    warnings = []
+    if not status["meets_min_sources"]:
+        warnings.append(
+            "Final corpus has fewer unique sources than configured minimum; "
+            "workflow will continue best-effort."
+        )
+    if not status["meets_min_domains"]:
+        warnings.append(
+            "Final corpus has fewer unique domains than configured minimum; "
+            "workflow will continue best-effort."
+        )
+    status["warnings"] = warnings
+
+    if removed_by_source_cap or removed_by_ratio_cap:
+        logger.info(
+            "Source diversity controls: %s → %s chunks "
+            "(source_cap_removed=%s, ratio_cap_removed=%s)",
+            len(chunks),
+            len(capped),
+            removed_by_source_cap,
+            removed_by_ratio_cap,
+        )
+    if warnings:
+        logger.warning(
+            "Source diversity warning: sources=%s/%s, domains=%s/%s",
+            status["unique_sources"],
+            status["min_unique_sources"],
+            status["unique_domains"],
+            status["min_unique_domains"],
+        )
+
+    return capped, status
 # ---------------------------------------------------------------------------
 # PDF extraction
 # ---------------------------------------------------------------------------
@@ -1623,6 +1997,8 @@ def process_deep_crawl(
         "search_region": link_info.get("search_region", ""),
         "search_title": link_info.get("search_title", ""),
         "snippet_score": link_info.get("snippet_score", ""),
+        "trusted_source": link_info.get("trusted_source", "false"),
+        "direct_custom_url": link_info.get("direct_custom_url", link_info.get("_direct_custom_url", "false")),
     }
     sub_link_limit = CRAWL_MAX_SUB_LINKS if crawl_max_sub_links is None else crawl_max_sub_links
     depth2_limit = CRAWL_MAX_DEPTH2_LINKS if crawl_max_depth2_links is None else crawl_max_depth2_links
@@ -1636,9 +2012,16 @@ def process_deep_crawl(
         if doc_type == "pdf":
             text = extract_pdf_text(url)
             if len(text) > 300:
+                pdf_metadata = {**base_metadata, "type": "pdf"}
+                if _is_priority_textbook_pdf(url, text, pdf_metadata):
+                    pdf_metadata["source_quality"] = "priority_textbook_pdf"
+                    pdf_metadata["cap_bypass_reason"] = "trusted_textbook_pdf"
+                    logger.info(
+                        f"[PDF/PRIORITY] {url[:80]} marked as priority textbook PDF"
+                    )
                 results.append(Document(
                     page_content=text,
-                    metadata={**base_metadata, "type": "pdf"},
+                    metadata=pdf_metadata,
                 ))
             return results
 
@@ -1904,13 +2287,36 @@ def ingest_dynamic_data(
     if not quality_chunks:
         logger.error("All chunks removed by quality filter — data may be entirely noise")
         return False
+    quality_chunk_count_before_caps = len(quality_chunks)
 
     if len(quality_chunks) > max_chunks_to_embed:
+        priority_chunks = [
+            chunk for chunk in quality_chunks
+            if chunk.metadata.get("source_quality") == "priority_textbook_pdf"
+        ]
+        priority_ids = {id(chunk) for chunk in priority_chunks}
+        regular_cap = max(0, max_chunks_to_embed - len(priority_chunks))
+        regular_chunks = [
+            chunk for chunk in quality_chunks
+            if id(chunk) not in priority_ids
+        ][:regular_cap]
+        regular_ids = {id(chunk) for chunk in regular_chunks}
+        if len(priority_chunks) > max_chunks_to_embed:
+            logger.warning(
+                "Priority textbook PDF chunks (%s) exceed MAX_CHUNKS_TO_EMBED=%s; "
+                "keeping all priority chunks after quality filtering",
+                len(priority_chunks),
+                max_chunks_to_embed,
+            )
         logger.info(
-            f"Max chunks cap: {len(quality_chunks)} → {max_chunks_to_embed} "
-            f"before embedding"
+            f"Max chunks cap: {len(quality_chunks)} → "
+            f"{len(priority_chunks) + len(regular_chunks)} before embedding "
+            f"({len(priority_chunks)} priority textbook PDF chunks kept)"
         )
-        quality_chunks = quality_chunks[:max_chunks_to_embed]
+        quality_chunks = [
+            chunk for chunk in quality_chunks
+            if id(chunk) in priority_ids or id(chunk) in regular_ids
+        ]
 
     logger.info(f"Quality filter: {len(chunks)} → {len(quality_chunks)} chunks ...")
     if progress_callback:
@@ -1995,6 +2401,7 @@ def ingest_dynamic_data(
     ]
     relevant_chunks = [pair[0] for pair in relevant_pairs]
     relevant_embeddings = [pair[1] for pair in relevant_pairs]
+    relevant_chunk_count_before_cap = len(relevant_chunks)
     
     removed_irrelevant = len(quality_chunks) - len(relevant_chunks)
     logger.info(
@@ -2020,6 +2427,10 @@ def ingest_dynamic_data(
 
     # Apply cap and track indices to filter embeddings accordingly
     capped_chunks = _apply_domain_diversity_cap(relevant_chunks, MAX_CHUNKS_PER_DOMAIN)
+    capped_chunks, diversity_status = _apply_source_diversity_controls(
+        capped_chunks,
+        runtime_config,
+    )
     
     # Filter embeddings to match capped chunks
     # Build mapping from chunk id to embedding
@@ -2124,6 +2535,29 @@ def ingest_dynamic_data(
         logger.info(
             f"✓ ChromaDB save complete: {total_saved}/{len(texts)} chunks "
             f"in {elapsed_save:.1f}s (avg {elapsed_save/total_saved:.3f}s/chunk)"
+        )
+        _write_embedding_source_audit(
+            _build_embedding_source_audit_record(
+                topic=topic,
+                content_type=content_type,
+                collection_name=collection_name,
+                run_id=run_id,
+                chunks=relevant_chunks,
+                raw_chunk_count=len(chunks),
+                quality_chunk_count=quality_chunk_count_before_caps,
+                relevant_chunk_count=relevant_chunk_count_before_cap,
+                saved_chunk_count=total_saved,
+                config_snapshot={
+                    "CHUNK_SIZE": chunk_size,
+                    "CHUNK_OVERLAP": chunk_overlap,
+                    "MAX_CHUNKS_TO_EMBED": max_chunks_to_embed,
+                    "MAX_CHUNKS_PER_DOMAIN": MAX_CHUNKS_PER_DOMAIN,
+                    "VI_DOMAIN_CAP": VI_DOMAIN_CAP,
+                    "EN_DOMAIN_CAP": EN_DOMAIN_CAP,
+                    **_runtime_diversity_config(runtime_config),
+                },
+                diversity_status=diversity_status,
+            )
         )
         
         if progress_callback:

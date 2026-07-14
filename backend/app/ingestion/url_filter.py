@@ -21,6 +21,10 @@ from app.config import settings
 
 URL_FILTER_MAX_WORKERS = settings.URL_FILTER_MAX_WORKERS
 from app.ingestion.search_engine import score_search_result
+from app.ingestion.source_policy import (
+    default_domains_for_content_type,
+    domain_matches,
+)
 import concurrent.futures
 import requests
 
@@ -116,19 +120,84 @@ WHITELIST_DOMAINS: dict[str, tuple[str, ...]] = {
     "scholarly": (
     "wikipedia.org",
     "openstax.org",
+    "libretexts.org",
     "ocw.mit.edu",
     "arxiv.org",
+    "stanford.edu",
+    "mit.edu",
+    "berkeley.edu",
+    "cmu.edu",
+    "harvard.edu",
+    "yale.edu",
+    "princeton.edu",
+    "cornell.edu",
+    "washington.edu",
+    "uiuc.edu",
+    "gatech.edu",
+    "utexas.edu",
+    "umich.edu",
+    "cambridge.org",
+    "nasa.gov",
+    "nist.gov",
     "ncbi.nlm.nih.gov",
     "pmc.ncbi.nlm.nih.gov",
     "encyclopedia.com",
     "britannica.com",
+    ".edu.vn",
+    "moet.gov.vn",
+    "vnu.edu.vn",
+    "hust.edu.vn",
+    "hcmut.edu.vn",
+    "uit.edu.vn",
+    "ptit.edu.vn",
+    "ctu.edu.vn",
+    "hueuni.edu.vn",
+    "udn.vn",
     ),
     "technical": (
         "wikipedia.org",    
         "geeksforgeeks.org",
         "arxiv.org",
+        "openstax.org",
+        "libretexts.org",
+        "ocw.mit.edu",
+        "stanford.edu",
+        "mit.edu",
+        "berkeley.edu",
+        "cmu.edu",
+        "harvard.edu",
+        "yale.edu",
+        "princeton.edu",
+        "cornell.edu",
+        "washington.edu",
+        "uiuc.edu",
+        "gatech.edu",
+        "utexas.edu",
+        "umich.edu",
+        "cambridge.org",
+        "nasa.gov",
+        "nist.gov",
+        "ncbi.nlm.nih.gov",
+        "pmc.ncbi.nlm.nih.gov",
         "docs.python.org",
         "developer.mozilla.org",
+        "learn.microsoft.com",
+        "kubernetes.io",
+        "tensorflow.org",
+        "pytorch.org",
+        "postgresql.org",
+        "mysql.com",
+        "w3.org",
+        ".edu.vn",
+        "moet.gov.vn",
+        "vnu.edu.vn",
+        "hust.edu.vn",
+        "hcmut.edu.vn",
+        "uit.edu.vn",
+        "ptit.edu.vn",
+        "ctu.edu.vn",
+        "hueuni.edu.vn",
+        "udn.vn",
     ),
     "practical": (
         "wikihow.com",
@@ -307,6 +376,8 @@ def filter_and_classify_urls(
     content_type: str = "technical",   # ← thêm parameter
     min_snippet_score: float | None = None,
     max_workers: int | None = None,
+    trusted_domains: Optional[List[str] | tuple[str, ...]] = None,
+    skip_snippet_urls: Optional[set[str]] = None,
 ) -> List[Dict[str, str]]:
     """
     Filter and classify URLs into valid crawlable resources.
@@ -332,6 +403,7 @@ def filter_and_classify_urls(
     """
     threshold = SNIPPET_SCORE_THRESHOLD if min_snippet_score is None else min_snippet_score
     worker_count = URL_FILTER_MAX_WORKERS if max_workers is None else max_workers
+    skip_snippet_urls = skip_snippet_urls or set()
 
     # Step 1: Deduplicate
     unique_urls = list(dict.fromkeys(urls))
@@ -343,10 +415,14 @@ def filter_and_classify_urls(
     # That made audit claims weak: a trusted domain can still return an
     # irrelevant page for this subsection/topic. Keep the log signal, but make
     # every URL pass the same scoring and validation gates.
-    whitelist = WHITELIST_DOMAINS.get(content_type, ())
+    whitelist = tuple(dict.fromkeys((
+        *WHITELIST_DOMAINS.get(content_type, ()),
+        *default_domains_for_content_type(content_type),
+        *(trusted_domains or ()),
+    )))
     whitelisted_urls = [
         u for u in unique_urls
-        if any(domain in u.lower() for domain in whitelist)
+        if any(domain_matches(urlparse(u).netloc.lower(), domain) for domain in whitelist)
     ]
     remaining_urls = list(unique_urls)
 
@@ -369,12 +445,13 @@ def filter_and_classify_urls(
                     "search_region": r.get("_region", ""),
                     "search_title": r.get("title", ""),
                     "snippet_score": f"{score_map[href]:.4f}",
+                    "direct_custom_url": r.get("_direct_custom_url", "false"),
                 }
 
         before_snippet = len(remaining_urls)
         remaining_urls = [
             u for u in remaining_urls
-            if score_map.get(u, threshold) >= threshold
+            if u in skip_snippet_urls or score_map.get(u, threshold) >= threshold
         ]
         removed_snippet = before_snippet - len(remaining_urls)
         if removed_snippet > 0:
@@ -405,10 +482,13 @@ def filter_and_classify_urls(
         doc_type = check_url_content_type(url)
         if doc_type:
             metadata = meta_map.get(url, {})
+            domain = urlparse(url).netloc.lower()
+            is_trusted = any(domain_matches(domain, trusted) for trusted in whitelist)
             with lock:
                 clean_urls.append({
                     "url": url,
                     "type": doc_type,
+                    "trusted_source": "true" if is_trusted else "false",
                     **metadata,
                 })
 

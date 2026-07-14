@@ -179,6 +179,7 @@ async def _run_content_generation_for_textbook(
         user_requirements=textbook.user_requirements or "",  # type: ignore[arg-type]
         language=textbook.language,  # type: ignore[arg-type]
         advanced_config=advanced_config,
+        source_preferences=textbook.source_preferences or {},  # type: ignore[arg-type]
         planning_mode=planning_mode,
         export_formats=["PDF", "Word"],
     )
@@ -451,6 +452,7 @@ def continue_textbook_generation_task(self, textbook_id: int, confirmed_curricul
                     user_requirements    = textbook.user_requirements or "",            # type: ignore
                     language             = textbook.language,      # type: ignore
                     advanced_config       = advanced_config,
+                    source_preferences    = textbook.source_preferences or {},  # type: ignore[arg-type]
                     export_formats       = ["PDF", "Word"],
                 )
                 # Preserve planner-generated title from Phase 1

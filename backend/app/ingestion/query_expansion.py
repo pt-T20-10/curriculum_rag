@@ -78,16 +78,24 @@ class QueryExpansionAgent:
             "scholarly": {
                 "vi": (
                     "Prioritize Vietnamese sources: Vietnamese Wikipedia, "
-                    "university textbooks, .edu.vn materials"
+                    "university textbooks, .edu.vn materials, giáo trình PDF, bài giảng đại học"
                 ),
-                "en": "Prioritize: Wikipedia, OpenStax, arXiv, MIT OpenCourseWare, encyclopedia.com",
+                "en": (
+                    "Prioritize English academic sources: OpenStax, LibreTexts, MIT OCW, "
+                    "Stanford, Berkeley, CMU, Harvard, Yale, Princeton, Cornell, arXiv, "
+                    "course notes, lecture notes, textbook PDF"
+                ),
             },
             "technical": {
                 "vi": (
                     "Prioritize Vietnamese sources: technical materials, "
-                    "reputable technology blogs, official documentation"
+                    "university course materials, .edu.vn giáo trình, official documentation"
                 ),
-                "en": "Prioritize: GeeksForGeeks, official documentation, arXiv, cs.cmu.edu, university course pages",
+                "en": (
+                    "Prioritize English university and official technical sources: MIT, "
+                    "Stanford, Berkeley, CMU, Cornell, official docs, OpenStax, LibreTexts, "
+                    "arXiv, course notes, lecture notes, textbook PDF"
+                ),
             },
             "practical": {
                 "vi": (
