@@ -1499,9 +1499,22 @@ def _looks_like_formula_symbol(expr: str) -> bool:
     return False
 
 
+def _looks_like_indexed_formula_symbol(expr: str) -> bool:
+    expr = expr.strip()
+    if not expr or len(expr) > 80:
+        return False
+    if re.search(r'["\']', expr):
+        return False
+    base = r'[A-Za-z](?:_\{?[A-Za-z0-9]+\}?)?'
+    index = r'[A-Za-z0-9\s,+\-*/^_{}\\().]+'
+    return bool(re.fullmatch(rf'{base}\[{index}\]', expr))
+
+
 def _looks_like_formula_backtick_expression(expr: str) -> bool:
     expr = expr.strip()
     if _looks_like_formula_symbol(expr):
+        return True
+    if _looks_like_indexed_formula_symbol(expr):
         return True
     if "=" not in expr:
         return False

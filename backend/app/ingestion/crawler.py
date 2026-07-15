@@ -852,6 +852,7 @@ def _embed_batch_worker(chunk_texts: list, batch_size: int, worker_id: int, tota
     """
     import time
     from app.config import settings, get_embedding_model
+    from app.services.api_rate_limiter import rate_limited_call
     
     # Load model fresh in this worker process
     embedding_model = get_embedding_model()
@@ -865,7 +866,18 @@ def _embed_batch_worker(chunk_texts: list, batch_size: int, worker_id: int, tota
     for i in range(0, len(chunk_texts), batch_size):
         batch = chunk_texts[i:i + batch_size]
         try:
-            batch_emb = embedding_model.embed_documents(batch)
+            if settings.EMBEDDING_PROVIDER == "openai":
+                batch_emb = rate_limited_call(
+                    lambda: embedding_model.embed_documents(batch),
+                    bucket="embedding",
+                    model=settings.OPENAI_EMBEDDING_MODEL,
+                    metadata={
+                        "agent": "CrawlerWorker",
+                        "node": "embedding_worker",
+                    },
+                )
+            else:
+                batch_emb = embedding_model.embed_documents(batch)
             embeddings.extend(batch_emb)
             
             # Log progress

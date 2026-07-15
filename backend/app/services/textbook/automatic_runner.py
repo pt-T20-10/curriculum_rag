@@ -216,6 +216,8 @@ def run_automatic_textbook_workflow(
                 content_level=content_level,
                 max_subsections_per_chapter=max_subsections_per_chapter,
                 content_type=validation.get("content_type", "technical"),
+                formula_policy=validation.get("formula_policy", "auto"),
+                formula_need=validation.get("formula_need", "none"),
                 core_topic=validation.get("core_topic") or query,
                 user_requirements=validation.get("user_requirements", ""),
                 language=result["language"],

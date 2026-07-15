@@ -20,9 +20,9 @@ class Textbook(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     title = Column(String(500), nullable=False)
-    topic = Column(String(500), nullable=False)
+    topic = Column(Text, nullable=False)
     core_topic = Column(String(500), nullable=True)
-    user_requirements = Column(String(1000), nullable=True)
+    user_requirements = Column(Text, nullable=True)
     num_chapters = Column(Integer, default=3, nullable=False)
     content_level = Column(String(50), default="Trung Bình", nullable=False)
     max_subsections_per_chapter = Column(Integer, default=3, nullable=False)
@@ -33,6 +33,8 @@ class Textbook(Base):
     enable_images = Column(Boolean, default=False, nullable=False)
     content_type = Column(String(50), nullable=False, default="technical", index=True)
     textbook_mode = Column(String(20), nullable=False, default="standard", index=True)
+    formula_policy = Column(String(20), nullable=False, default="auto", index=True)
+    formula_need = Column(String(20), nullable=False, default="none", index=True)
     source_preferences = Column(
         JSON,
         nullable=True,

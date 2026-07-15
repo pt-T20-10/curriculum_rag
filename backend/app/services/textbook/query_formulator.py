@@ -59,6 +59,8 @@ def formulate_query(state: AgentState) -> dict:
     review_feedback   = state.get("review_feedback", "")
     used_queries      = state.get("used_rag_queries", [])
     textbook_mode     = state.get("textbook_mode", "standard")
+    formula_policy    = state.get("formula_policy", "auto")
+    formula_need      = state.get("formula_need", "none")
 
     try:
         chapter, subsection = get_chapter_and_subsection(curriculum, chap_idx, sub_idx)
@@ -147,6 +149,16 @@ def formulate_query(state: AgentState) -> dict:
                 max_terms=42,
             )
             logger.info(f"Practice-mode query: {enhanced_query}")
+
+        if formula_policy == "include" and formula_need != "none":
+            enhanced_query = _compact_query(
+                [
+                    enhanced_query,
+                    "formula equation derivation mathematical notation worked example",
+                ],
+                max_terms=44,
+            )
+            logger.info(f"Formula-focused query: {enhanced_query}")
 
         return {
             "retrieval_query": enhanced_query,

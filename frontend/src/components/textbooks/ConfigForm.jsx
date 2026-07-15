@@ -196,7 +196,8 @@ export function ConfigForm({
     num_chapters: 3,
     content_level: CONTENT_LEVEL.MEDIUM,
     max_subsections_per_chapter: 5,
-    enable_images: true
+    enable_images: true,
+    formula_policy: 'auto'
   })
   const [initialStructure, setInitialStructure] = useState(() => createDefaultStructure(t))
   const [sourceInput, setSourceInput] = useState('')
@@ -490,6 +491,14 @@ export function ConfigForm({
                   {t(`textbook.form.sourceModeValue.${submittedConfig?.source_preferences?.source_mode || 'system_default'}`)}
                 </span>
               </div>
+              <div className="flex flex-col gap-0.5">
+                <span className="text-xs text-gray-500">{t('textbook.form.formulas')}</span>
+                <span className="font-semibold text-gray-800">
+                  {(submittedConfig?.formula_policy || formData.formula_policy) === 'include'
+                    ? t('app.yes')
+                    : t('app.no')}
+                </span>
+              </div>
               {submittedConfig?.source_preferences && (
                 <div className="flex flex-col gap-0.5">
                   <span className="text-xs text-gray-500">{t('textbook.form.customSources')}</span>
@@ -516,6 +525,14 @@ export function ConfigForm({
         <label className="block text-sm font-medium text-gray-700 mb-2">
           {t('textbook.form.topic')} <span className="text-red-500">*</span>
         </label>
+        <div className="mb-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
+          <p className="text-xs font-semibold text-blue-900">
+            {t('textbook.form.topicGuideTitle')}
+          </p>
+          <p className="mt-1 text-xs text-blue-800">
+            {t('textbook.form.topicGuideText')}
+          </p>
+        </div>
         <textarea
           name="topic"
           value={formData.topic}
@@ -529,6 +546,32 @@ export function ConfigForm({
         <p className="mt-1 text-xs text-gray-500">
           {t('textbook.form.topicHint')}
         </p>
+      </div>
+
+      <div className="rounded-lg border border-gray-200 bg-white p-3">
+        <div className="flex items-start gap-3">
+          <input
+            type="checkbox"
+            id="formula_policy"
+            checked={formData.formula_policy === 'include'}
+            onChange={(e) => {
+              setFormData(prev => ({
+                ...prev,
+                formula_policy: e.target.checked ? 'include' : 'auto',
+              }))
+            }}
+            className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            disabled={loading}
+          />
+          <div>
+            <label htmlFor="formula_policy" className="text-sm font-medium text-gray-700">
+              {t('textbook.form.formulas')}
+            </label>
+            <p className="mt-1 text-xs text-gray-500">
+              {t('textbook.form.formulasHint')}
+            </p>
+          </div>
+        </div>
       </div>
 
       <div>

@@ -38,6 +38,7 @@ export function CreateTextbookPage() {
   const [completedTextbookData, setCompletedTextbookData] = useState(null)
   const [confirmingCurriculum, setConfirmingCurriculum] = useState(false)
   const [creatingTextbook, setCreatingTextbook] = useState(false)
+  const [formulaConfirmation, setFormulaConfirmation] = useState(null)
   const pollingRef = useRef(null)
 
   const clearDraftState = () => {
@@ -52,6 +53,7 @@ export function CreateTextbookPage() {
     setError(null)
     setConfirmingCurriculum(false)
     setCreatingTextbook(false)
+    setFormulaConfirmation(null)
     setConfigExpanded(true)
 
     if (pollingRef.current) {
@@ -90,6 +92,8 @@ export function CreateTextbookPage() {
               language: data.language || 'vi',
               planning_mode: data.planning_mode || 'auto',
               textbook_mode: data.textbook_mode || 'standard',
+              formula_policy: data.formula_policy || 'auto',
+              formula_need: data.formula_need || 'none',
               source_preferences: data.source_preferences || {
                 source_mode: 'system_default',
                 selected_source_ids: [],
@@ -176,6 +180,8 @@ export function CreateTextbookPage() {
         language: textbook.language || uiLanguage,
         planning_mode: formData.planning_mode || 'auto',
         textbook_mode: formData.textbook_mode || 'standard',
+        formula_policy: textbook.formula_policy || formData.formula_policy || 'auto',
+        formula_need: textbook.formula_need || 'none',
         source_preferences: formData.source_preferences || {
           source_mode: 'system_default',
           selected_source_ids: [],
@@ -197,6 +203,16 @@ export function CreateTextbookPage() {
           suggestions: errorDetail.suggestion
             ? errorDetail.suggestion.split('|').map(s => s.trim())
             : [],
+        })
+      } else if (errorDetail?.formula_confirmation_required) {
+        setFormulaConfirmation({
+          formData,
+          reason: errorDetail.reason || t('textbook.formulaConfirmDescription'),
+        })
+        setError(null)
+      } else if (errorDetail?.formula_conflict) {
+        setError({
+          message: errorDetail.reason || t('textbook.formulaConflict'),
         })
       } else {
         setError({
@@ -466,6 +482,61 @@ export function CreateTextbookPage() {
       </div>
 
       {/* Modals */}
+      {formulaConfirmation && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black bg-opacity-50 backdrop-blur-sm"
+            onClick={() => setFormulaConfirmation(null)}
+          />
+          <div className="relative mx-4 w-full max-w-lg rounded-lg bg-white p-6 shadow-2xl">
+            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-blue-100 text-xl font-bold text-blue-700">
+              ∑
+            </div>
+            <h3 className="mb-2 text-center text-xl font-bold text-gray-900">
+              {t('textbook.formulaConfirmTitle')}
+            </h3>
+            <p className="mb-4 text-center text-sm text-gray-600">
+              {formulaConfirmation.reason}
+            </p>
+            <p className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              {t('textbook.formulaConfirmNote')}
+            </p>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  const nextData = {
+                    ...formulaConfirmation.formData,
+                    formula_policy: 'exclude',
+                    formula_confirmed: true,
+                  }
+                  setFormulaConfirmation(null)
+                  handleSubmit(nextData)
+                }}
+                className="flex-1 rounded-lg bg-gray-200 px-4 py-2 font-medium text-gray-700 transition-colors hover:bg-gray-300"
+              >
+                {t('textbook.formulaConfirmNo')}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const nextData = {
+                    ...formulaConfirmation.formData,
+                    formula_policy: 'include',
+                    formula_confirmed: true,
+                  }
+                  setFormulaConfirmation(null)
+                  handleSubmit(nextData)
+                }}
+                className="flex-1 rounded-lg bg-blue-600 px-4 py-2 font-medium text-white transition-colors hover:bg-blue-700"
+              >
+                {t('textbook.formulaConfirmYes')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <StopWarningModal
         isOpen={showStopModal}
         onClose={() => setShowStopModal(false)}

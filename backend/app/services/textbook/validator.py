@@ -4,6 +4,7 @@ Validator Agent for AI Textbook Generator.
 
 import json
 import re
+import unicodedata
 from langchain_openai import ChatOpenAI
 from app.config import settings
 from app.services.runtime_config import get_api_key
@@ -19,6 +20,198 @@ from app.services.textbook.language import (
 from app.utils.log_config import setup_logger
 
 logger = setup_logger(name="ValidatorAgent", logfile="logs/agents.log")
+
+
+_FORMULA_NEEDS = {"none", "likely", "essential"}
+_FORMULA_POLICIES = {"auto", "include", "exclude"}
+
+
+def _strip_accents(text: str) -> str:
+    stripped = unicodedata.normalize("NFD", str(text or ""))
+    stripped = "".join(ch for ch in stripped if unicodedata.category(ch) != "Mn")
+    return stripped.replace("đ", "d").replace("Đ", "D")
+
+
+def _formula_scan_text(*parts: str) -> str:
+    text = " ".join(str(part or "") for part in parts)
+    text = _strip_accents(text).lower()
+    text = re.sub(r"[^a-z0-9+#.\s-]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def detect_formula_intent(text: str) -> str:
+    """
+    Return 'include', 'exclude', or '' when the user's text mentions formulas.
+
+    This is intentionally deterministic so API behavior is testable and does
+    not depend on the topic-validation LLM.
+    """
+    scan = _formula_scan_text(text)
+    if not scan:
+        return ""
+
+    negative_patterns = [
+        r"\b(khong|ko|k)\s+(can\s+)?(co\s+)?cong\s+thuc\b",
+        r"\bkhong\s+dung\s+cong\s+thuc\b",
+        r"\bkhong\s+dua\s+cong\s+thuc\b",
+        r"\bno\s+(math\s+)?formula(s)?\b",
+        r"\bwithout\s+(math\s+)?formula(s)?\b",
+        r"\bno\s+equation(s)?\b",
+        r"\bwithout\s+equation(s)?\b",
+    ]
+    if any(re.search(pattern, scan) for pattern in negative_patterns):
+        return "exclude"
+
+    positive_patterns = [
+        r"\bco\s+(cac\s+)?cong\s+thuc\b",
+        r"\bcan\s+(co\s+)?cong\s+thuc\b",
+        r"\bthem\s+(cac\s+)?cong\s+thuc\b",
+        r"\bkem\s+(cac\s+)?cong\s+thuc\b",
+        r"\bcong\s+thuc\s+(toan|chuan|latex)\b",
+        r"\b(include|with|add|use)\s+(math\s+)?formula(s)?\b",
+        r"\bformula(s)?\b",
+        r"\bequation(s)?\b",
+        r"\bderivation(s)?\b",
+        r"\blatex\b",
+    ]
+    if any(re.search(pattern, scan) for pattern in positive_patterns):
+        return "include"
+    return ""
+
+
+def classify_formula_need(topic: str, core_topic: str = "") -> str:
+    """
+    Classify whether a textbook subject naturally needs mathematical formulas.
+
+    Values:
+      - essential: formulas are intrinsic to the subject.
+      - likely: formulas can be useful and expected, but should be confirmed.
+      - none: formulas are usually inappropriate unless the topic is reframed.
+    """
+    scan = _formula_scan_text(topic, core_topic)
+    if not scan:
+        return "none"
+
+    essential_patterns = [
+        r"\b(toan|math|mathematics)\b",
+        r"\b(dai\s+so|giai\s+tich|hinh\s+hoc|luong\s+giac)\b",
+        r"\b(phuong\s+trinh|equation)\b",
+        r"\b(calculus|algebra|geometry|trigonometry)\b",
+        r"\b(xac\s+suat|thong\s+ke|probability|statistics|statistical)\b",
+        r"\b(vat\s+ly|physics|co\s+hoc|mechanics|dien\s+tu|electronics)\b",
+        r"\b(hoa\s+hoc|chemistry|stoichiometry|thermodynamics)\b",
+    ]
+    if any(re.search(pattern, scan) for pattern in essential_patterns):
+        return "essential"
+
+    likely_patterns = [
+        r"\b(machine\s+learning|hoc\s+may|deep\s+learning|neural\s+network)\b",
+        r"\b(ai|artificial\s+intelligence|tri\s+tue\s+nhan\s+tao)\b",
+        r"\b(data\s+science|khoa\s+hoc\s+du\s+lieu|data\s+analysis)\b",
+        r"\b(econometrics|kinh\s+te\s+luong|quantitative|dinh\s+luong)\b",
+        r"\b(finance|tai\s+chinh|risk\s+management)\b",
+        r"\b(algorithm\s+analysis|phan\s+tich\s+thuat\s+toan)\b",
+        r"\b(signal\s+processing|xu\s+ly\s+tin\s+hieu|control\s+system)\b",
+        r"\b(cryptography|mat\s+ma\s+hoc|optimization|toi\s+uu)\b",
+        r"\b(image\s+processing|computer\s+vision|xu\s+ly\s+anh|thi\s+giac\s+may)\b",
+        r"\b(nen\s+anh|image\s+compression|nhan\s+dang\s+anh|image\s+recognition)\b",
+        r"\b(edge\s+detection|bien\s+anh|filtering|loc\s+anh|transform|chuyen\s+doi\s+anh)\b",
+        r"\b(software\s+engineering|cong\s+nghe\s+phan\s+mem|software\s+metrics)\b",
+        r"\b(excel|spreadsheet|bang\s+tinh)\s+formula(s)?\b",
+        r"\bcong\s+thuc\s+(excel|spreadsheet|bang\s+tinh)\b",
+    ]
+    if any(re.search(pattern, scan) for pattern in likely_patterns):
+        return "likely"
+
+    return "none"
+
+
+def formula_reason(
+    formula_need: str,
+    ui_language: str = "vi",
+    conflict: bool = False,
+    confirmation: bool = False,
+) -> str:
+    language = normalize_language(ui_language)
+    if conflict:
+        if language == "vi":
+            return (
+                "Chủ đề này thường không phù hợp để ép công thức. "
+                "Hãy bỏ yêu cầu công thức hoặc mô tả rõ phần định lượng cần có."
+            )
+        return (
+            "This topic usually should not force formulas. "
+            "Remove the formula request or describe the quantitative angle clearly."
+        )
+    if confirmation:
+        if language == "vi":
+            return "Chủ đề này có thể cần công thức. Vui lòng xác nhận trước khi tạo dàn ý."
+        return "This topic may need formulas. Please confirm before creating the outline."
+    if formula_need == "essential":
+        return (
+            "Chủ đề này thường cần công thức."
+            if language == "vi"
+            else "This topic normally requires formulas."
+        )
+    if formula_need == "likely":
+        return (
+            "Chủ đề này có thể cần công thức."
+            if language == "vi"
+            else "This topic may benefit from formulas."
+        )
+    return ""
+
+
+def apply_formula_validation(
+    result: dict,
+    topic: str,
+    formula_policy: str = "auto",
+    formula_confirmed: bool = False,
+    ui_language: str = "vi",
+) -> dict:
+    policy = formula_policy if formula_policy in _FORMULA_POLICIES else "auto"
+    formula_need = classify_formula_need(topic, str(result.get("core_topic") or ""))
+    intent = detect_formula_intent(
+        " ".join([
+            topic,
+            str(result.get("user_requirements") or ""),
+            str(result.get("core_topic") or ""),
+        ])
+    )
+    formula_intent_present = bool(intent)
+    conflict = (
+        (formula_need == "none" and (policy == "include" or intent == "include"))
+        or (formula_need == "essential" and (policy == "exclude" or intent == "exclude"))
+    )
+    confirmation_required = (
+        formula_need == "likely"
+        and policy != "exclude"
+        and intent != "exclude"
+        and not formula_confirmed
+        and not conflict
+    )
+
+    effective_policy = policy
+    if formula_need == "essential" and not conflict:
+        effective_policy = "include"
+    elif intent in {"include", "exclude"} and not conflict:
+        effective_policy = intent
+
+    enriched = dict(result)
+    enriched.update({
+        "formula_need": formula_need,
+        "formula_policy": effective_policy,
+        "formula_intent_present": formula_intent_present,
+        "formula_confirmation_required": confirmation_required,
+        "formula_conflict": conflict,
+        "formula_reason": formula_reason(
+            formula_need,
+            ui_language,
+            conflict=conflict,
+            confirmation=confirmation_required,
+        ),
+    })
+    return enriched
 
 
 _TOPIC_FILLER_TOKENS = {
@@ -235,6 +428,12 @@ def _normalize_validation_result(result: dict, language_info: dict) -> dict:
     normalized["content_type"] = content_type
     normalized["core_topic"] = str(result.get("core_topic") or "")
     normalized["user_requirements"] = str(result.get("user_requirements") or "")
+    normalized["formula_need"] = str(result.get("formula_need") or "none")
+    normalized["formula_policy"] = str(result.get("formula_policy") or "auto")
+    normalized["formula_intent_present"] = bool(result.get("formula_intent_present", False))
+    normalized["formula_confirmation_required"] = bool(result.get("formula_confirmation_required", False))
+    normalized["formula_conflict"] = bool(result.get("formula_conflict", False))
+    normalized["formula_reason"] = str(result.get("formula_reason") or "")
     normalized.update({
         "input_language": language_info.get("input_language", ""),
         "requested_language": requested_language,
@@ -299,10 +498,21 @@ def _validation_fallback(
         "unsupported_language": language_info.get("unsupported_language", ""),
         "unsupported_language_name_en": language_info.get("unsupported_language_name_en", ""),
         "unsupported_language_name_vi": language_info.get("unsupported_language_name_vi", ""),
+        "formula_need": "none",
+        "formula_policy": "auto",
+        "formula_intent_present": False,
+        "formula_confirmation_required": False,
+        "formula_conflict": False,
+        "formula_reason": "",
     }
 
 
-def validate_topic(topic: str, ui_language: str = "vi") -> dict:
+def validate_topic(
+    topic: str,
+    ui_language: str = "vi",
+    formula_policy: str = "auto",
+    formula_confirmed: bool = False,
+) -> dict:
     """
     Validate topic suitability for textbook generation.
     
@@ -599,6 +809,14 @@ Input: "học"
                     noisy_tokens,
                 )
                 return _validation_fallback("topic_contains_noise", ui_language, language_info)
+
+        result = apply_formula_validation(
+            result,
+            topic,
+            formula_policy=formula_policy,
+            formula_confirmed=formula_confirmed,
+            ui_language=ui_language,
+        )
         
         logger.info(
             "[VALIDATOR] Result: valid=%s, type=%s, target_language=%s",

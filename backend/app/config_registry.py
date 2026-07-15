@@ -268,10 +268,10 @@ PARAMETER_REGISTRY: Dict[str, ParameterDef] = {
     },
     "OPENAI_EMBEDDING_MIN_INTERVAL_SECONDS": {
         "label": "Khoảng Cách Request Embedding",
-        "description": "Số giây tối thiểu giữa các batch embedding OpenAI.",
+        "description": "Số giây tối thiểu giữa các batch embedding OpenAI. Cũng được dùng làm khoảng nghỉ sau mỗi batch để tránh 429 khi có nhiều batch liên tục.",
         "group": "rate_limits",
         "type": "float",
-        "default": 0.0,
+        "default": 0.5,
         "min": 0.0,
         "max": 60.0,
         "user_editable": False,

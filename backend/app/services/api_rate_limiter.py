@@ -250,7 +250,28 @@ def _execute_and_record(
         metadata=metadata or {},
         result=result,
     )
+    _sleep_after_api_call(provider=provider, bucket=bucket)
     return result
+
+
+def _sleep_after_api_call(provider: str, bucket: str) -> None:
+    """Apply a small post-call cooldown for bursty embedding batches."""
+    if bucket != "embedding":
+        return
+    if not _runtime_bool(f"{provider.upper()}_RATE_LIMIT_ENABLED", False):
+        return
+    interval = _bucket_interval(provider, bucket)
+    if provider.lower() == "openai":
+        interval = max(interval, float(settings.OPENAI_EMBEDDING_MIN_INTERVAL_SECONDS))
+    if interval <= 0:
+        return
+    logger.debug(
+        "Post-call cooldown for %s %s bucket: %.2fs",
+        provider,
+        bucket,
+        interval,
+    )
+    _sleep_with_jitter(interval, provider)
 
 
 def _bucket_interval(provider: str, bucket: str) -> float:

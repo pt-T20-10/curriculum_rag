@@ -175,6 +175,8 @@ async def _run_content_generation_for_textbook(
         max_subsections_per_chapter=textbook.max_subsections_per_chapter,  # type: ignore[arg-type]
         content_type=textbook.content_type,  # type: ignore[arg-type]
         textbook_mode=textbook.textbook_mode or "standard",  # type: ignore[attr-defined]
+        formula_policy=textbook.formula_policy or "auto",  # type: ignore[attr-defined]
+        formula_need=textbook.formula_need or "none",  # type: ignore[attr-defined]
         core_topic=textbook.core_topic or textbook.topic,  # type: ignore[arg-type]
         user_requirements=textbook.user_requirements or "",  # type: ignore[arg-type]
         language=textbook.language,  # type: ignore[arg-type]
@@ -448,6 +450,8 @@ def continue_textbook_generation_task(self, textbook_id: int, confirmed_curricul
                     max_subsections_per_chapter = textbook.max_subsections_per_chapter, # type: ignore
                     content_type         = textbook.content_type,  # type: ignore
                     textbook_mode        = textbook.textbook_mode or "standard",  # type: ignore
+                    formula_policy       = textbook.formula_policy or "auto",  # type: ignore
+                    formula_need         = textbook.formula_need or "none",  # type: ignore
                     core_topic           = textbook.core_topic or textbook.topic,       # type: ignore
                     user_requirements    = textbook.user_requirements or "",            # type: ignore
                     language             = textbook.language,      # type: ignore

@@ -324,6 +324,8 @@ class ContentWriter:
         section_summaries: list[str],
         language: str = "vi",
         textbook_mode: str = "standard",
+        formula_policy: str = "auto",
+        formula_need: str = "none",
     ) -> str:
         """
         Generate academic content for a single textbook section.
@@ -393,6 +395,17 @@ class ContentWriter:
         practice_mode = _is_practice_mode(textbook_mode)
         practice_criterion = ""
         practice_constraint = ""
+        formula_guidance = ""
+        if formula_policy == "include" and formula_need != "none":
+            formula_guidance = """
+Formula requirement:
+- When the section naturally involves quantitative definitions, models,
+  probabilities, losses, metrics, or transformations, include the appropriate
+  formulas and explain each symbol clearly.
+- Use $...$ for inline math and $$...$$ for display equations.
+- Do not add artificial formulas to prose-only concepts; formulas must support
+  real understanding of this subject.
+"""
         if practice_mode:
             practice_criterion = f"""
 Practice-course content standards:
@@ -494,6 +507,7 @@ Content standards:
 - {style_rule}
 
 {hk_hint}
+{formula_guidance}
 {practice_criterion}
 [/CRITERION]
 
@@ -776,6 +790,8 @@ class WriterAgent:
         used_queries: list[str]  = [], #type: ignore
         language: str = "vi",
         textbook_mode: str = "standard",
+        formula_policy: str = "auto",
+        formula_need: str = "none",
         
     ) -> str:
         """
@@ -832,6 +848,8 @@ class WriterAgent:
             section_summaries=list(section_summaries),
             language=language,
             textbook_mode=textbook_mode,
+            formula_policy=formula_policy,
+            formula_need=formula_need,
         )
 
         if not isinstance(content, str):
@@ -991,6 +1009,8 @@ def write_section_crag(state: AgentState) -> dict:
     section_summaries = state.get("section_summaries", [])
     language          = state.get("language", "vi")
     textbook_mode     = state.get("textbook_mode", "standard")
+    formula_policy    = state.get("formula_policy", "auto")
+    formula_need      = state.get("formula_need", "none")
     profile           = get_language_profile(language)
 
     # ------------------------------------------------------------------
@@ -1098,6 +1118,8 @@ def write_section_crag(state: AgentState) -> dict:
             used_queries=used_queries,
             language=language,
             textbook_mode=textbook_mode,
+            formula_policy=formula_policy,
+            formula_need=formula_need,
         )
 
         # Layer 2 — Suppress spurious level-1 headings

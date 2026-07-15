@@ -26,6 +26,12 @@ class ValidationResult(BaseModel):
     unsupported_language: str = ""
     unsupported_language_name_en: str = ""
     unsupported_language_name_vi: str = ""
+    formula_need: Literal["none", "likely", "essential"] = "none"
+    formula_policy: Literal["auto", "include", "exclude"] = "auto"
+    formula_intent_present: bool = False
+    formula_confirmation_required: bool = False
+    formula_conflict: bool = False
+    formula_reason: str = ""
 
 
 class SourcePreferences(BaseModel):
@@ -80,6 +86,8 @@ class TextbookCreate(BaseModel):
     export_formats: List[str] = Field(default_factory=lambda: ["PDF", "Word"])
     planning_mode: Literal["auto", "structured"] = "auto"
     textbook_mode: Literal["standard", "practice"] = "standard"
+    formula_policy: Literal["auto", "include", "exclude"] = "auto"
+    formula_confirmed: bool = False
     source_preferences: SourcePreferences = Field(default_factory=SourcePreferences)
     initial_structure_markdown: Optional[str] = Field(default=None, max_length=20000)
 
@@ -97,6 +105,8 @@ class TextbookResponse(BaseModel):
     language: str = "vi"
     content_type: str
     textbook_mode: str = "standard"
+    formula_policy: str = "auto"
+    formula_need: str = "none"
     source_preferences: Optional[Dict[str, Any]] = Field(default_factory=default_source_preferences)
     status: str
     pdf_path: Optional[str] = None
@@ -132,6 +142,8 @@ class ProgressData(BaseModel):
     total_chapters: int = 0
     total_subsections: int = 0
     language: str = "vi"
+    formula_policy: str = "auto"
+    formula_need: str = "none"
     subsections_in_chapter: int = 0
 
     sub_stages: Dict[str, str] = {

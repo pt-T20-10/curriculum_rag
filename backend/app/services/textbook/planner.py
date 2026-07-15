@@ -1190,7 +1190,20 @@ def plan_curriculum(state: AgentState) -> dict:
     language = state.get("language", "vi")
     planning_mode = state.get("planning_mode", "auto")
     textbook_mode = state.get("textbook_mode", "standard")
+    formula_policy = state.get("formula_policy", "auto")
+    formula_need = state.get("formula_need", "none")
     initial_structure = state.get("initial_curriculum_structure")
+    planner_requirements = user_requirements
+    if formula_policy == "include" and formula_need != "none":
+        formula_note = (
+            "Khi phù hợp, đưa các mục có công thức, phương trình hoặc ví dụ tính toán "
+            "vào những phần tự nhiên của dàn ý."
+            if language == "vi"
+            else "When appropriate, include formula, equation, or worked-calculation sections in natural parts of the outline."
+        )
+        planner_requirements = (
+            f"{user_requirements}\n{formula_note}" if user_requirements else formula_note
+        )
 
     logger.info(f"Core topic         : {core_topic}")
     logger.info(f"User requirements  : {user_requirements or '(none)'}")
@@ -1204,7 +1217,7 @@ def plan_curriculum(state: AgentState) -> dict:
     if planning_mode == "structured" and isinstance(initial_structure, dict):
         curriculum = planner.enrich_user_structure(
             core_topic,
-            user_requirements,
+            planner_requirements,
             initial_structure,
             language=language,
             textbook_mode=textbook_mode,
@@ -1212,7 +1225,7 @@ def plan_curriculum(state: AgentState) -> dict:
     else:
         curriculum = planner.create_curriculum(
             core_topic,
-            user_requirements,
+            planner_requirements,
             num_chapters=num_chapters,
             max_subsections=max_subsections,
             language=language,

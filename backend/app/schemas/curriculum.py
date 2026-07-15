@@ -326,6 +326,8 @@ class AgentState(TypedDict):
     max_subsections_per_chapter: int
     language: str
     textbook_mode: str
+    formula_policy: str
+    formula_need: str
     advanced_config: dict[str, Any]
     source_preferences: dict[str, Any]
 
@@ -521,6 +523,8 @@ def build_initial_state(
     content_level: str = "Trung Bình",
     content_type: str = "technical",
     textbook_mode: str = "standard",
+    formula_policy: str = "auto",
+    formula_need: str = "none",
     source_preferences: dict[str, Any] | None = None,
     core_topic: str = "",
     user_requirements: str = "",
@@ -567,6 +571,8 @@ def build_initial_state(
         "max_subsections_per_chapter": max_subsections_per_chapter,
         "content_type":                content_type,
         "textbook_mode":               textbook_mode,
+        "formula_policy":              formula_policy,
+        "formula_need":                formula_need,
         "language":                    language,
         "advanced_config":             advanced_config or {},
         "source_preferences":          source_preferences or {},

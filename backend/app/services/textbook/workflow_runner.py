@@ -179,6 +179,8 @@ async def run_textbook_workflow(
         user_req_val = textbook_record.user_requirements if textbook_record else ""
         content_type_val = textbook_record.content_type if textbook_record else "technical"
         textbook_mode_val = textbook_record.textbook_mode if textbook_record else "standard"
+        formula_policy_val = textbook_record.formula_policy if textbook_record else "auto"
+        formula_need_val = textbook_record.formula_need if textbook_record else "none"
         language_val = textbook_record.language if textbook_record else language
         source_preferences_val = textbook_record.source_preferences if textbook_record else {}
         progress_data_val = dict(textbook_record.progress_data or {}) if textbook_record else {}
@@ -196,6 +198,8 @@ async def run_textbook_workflow(
         user_req_val = ""
         content_type_val = "technical"
         textbook_mode_val = "standard"
+        formula_policy_val = "auto"
+        formula_need_val = "none"
         language_val = language
         source_preferences_val = {}
         planning_mode_val = "auto"
@@ -209,6 +213,8 @@ async def run_textbook_workflow(
         max_subsections_per_chapter=max_subsections_per_chapter,
         content_type=content_type_val, #type: ignore
         textbook_mode=textbook_mode_val, #type: ignore
+        formula_policy=formula_policy_val, #type: ignore
+        formula_need=formula_need_val, #type: ignore
         core_topic=core_topic_val, #type: ignore
         user_requirements=user_req_val, #type: ignore
         language=language_val, #type: ignore

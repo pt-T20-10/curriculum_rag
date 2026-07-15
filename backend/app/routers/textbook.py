@@ -233,7 +233,12 @@ async def create_textbook(
 
     # ================ VALIDATE TOPIC ================
     ui_language = normalize_language(textbook_data.ui_language)
-    validation = validate_topic(textbook_data.topic, ui_language=ui_language)
+    validation = validate_topic(
+        textbook_data.topic,
+        ui_language=ui_language,
+        formula_policy=textbook_data.formula_policy,
+        formula_confirmed=textbook_data.formula_confirmed,
+    )
 
     if not validation:
         raise HTTPException(
@@ -258,13 +263,40 @@ async def create_textbook(
                 "unsupported_language": validation.get("unsupported_language", ""),
                 "unsupported_language_name_en": validation.get("unsupported_language_name_en", ""),
                 "unsupported_language_name_vi": validation.get("unsupported_language_name_vi", ""),
+                "formula_need": validation.get("formula_need", "none"),
+                "formula_policy": validation.get("formula_policy", textbook_data.formula_policy),
+                "formula_reason": validation.get("formula_reason", ""),
             }
+        )
+
+    if validation.get("formula_conflict", False):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "formula_conflict": True,
+                "reason": validation.get("formula_reason", ""),
+                "formula_need": validation.get("formula_need", "none"),
+                "formula_policy": validation.get("formula_policy", textbook_data.formula_policy),
+            },
+        )
+
+    if validation.get("formula_confirmation_required", False):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "formula_confirmation_required": True,
+                "reason": validation.get("formula_reason", ""),
+                "formula_need": validation.get("formula_need", "likely"),
+                "formula_policy": validation.get("formula_policy", textbook_data.formula_policy),
+            },
         )
 
     
     detected_type = validation.get("content_type", "technical")
     core_topic = validation.get("core_topic", textbook_data.topic)
     user_requirements = validation.get("user_requirements", "")
+    formula_policy = validation.get("formula_policy", textbook_data.formula_policy)
+    formula_need = validation.get("formula_need", "none")
     textbook_language = normalize_language(validation.get("target_language"), ui_language)
     planning_mode = textbook_data.planning_mode
     source_preferences = normalize_source_preferences(
@@ -331,12 +363,16 @@ async def create_textbook(
         total_subsections=initial_total_subsections,
         content_type=detected_type,
         textbook_mode=textbook_data.textbook_mode,
+        formula_policy=formula_policy,
+        formula_need=formula_need,
         source_preferences=source_preferences,
         status=TextbookStatus.PENDING,
         credits_used=0,
         progress_data={
             "planning_mode": planning_mode,
             "textbook_mode": textbook_data.textbook_mode,
+            "formula_policy": formula_policy,
+            "formula_need": formula_need,
             "source_preferences": source_preferences,
             "curriculum_data": initial_curriculum,
             "total_chapters": len(initial_curriculum["chapters"]) if initial_curriculum else 0,
@@ -344,6 +380,8 @@ async def create_textbook(
         } if initial_curriculum else {
             "planning_mode": planning_mode,
             "textbook_mode": textbook_data.textbook_mode,
+            "formula_policy": formula_policy,
+            "formula_need": formula_need,
             "source_preferences": source_preferences,
         },
     )
@@ -403,6 +441,8 @@ async def list_textbooks(
             Textbook.language,
             Textbook.content_type,
             Textbook.textbook_mode,
+            Textbook.formula_policy,
+            Textbook.formula_need,
             Textbook.status,
             Textbook.pdf_path,
             Textbook.docx_path,
@@ -544,6 +584,10 @@ async def get_textbook_progress(
         progress_data.setdefault("language", textbook.language)  # type: ignore
     if textbook.textbook_mode:  # type: ignore
         progress_data.setdefault("textbook_mode", textbook.textbook_mode)  # type: ignore
+    if getattr(textbook, "formula_policy", None):  # type: ignore
+        progress_data.setdefault("formula_policy", textbook.formula_policy)  # type: ignore
+    if getattr(textbook, "formula_need", None):  # type: ignore
+        progress_data.setdefault("formula_need", textbook.formula_need)  # type: ignore
     progress_data.setdefault(
         "source_preferences",
         normalize_source_preferences(getattr(textbook, "source_preferences", None)),
@@ -687,6 +731,8 @@ async def confirm_curriculum(
         "total_subsections": total_subsections,
         "language": textbook.language, # type: ignore
         "textbook_mode": textbook.textbook_mode or "standard", # type: ignore
+        "formula_policy": textbook.formula_policy or "auto", # type: ignore
+        "formula_need": textbook.formula_need or "none", # type: ignore
         "credits_required": credits_required,
         "credits_charged": credits_charged,
         "is_admin_free": is_admin_free,

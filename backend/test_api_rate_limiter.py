@@ -54,3 +54,16 @@ def test_rate_limiter_does_not_retry_non_rate_limit_errors(monkeypatch) -> None:
         api_rate_limiter.rate_limited_call(failing_call, bucket="chat")
 
     assert attempts["count"] == 1
+
+
+def test_embedding_calls_apply_post_call_cooldown(monkeypatch) -> None:
+    sleeps: list[float] = []
+
+    monkeypatch.setattr(api_rate_limiter, "_runtime_bool", lambda key, default: True)
+    monkeypatch.setattr(api_rate_limiter, "_runtime_int", lambda key, default: 0)
+    monkeypatch.setattr(api_rate_limiter, "_runtime_float", lambda key, default: 0.0)
+    monkeypatch.setattr(api_rate_limiter, "wait_for_api_slot", lambda **kwargs: None)
+    monkeypatch.setattr(api_rate_limiter, "_sleep_with_jitter", lambda seconds, provider: sleeps.append(seconds))
+
+    assert api_rate_limiter.rate_limited_call(lambda: "ok", bucket="embedding") == "ok"
+    assert sleeps == [0.5]

@@ -79,6 +79,23 @@ def test_normalize_formula_explanations_converts_formula_context_backticks_only(
     assert "`BookManager`" in normalized
 
 
+def test_normalize_formula_explanations_converts_indexed_formula_symbols():
+    content = (
+        "Trong đó:\n"
+        "- `f_q[x, y]`: giá trị ảnh sau lượng tử hóa\n"
+        "- `g[x, y]`: giá trị điểm ảnh sau khi lọc\n"
+        "- `h[k, l]`: hệ số của mặt nạ lọc\n"
+        "- `student_scores[\"Alice\"]`: ví dụ code không phải công thức"
+    )
+
+    normalized = normalize_formula_explanations(content)
+
+    assert "- $f_q[x, y]$: giá trị ảnh sau lượng tử hóa" in normalized
+    assert "- $g[x, y]$: giá trị điểm ảnh sau khi lọc" in normalized
+    assert "- $h[k, l]$: hệ số của mặt nạ lọc" in normalized
+    assert '`student_scores["Alice"]`' in normalized
+
+
 def test_fix_inline_display_math_does_not_inline_short_equations():
     content = "$$\nT = N \\times S\n$$\n\n$$\nx\n$$"
 
