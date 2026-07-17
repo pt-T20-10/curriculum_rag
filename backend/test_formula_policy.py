@@ -21,8 +21,14 @@ def _validation(core_topic: str) -> dict:
     }
 
 
+def _validation_with_formula_need(core_topic: str, formula_need: str) -> dict:
+    result = _validation(core_topic)
+    result["formula_need"] = formula_need
+    return result
+
+
 def test_textbook_create_defaults_to_auto_formula_policy() -> None:
-    payload = TextbookCreate(topic="Lập trình Python cơ bản")
+    payload = TextbookCreate(topic="Lập trình Python cơ bản", target_pages=30)
 
     assert payload.formula_policy == "auto"
 
@@ -36,6 +42,7 @@ def test_formula_need_classification_examples() -> None:
     assert classify_formula_need("Toán cao cấp 1") == "essential"
     assert classify_formula_need("Machine Learning cơ bản") == "likely"
     assert classify_formula_need("Giáo trình Xử lý ảnh dành cho bậc đại học") == "likely"
+    assert classify_formula_need("Giáo trình Xử lí ảnh") == "likely"
     assert classify_formula_need("Nhập môn công nghệ phần mềm") == "likely"
     assert classify_formula_need("Lịch sử Việt Nam hiện đại") == "none"
 
@@ -79,6 +86,46 @@ def test_likely_topic_include_requires_confirmation_first() -> None:
     assert result["formula_need"] == "likely"
     assert result["formula_policy"] == "include"
     assert result["formula_confirmation_required"] is True
+    assert result["formula_conflict"] is False
+
+
+def test_image_processing_alt_spelling_include_is_not_conflict() -> None:
+    result = apply_formula_validation(
+        _validation("Xử lí ảnh"),
+        "Giáo trình Xử lí ảnh",
+        formula_policy="include",
+        ui_language="vi",
+    )
+
+    assert result["formula_need"] == "likely"
+    assert result["formula_policy"] == "include"
+    assert result["formula_confirmation_required"] is True
+    assert result["formula_conflict"] is False
+
+
+def test_llm_formula_need_overrides_unknown_pattern_without_conflict() -> None:
+    result = apply_formula_validation(
+        _validation_with_formula_need("Phân tích phổ màu trong thiết kế in ấn", "likely"),
+        "Giáo trình Phân tích phổ màu trong thiết kế in ấn",
+        formula_policy="include",
+        ui_language="vi",
+    )
+
+    assert result["formula_need"] == "likely"
+    assert result["formula_policy"] == "include"
+    assert result["formula_confirmation_required"] is True
+    assert result["formula_conflict"] is False
+
+
+def test_deterministic_formula_need_still_overrides_llm_none() -> None:
+    result = apply_formula_validation(
+        _validation_with_formula_need("Xử lí ảnh", "none"),
+        "Giáo trình Xử lí ảnh",
+        formula_policy="include",
+        ui_language="vi",
+    )
+
+    assert result["formula_need"] == "likely"
     assert result["formula_conflict"] is False
 
 

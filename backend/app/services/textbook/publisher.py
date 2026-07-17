@@ -295,11 +295,48 @@ def _is_word_code_paragraph(paragraph) -> bool:
     return any(marker in tokens for marker in code_markers)
 
 
+def _is_word_numbered_or_bulleted_paragraph(paragraph) -> bool:
+    return _word_paragraph_has_tag(paragraph, {"w:numPr"})
+
+
+def _is_word_table_paragraph(paragraph) -> bool:
+    from docx.oxml.ns import qn
+
+    parent = paragraph._p.getparent()
+    while parent is not None:
+        if parent.tag == qn("w:tc"):
+            return True
+        parent = parent.getparent()
+    return False
+
+
+def _is_lead_in_label_text(text: str) -> bool:
+    """Detect short paragraph labels that should stay left-aligned."""
+    cleaned = re.sub(r"[*_`]+", "", (text or "").strip())
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    if not cleaned or len(cleaned) > 90:
+        return False
+    if not cleaned.endswith(":"):
+        return False
+    if re.search(r"[.!?]\s*:$", cleaned):
+        return False
+    words = re.findall(r"\w+", cleaned, flags=re.UNICODE)
+    if not words or len(words) > 12:
+        return False
+    return True
+
+
 def _should_justify_word_paragraph(paragraph) -> bool:
     text = (paragraph.text or "").strip()
     if not text:
         return False
     if text in {"Danh mục hình", "List of Figures"}:
+        return False
+    if _is_lead_in_label_text(text):
+        return False
+    if _is_word_numbered_or_bulleted_paragraph(paragraph):
+        return False
+    if _is_word_table_paragraph(paragraph):
         return False
 
     style_id = getattr(getattr(paragraph, "style", None), "style_id", "") or ""
@@ -360,6 +397,20 @@ def _justify_word_body_paragraphs(doc) -> int:
             continue
         paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
         count += 1
+    return count
+
+
+def _left_align_word_table_paragraphs(doc) -> int:
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    count = 0
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                    _set_paragraph_alignment_xml(paragraph._p, "left")
+                    count += 1
     return count
 
 
@@ -1176,6 +1227,7 @@ def finalize_word_docx(
             page_start_heading=page_start_heading,
         )
         image_count, caption_count, code_count = _patch_word_media_and_code_alignment(doc)
+        table_paragraph_count = _left_align_word_table_paragraphs(doc)
         formula_keep_count = _patch_word_formula_definition_pagination(doc)
         justified_count = _justify_word_body_paragraphs(doc)
         has_body_section = False
@@ -1188,7 +1240,8 @@ def finalize_word_docx(
         logger.info(
             "✓ Word finishing pass applied: %s "
             "(title=%s, %s h1 centered, %s figures, %s images, "
-            "%s front breaks, %s captions, %s inserted captions, %s code blocks, %s formula paragraphs kept, "
+            "%s front breaks, %s captions, %s inserted captions, %s code blocks, "
+            "%s table paragraphs left-aligned, %s formula paragraphs kept, "
             "%s body paragraphs justified)",
             docx_path,
             title_page_patched,
@@ -1199,6 +1252,7 @@ def finalize_word_docx(
             caption_count,
             inserted_caption_count,
             code_count,
+            table_paragraph_count,
             formula_keep_count,
             justified_count,
         )
@@ -1439,7 +1493,7 @@ def normalize_math_identifier_formatting(content: str) -> str:
         text = _convert_formula_backticks(text)
         text = re.sub(
             r'(?<!\$)\$\$(.*?)\$\$(?!\$)',
-            lambda m: "$$" + _normalize_math_identifier_text(m.group(1)) + "$$",
+            lambda m: "$$\n" + _normalize_math_identifier_text(m.group(1)).strip() + "\n$$",
             text,
             flags=re.DOTALL,
         )
@@ -1473,6 +1527,306 @@ def _apply_outside_fenced_blocks(content: str, transform) -> str:
             continue
         parts[idx] = transform(part)
     return "".join(parts)
+
+
+_MATH_ENV_RE = re.compile(
+    r"\\begin\{(?:aligned|align|cases|matrix|bmatrix|pmatrix|smallmatrix|array|split|gathered)\}",
+    re.IGNORECASE,
+)
+
+
+def _is_markdown_boundary_inside_math(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if stripped.startswith(("#", "![", "|")):
+        return True
+    if re.match(r"^(?:[-+*]|\d+[.)]|[a-z]\))\s+\S", stripped, re.IGNORECASE):
+        return True
+    if _is_lead_in_label_text(stripped):
+        return True
+    return False
+
+
+def _looks_like_bare_formula_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped or stripped in {"$$", "$"}:
+        return False
+    if stripped.startswith(("#", ">", "|", "![", "```")):
+        return False
+    if re.match(r"^(?:[-+*]|\d+[.)]|[a-z]\))\s+\S", stripped, re.IGNORECASE):
+        return False
+    if "$" in stripped or "`" in stripped:
+        return False
+    if len(stripped) > 220:
+        return False
+    if not re.search(r"[=<>]|\\(?:frac|sqrt|sum|prod|int|Phi|omega|Omega|Delta|cdot|times)\b", stripped):
+        return False
+    has_vietnamese = bool(re.search(r"[À-ỹ]", stripped))
+    if has_vietnamese and not re.search(r"\\text\{|~|\\\s|[=<>]", stripped):
+        return False
+    math_signal_count = sum(
+        bool(re.search(pattern, stripped))
+        for pattern in (
+            r"\\[A-Za-z]+",
+            r"[_^]\{?[\w\\]+",
+            r"\d",
+            r"[=<>]",
+            r"\\cdot|\\times|\\frac|\\sqrt",
+        )
+    )
+    words = re.findall(r"[A-Za-zÀ-ỹ]{3,}", stripped)
+    word_limit = 10 if has_vietnamese else 28
+    return math_signal_count >= 2 and len(words) <= word_limit
+
+
+def _display_math_block(lines: list[str]) -> list[str]:
+    body = "\n".join(line.rstrip() for line in lines if line.strip()).strip()
+    if not body:
+        return []
+    return ["$$", body, "$$"]
+
+
+def repair_mixed_math_markdown_blocks(content: str) -> str:
+    """Split display math blocks that accidentally swallowed Markdown prose/list lines."""
+
+    def transform(text: str) -> str:
+        lines = text.split("\n")
+        out: list[str] = []
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            if line.strip() != "$$":
+                out.append(line)
+                i += 1
+                continue
+
+            block: list[str] = []
+            j = i + 1
+            while j < len(lines) and lines[j].strip() != "$$":
+                block.append(lines[j])
+                j += 1
+            if j >= len(lines):
+                out.append(line)
+                out.extend(block)
+                i = j
+                continue
+
+            has_markdown = any(_is_markdown_boundary_inside_math(block_line) for block_line in block)
+            if not has_markdown:
+                out.append(line)
+                out.extend(block)
+                out.append(lines[j])
+                i = j + 1
+                continue
+
+            formula_buf: list[str] = []
+            repaired: list[str] = []
+            for block_line in block:
+                stripped = block_line.strip()
+                if not stripped:
+                    continue
+                if _is_markdown_boundary_inside_math(block_line):
+                    repaired.extend(_display_math_block(formula_buf))
+                    formula_buf = []
+                    repaired.append(block_line)
+                elif _looks_like_bare_formula_line(block_line) or formula_buf:
+                    formula_buf.append(stripped)
+                else:
+                    repaired.extend(_display_math_block(formula_buf))
+                    formula_buf = []
+                    repaired.append(block_line)
+            repaired.extend(_display_math_block(formula_buf))
+            out.extend(repaired)
+            i = j + 1
+
+        return "\n".join(out)
+
+    normalized = _apply_outside_fenced_blocks(content, transform)
+    return re.sub(r"\n{3,}", "\n\n", normalized)
+
+
+def wrap_bare_formula_lines(content: str) -> str:
+    """Wrap standalone formula-like lines that were emitted without delimiters."""
+
+    def transform(text: str) -> str:
+        lines = text.split("\n")
+        out: list[str] = []
+        in_math = False
+
+        for line in lines:
+            stripped = line.strip()
+            if stripped == "$$":
+                in_math = not in_math
+                out.append(line)
+                continue
+            if in_math or not _looks_like_bare_formula_line(line):
+                out.append(line)
+                continue
+            indent = re.match(r"\s*", line).group(0)  # type: ignore[union-attr]
+            out.extend([f"{indent}$$", f"{indent}{stripped}", f"{indent}$$"])
+
+        return "\n".join(out)
+
+    normalized = _apply_outside_fenced_blocks(content, transform)
+    return re.sub(r"\n{3,}", "\n\n", normalized)
+
+
+def normalize_display_math_blocks(content: str) -> str:
+    """
+    Normalize display math delimiters before Pandoc/Typst conversion.
+
+    This repairs malformed blocks such as "$$\nexpr$$" and wraps plain
+    multiline equations that use LaTeX row breaks in an aligned environment.
+    """
+
+    def transform(text: str) -> str:
+        def repl(match: re.Match) -> str:
+            inner = match.group(1).strip()
+            if not inner:
+                return "$$\n\n$$"
+
+            inner = re.sub(r"^[ \t]+|[ \t]+$", "", inner, flags=re.MULTILINE)
+            has_row_breaks = r"\\" in inner
+            has_known_env = bool(_MATH_ENV_RE.search(inner))
+            if has_row_breaks and not has_known_env:
+                inner = "\\begin{aligned}\n" + inner + "\n\\end{aligned}"
+
+            return "$$\n" + inner.strip() + "\n$$"
+
+        return re.sub(
+            r"(?<!\$)\$\$(?!\$)(.*?)(?<!\$)\$\$(?!\$)",
+            repl,
+            text,
+            flags=re.DOTALL,
+        )
+
+    return _apply_outside_fenced_blocks(content, transform)
+
+
+def normalize_lead_in_labels(content: str) -> str:
+    """
+    Split short lead-in labels from following prose.
+
+    Hard line breaks after labels such as "**Bài tập thực hành:**  " can be
+    rendered as one justified paragraph, stretching the label across the line.
+    """
+
+    def is_protected_line(stripped: str) -> bool:
+        return (
+            not stripped
+            or stripped.startswith(("#", "-", "+", "* ", ">", "|"))
+            or stripped == "$$"
+            or bool(re.fullmatch(r"[-*_]{3,}", stripped))
+        )
+
+    def transform(text: str) -> str:
+        lines = text.split("\n")
+        out: list[str] = []
+        in_math = False
+
+        for index, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped == "$$":
+                in_math = not in_math
+                out.append(line)
+                continue
+
+            if in_math or is_protected_line(stripped):
+                out.append(line)
+                continue
+
+            next_line = lines[index + 1].strip() if index + 1 < len(lines) else ""
+            has_hard_break = bool(re.search(r" {2,}$", line))
+            if (
+                _is_lead_in_label_text(stripped)
+                and has_hard_break
+                and next_line
+                and not is_protected_line(next_line)
+            ):
+                out.append(line.rstrip())
+                out.append("")
+                continue
+
+            out.append(line)
+
+        return "\n".join(out)
+
+    normalized = _apply_outside_fenced_blocks(content, transform)
+    return re.sub(r"\n{3,}", "\n\n", normalized)
+
+
+def normalize_list_lead_in_labels(content: str) -> str:
+    """Split list-item lead-in labels from their continuation paragraph."""
+
+    item_re = re.compile(
+        r"^(?P<indent>\s*)(?P<marker>(?:[-+*]|\d+[.)])\s+)(?P<label>(?:\*\*)?[^:\n]{2,90}:(?:\*\*)?)\s+(?P<body>\S.*)$"
+    )
+
+    def label_text(value: str) -> str:
+        return re.sub(r"[*_`]+", "", value).strip()
+
+    def transform(text: str) -> str:
+        lines = text.split("\n")
+        out: list[str] = []
+        in_math = False
+
+        for line in lines:
+            stripped = line.strip()
+            if stripped == "$$":
+                in_math = not in_math
+                out.append(line)
+                continue
+            if in_math:
+                out.append(line)
+                continue
+
+            match = item_re.match(line)
+            if not match or not _is_lead_in_label_text(label_text(match.group("label"))):
+                out.append(line)
+                continue
+
+            continuation_indent = match.group("indent") + (" " * len(match.group("marker")))
+            out.append(f'{match.group("indent")}{match.group("marker")}{match.group("label")}')
+            out.append("")
+            out.append(f'{continuation_indent}{match.group("body").strip()}')
+
+        return "\n".join(out)
+
+    normalized = _apply_outside_fenced_blocks(content, transform)
+    return re.sub(r"\n{3,}", "\n\n", normalized)
+
+
+def lint_math_export_risks(content: str) -> str:
+    """Apply conservative final cleanup for known export-risk math artifacts."""
+
+    def clean_math_text(value: str) -> str:
+        value = re.sub(r"(?<=[A-Za-z0-9_}])\s*=\s*=\s*", " = ", value)
+        value = re.sub(r"\s{2,}", " ", value)
+        return value.strip()
+
+    def transform(text: str) -> str:
+        def display_repl(match: re.Match) -> str:
+            body = match.group(1)
+            return "$$\n" + "\n".join(
+                clean_math_text(line) for line in body.split("\n") if line.strip()
+            ) + "\n$$"
+
+        text = re.sub(
+            r"(?<!\$)\$\$(?!\$)(.*?)(?<!\$)\$\$(?!\$)",
+            display_repl,
+            text,
+            flags=re.DOTALL,
+        )
+        lines = [
+            clean_math_text(line) if _looks_like_bare_formula_line(line) else line
+            for line in text.split("\n")
+        ]
+        return "\n".join(lines)
+
+    normalized = _apply_outside_fenced_blocks(content, transform)
+    normalized = repair_mixed_math_markdown_blocks(normalized)
+    return re.sub(r"\n{3,}", "\n\n", normalized)
 
 
 _FORMULA_TOKEN_RE = r'(?:\$[^$\n]{1,80}\$|`[^`\n]{1,80}`)'
@@ -2180,10 +2534,17 @@ def prepare_markdown_for_standalone_export(
         content = normalize_english_dashes(content)
     content = fix_markdown_headings(content)
     content = remove_markdown_horizontal_rules(content)
+    content = repair_mixed_math_markdown_blocks(content)
+    content = wrap_bare_formula_lines(content)
+    content = normalize_display_math_blocks(content)
     content = fix_inline_display_math(content)
     content = fix_math_formatting(content)
     content = normalize_math_identifier_formatting(content)
     content = normalize_formula_explanations(content)
+    content = normalize_lead_in_labels(content)
+    content = normalize_list_lead_in_labels(content)
+    content = normalize_markdown_list_spacing(content)
+    content = lint_math_export_risks(content)
     content = normalize_markdown_list_spacing(content)
     content = normalize_markdown_image_blocks(content)
     content = promote_standalone_inline_math(content)
@@ -2236,8 +2597,15 @@ def _prepare_word_md(
 
     # Step 3 — Strip all remaining {=typst} blocks
     content = re.sub(r'```\{=typst\}.*?```', '', content, flags=re.DOTALL)
+    content = repair_mixed_math_markdown_blocks(content)
+    content = wrap_bare_formula_lines(content)
+    content = normalize_display_math_blocks(content)
     content = normalize_math_identifier_formatting(content)
     content = normalize_formula_explanations(content)
+    content = normalize_lead_in_labels(content)
+    content = normalize_list_lead_in_labels(content)
+    content = normalize_markdown_list_spacing(content)
+    content = lint_math_export_risks(content)
     content = normalize_markdown_list_spacing(content)
     content = normalize_markdown_image_blocks(content)
 
@@ -2614,10 +2982,17 @@ def publish_curriculum(state: AgentState) -> dict:
         full_content = normalize_english_dashes(full_content)
     full_content = fix_markdown_headings(full_content)
     full_content = remove_markdown_horizontal_rules(full_content)
+    full_content = repair_mixed_math_markdown_blocks(full_content)
+    full_content = wrap_bare_formula_lines(full_content)
+    full_content = normalize_display_math_blocks(full_content)
     full_content = fix_inline_display_math(full_content)
     full_content = fix_math_formatting(full_content)
     full_content = normalize_math_identifier_formatting(full_content)
     full_content = normalize_formula_explanations(full_content)
+    full_content = normalize_lead_in_labels(full_content)
+    full_content = normalize_list_lead_in_labels(full_content)
+    full_content = normalize_markdown_list_spacing(full_content)
+    full_content = lint_math_export_risks(full_content)
     full_content = normalize_markdown_list_spacing(full_content)
     full_content = normalize_markdown_image_blocks(full_content)
     full_content = promote_standalone_inline_math(full_content)
@@ -2727,6 +3102,11 @@ def publish_curriculum(state: AgentState) -> dict:
                            font: font,
                            size: fontsize)
                   set heading(numbering: sectionnumbering)
+                  show table.cell: it => {
+                    set align(left)
+                    set par(justify: false)
+                    it
+                  }
                   if cols == 1 { doc } else { columns(cols, doc) }
                 }
             """),

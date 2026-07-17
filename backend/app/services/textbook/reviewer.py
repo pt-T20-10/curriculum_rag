@@ -6,7 +6,7 @@ to the Illustrator. It runs two sequential passes per subsection:
 
 Pass 1 — review_content():
     Full editorial pass covering LaTeX/math sanitization, academic tone,
-    structural consistency, and image placeholder preservation.
+    structural consistency, and quality gating.
     Output is the polished Markdown sent back to the workflow.
 
 Pass 2 — should_revise():
@@ -102,6 +102,41 @@ def _has_heading_blank_line_issue(content: str) -> bool:
     return False
 
 
+def _is_numbered_h3(line: str) -> bool:
+    return bool(re.match(r"^###\s+\d+\.\d+\.\d+\s+\S", line.strip()))
+
+
+def _normalize_unnumbered_h3_to_bold(content: str) -> str:
+    """Convert display-label ### headings into bold lead-ins."""
+    lines: list[str] = []
+    for line in (content or "").splitlines():
+        match = re.match(r"^###\s+(.+?)\s*$", line)
+        if match and not _is_numbered_h3(line):
+            title = match.group(1).strip().rstrip(":")
+            lines.append(f"**{title}:**")
+        else:
+            lines.append(line)
+    cleaned = "\n".join(lines)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned
+
+
+def _page_budget_mode(target_pages: int | None, char_max: int | None = None) -> str:
+    try:
+        pages = int(target_pages) if target_pages is not None else None
+    except (TypeError, ValueError):
+        pages = None
+    if pages is not None:
+        if pages <= 2:
+            return "compact"
+        if pages <= 4:
+            return "standard"
+        return "expanded"
+    if char_max is not None and char_max <= 2600:
+        return "compact"
+    return "standard"
+
+
 def _has_format_issues(
     content: str,
     section_num: str,
@@ -113,6 +148,8 @@ def _has_format_issues(
     if not has_expected_section:
         return True
     if re.search(r"^#{4,}\s+", content or "", re.MULTILINE):
+        return True
+    if re.search(r"^###\s+(?!\d+\.\d+\.\d+\s+).+", content or "", re.MULTILINE):
         return True
     if re.search(rf"^##\s+{re.escape(section_num)}:", content or "", re.MULTILINE):
         return True
@@ -161,6 +198,7 @@ def _has_content_issues(
     content: str,
     char_min: int,
     review_feedback: str = "",
+    page_budget_mode: str = "standard",
 ) -> bool:
     text = content or ""
     feedback = (review_feedback or "").lower()
@@ -171,6 +209,14 @@ def _has_content_issues(
     if len(re.findall(r"\*\*[^*\n]{1,80}\*\*", text)) > 10:
         return True
     blocks = _subsection_blocks(text)
+    if page_budget_mode == "compact":
+        if len(blocks) == 1:
+            return True
+        depth_signals = (
+            "wrong focus", "sai trọng tâm", "thiếu nội dung cốt lõi",
+            "missing core", "too long", "quá dài",
+        )
+        return any(signal in feedback for signal in depth_signals)
     if not blocks:
         return True
     for _heading, body in blocks:
@@ -192,13 +238,14 @@ def deterministic_quality_gate_passes(
     section_title: str,
     section_type: str,
     language: str,
+    page_budget_mode: str = "standard",
 ) -> bool:
     """Conservative no-LLM approval gate for balanced_cost."""
     if len(content or "") < char_min:
         return False
     if _has_format_issues(content, section_num, section_title, language):
         return False
-    if _has_content_issues(content, char_min):
+    if _has_content_issues(content, char_min, page_budget_mode=page_budget_mode):
         return False
     max_blocks = {
         "light": 2,
@@ -206,7 +253,67 @@ def deterministic_quality_gate_passes(
         "deep": 4,
         "applied": 3,
     }.get(section_type, 3)
-    return len(_subsection_blocks(content)) <= max_blocks
+    blocks = _subsection_blocks(content)
+    if page_budget_mode == "compact" and len(blocks) == 1:
+        return False
+    return len(blocks) <= max_blocks
+
+
+def _structured_learning_element_count(content: str) -> int:
+    text = content or ""
+    lower = text.lower()
+    count = 0
+    count += len(re.findall(r'\$\$.*?\$\$|\$[^$\n]+\$', text, flags=re.DOTALL))
+    count += len(re.findall(r'^\s*\|.+\|\s*$', text, flags=re.MULTILINE))
+    count += len(re.findall(r'```', text)) // 2
+    count += len(re.findall(r'^\s*(?:[-*]|\d+\.)\s+', text, flags=re.MULTILINE))
+    structured_terms = (
+        "ví dụ", "example", "bài tập", "exercise", "case study", "tình huống",
+        "checklist", "rubric", "kpi", "metric", "chỉ số", "chi so",
+        "timeline", "dòng thời gian", "bang so sánh", "bảng so sánh",
+        "công thức", "formula", "mô hình", "model", "trong đó",
+        "where:", "tiêu chí", "criteria",
+    )
+    count += sum(1 for term in structured_terms if term in lower)
+    return count
+
+
+def _structured_expansion_feedback(
+    content: str,
+    *,
+    target_pages: int | None,
+    formula_density: str | None,
+    expansion_strategy: str | None,
+    language: str,
+) -> str:
+    try:
+        pages = int(target_pages) if target_pages is not None else None
+    except (TypeError, ValueError):
+        pages = None
+    needs_structured = (
+        (pages is not None and pages >= 4)
+        or str(formula_density or "none") in {"contextual", "high"}
+    )
+    if not needs_structured:
+        return ""
+    required = 2 if pages is not None and pages >= 8 else 1
+    if _structured_learning_element_count(content) >= required:
+        return ""
+    if language == "vi":
+        return (
+            "Mục này có ngân sách trang lớn hoặc ưu tiên công thức/cấu trúc nhưng "
+            "đang gần như chỉ là văn xuôi. Hãy bổ sung thành phần học thuật có cấu trúc "
+            f"phù hợp với chiến lược '{expansion_strategy or 'general'}': công thức/mô hình, "
+            "bảng tiêu chí, rubric, checklist, timeline, case study, ví dụ tính toán, "
+            "bài tập hoặc bảng so sánh. Không kéo dài prose đơn thuần."
+        )
+    return (
+        "This section has a large page budget or formula/structured-tool preference "
+        "but is mostly continuous prose. Add domain-appropriate structured learning "
+        f"elements for strategy '{expansion_strategy or 'general'}': formula/model, "
+        "criteria table, rubric, checklist, timeline, case study, worked example, "
+        "exercise, or comparison table. Do not merely stretch prose."
+    )
 
 
 def _balanced_rejection_kind(feedback: str) -> str:
@@ -225,6 +332,63 @@ def _balanced_rejection_kind(feedback: str) -> str:
     return "formatting_error"
 
 
+def _math_format_gate_feedback(content: str) -> str:
+    """Return actionable feedback for severe Markdown/math export risks."""
+    text = (content or "").replace("\r\n", "\n").replace("\r", "\n")
+    if text.count("$$") % 2:
+        return (
+            "Math formatting error: a display math block is not closed. "
+            "Rewrite formulas so every calculation step uses its own $$...$$ block."
+        )
+    if re.search(r"\\\[|\\\]|\\\(|\\\)", text):
+        return (
+            "Math formatting error: non-standard math delimiters found. "
+            "Use $$...$$ for display formulas and $...$ for inline formulas."
+        )
+    if re.search(r"(?<=[A-Za-z0-9_}])\s*=\s*=\s*", text):
+        return (
+            "Math formatting error: malformed '= =' expression found. "
+            "Rewrite the affected formula completely with a valid left side, one equals sign, and a result."
+        )
+
+    display_re = re.compile(r"(?<!\$)\$\$(?!\$)(.*?)(?<!\$)\$\$(?!\$)", re.DOTALL)
+    spans: list[tuple[int, int]] = []
+    for match in display_re.finditer(text):
+        spans.append(match.span())
+        body = match.group(1)
+        if re.search(r"(?m)^\s*(?:[-+*]|\d+[.)]|[a-z]\))\s+\S", body):
+            return (
+                "Math formatting error: a $$...$$ block contains Markdown list items. "
+                "Close the math block before the next numbered/bulleted step; each calculation step needs its own formula block."
+            )
+        if re.search(r"(?m)^\s*#{1,6}\s+\S", body):
+            return (
+                "Math formatting error: a $$...$$ block contains a Markdown heading. "
+                "Move headings outside math blocks."
+            )
+        if re.search(r"(?m)^\s*(?:Trong đó|Where|Hướng dẫn giải|Ví dụ|Bài tập)[^$]{0,80}:\s*$", body, re.IGNORECASE):
+            return (
+                "Math formatting error: explanatory prose is inside a $$...$$ block. "
+                "Keep prose outside math blocks and put only formulas between $$ delimiters."
+            )
+
+    def in_display_math(position: int) -> bool:
+        return any(start <= position < end for start, end in spans)
+
+    bare_formula_re = re.compile(
+        r"(?m)^(?!\s*(?:[-+*]|\d+[.)]|[a-z]\)|#|\||>|```))\s*"
+        r"(?=[^$\n]*(?:\\(?:frac|sqrt|Phi|omega|Omega|Delta|cdot|times)|[_^]\{?[\w\\]+))"
+        r"(?=[^$\n]*[=<>])[^$\n]{8,220}$"
+    )
+    for match in bare_formula_re.finditer(text):
+        if not in_display_math(match.start()):
+            return (
+                "Math formatting error: a standalone formula line is outside $$ delimiters. "
+                "Wrap every standalone calculation line in its own $$...$$ block."
+            )
+    return ""
+
+
 class ReviewerAgent:
     """
     Reviewer Agent: Editorial pass + quality gate for each drafted section.
@@ -233,7 +397,6 @@ class ReviewerAgent:
     - LaTeX/math sanitization (Pandoc → Typst pipeline compatibility)
     - Academic tone enforcement (remove conversational fillers)
     - Structural consistency (header format, blank lines, sub-section depth)
-    - Image placeholder preservation and optional new suggestions
     - Quality gate: approve or reject polished content (max MAX_REVISIONS times)
 
     LLM is initialized once in __init__ and reused across calls within the
@@ -299,6 +462,11 @@ class ReviewerAgent:
         # obvious below-floor cases before the LLM quality gate. There is no
         # upper-length rejection: longer-than-target content is preferable to
         # spending another call to condense acceptable material.
+        math_feedback = _math_format_gate_feedback(content)
+        if math_feedback:
+            logger.info("Quality gate: REJECT — deterministic math format gate")
+            return True, math_feedback
+
         actual_chars = len(content)
         if not practice_mode and actual_chars >= char_min * 1.2:
             # 20% headroom accounts for LLM undercounting tendency.
@@ -468,6 +636,7 @@ class ReviewerAgent:
             fixed_lines.append(line)
 
         result = '\n'.join(fixed_lines)
+        result = _normalize_unnumbered_h3_to_bold(result)
 
         # If ## section header is missing or stripped, inject it after a level-1 chapter line.
         if not section_header_found:
@@ -686,9 +855,11 @@ No fences, no preamble, no explanation.
         language: str = "vi",
         enable_images: bool = True,
         textbook_mode: str = "standard",
+        target_pages: int | None = None,
+        page_budget_mode: str = "standard",
     ) -> str:
         """
-        Pass B: Content quality — academic tone, depth, and visuals.
+        Pass B: Content quality — academic tone and depth.
 
         Receives the format-clean output of _format_pass(). This pass focuses
         exclusively on content quality. LaTeX and structural rules are intentionally
@@ -699,8 +870,6 @@ No fences, no preamble, no explanation.
           - Remove conversational fillers (Chúng ta hãy..., etc.)
           - Enforce academic Vietnamese tone
           - Expand shallow ### blocks (fewer than 3 paragraphs) using domain knowledge
-          - Preserve and add > [IMAGE: ...] placeholders
-
         CRITICAL: content LENGTH must not decrease. The pre-submit self-check
         enforces this explicitly — the LLM must count characters before submitting.
 
@@ -743,21 +912,50 @@ add those elements while preserving the existing Markdown structure.
                 "\"đây là\", \"là\", \"điều này cho thấy\", a comma, or a separate sentence."
             )
         )
-        visual_criterion = (
-            """--- VISUALS ---
-PRESERVE all existing > [IMAGE: ...] tags — do NOT remove or modify them.
-ADD new image suggestions only where a visual genuinely aids comprehension:
-  medium/deep sections → up to 3 images; light sections → max 1; applied → max 2.
-  ADD: architecture diagrams, process flows, data structures, comparisons.
-  SKIP: pure definition paragraphs, abstract theory, transition paragraphs.
-Format: > [IMAGE: Short caption title | Detailed English description for image search]"""
-            if enable_images
-            else """--- VISUALS ---
-Images are disabled for this textbook.
-Do NOT add image suggestions, [IMAGE: ...] tags, or [IMAGE_NEEDED: ...] placeholders.
-If the draft already contains image markers, leave content quality edits to prose only;
-the deterministic postprocess will remove those markers."""
-        )
+        if page_budget_mode == "compact":
+            depth_rule = """
+--- COMPACT DEPTH ---
+This section has a small page budget. Do not expand merely because it has no
+### blocks. Approve a direct ## section when the core concept is clear.
+If there is exactly one unnumbered or weak ### label, convert it to a bold
+lead-in. Use concise bullets for definitions, features, and components.
+Remove routine reflection, "students can..." endings, and unnecessary real-world
+application paragraphs unless they add clear value.
+"""
+            length_rule = (
+                "Rule 4 — LENGTH: Keep the content within the compact page budget. "
+                "Do not expand the draft unless it is missing core content."
+            )
+            count_check = (
+                "Compact check: core idea covered, no lone ### remains, redundant "
+                "reflection/application prose removed, and no padding added."
+            )
+        else:
+            depth_rule = """
+--- DEPTH ---
+If any ### sub-section block contains fewer than 3 substantial paragraphs:
+  Option A: MERGE it with the adjacent ### block into one richer section.
+  Option B: EXPAND it to at least 3 paragraphs (4–5 sentences each) using
+            domain knowledge consistent with the section description.
+Prefer Option B when the block covers a distinct sub-topic worth preserving.
+"""
+            length_rule = (
+                "Rule 4 — LENGTH: Do not shorten the content; the output must remain at least\n"
+                "95% of the draft length."
+            )
+            count_check = """
+Step 1: Mentally estimate the character count of the draft you received.
+Step 2: Write your edited content.
+Step 3: Estimate the character count of your output.
+
+If your output is less than 95% of the draft's character count:
+  → You have over-edited. Do NOT submit yet.
+  → Identify the shortest ### block in your output.
+  → Add 2–3 substantial paragraphs of domain-relevant analysis to that block.
+  → Re-estimate. Repeat until output ≥ draft length.
+
+This check is MANDATORY. Submitting shorter content than received is a failure.
+"""
         content_system = """
 [CONTEXT]
 You are a neutral academic writing editor for an educational platform covering
@@ -791,46 +989,29 @@ Punctuation: {content_style_rule}
 Inline programming code: preserve Markdown backticks for variables, methods,
 keywords, and code expressions. Never convert programming code into $...$ math.
 
---- DEPTH ---
-If any ### sub-section block contains fewer than 3 substantial paragraphs:
-  Option A: MERGE it with the adjacent ### block into one richer section.
-  Option B: EXPAND it to at least 3 paragraphs (4–5 sentences each) using
-            domain knowledge consistent with the section description.
-Prefer Option B when the block covers a distinct sub-topic worth preserving.
+{depth_rule}
 
 Bold audit: remove excessive bold. Keep bold ONLY for the primary concept
 defined for the first time in the section. Remove bold from adjectives, general
 nouns, phrases over 4 words, and any term already in a heading.
 
-{visual_criterion}
 {practice_criterion}
 [/CRITERION]
 
 [CONSTRAINT]
 Rule 1 — PRESERVE STRUCTURE: Do not change ## or ### numbering, chapter headers,
-math notation, code fences, image tags, or paragraph order unless needed to fix
+math notation, code fences, or paragraph order unless needed to fix
 content quality.
 Rule 2 — NO WRAPPERS: Do not add preambles, explanations, meta-commentary, or
 outer markdown fences.
 Rule 3 — NO SEPARATORS: Do not output standalone separator lines such as --- or ----.
-Rule 4 — LENGTH: Do not shorten the content; the output must remain at least
-95% of the draft length.
+{length_rule}
 [/CONSTRAINT]
 
 [FORMAT]
 MANDATORY CHARACTER COUNT CHECK — execute before submitting:
 
-Step 1: Mentally estimate the character count of the draft you received.
-Step 2: Write your edited content.
-Step 3: Estimate the character count of your output.
-
-If your output is less than 95% of the draft's character count:
-  → You have over-edited. Do NOT submit yet.
-  → Identify the shortest ### block in your output.
-  → Add 2–3 substantial paragraphs of domain-relevant analysis to that block.
-  → Re-estimate. Repeat until output ≥ draft length.
-
-This check is MANDATORY. Submitting shorter content than received is a failure.
+{count_check}
 
 Output rules:
   - Return ONLY the final polished Markdown
@@ -852,8 +1033,10 @@ Output rules:
                     filler_examples=profile.filler_examples,
                     tone_rule=profile.tone_rule,
                     content_style_rule=content_style_rule,
-                    visual_criterion=visual_criterion,
                     practice_criterion=practice_criterion,
+                    depth_rule=depth_rule,
+                    length_rule=length_rule,
+                    count_check=count_check,
                 )
             except Exception:
                 logged_system = content_system
@@ -884,8 +1067,12 @@ Output rules:
                 "filler_examples":     profile.filler_examples,
                 "tone_rule":           profile.tone_rule,
                 "content_style_rule":  content_style_rule,
-                "visual_criterion":    visual_criterion,
                 "practice_criterion":  practice_criterion,
+                "depth_rule":           depth_rule,
+                "length_rule":          length_rule,
+                "count_check":          count_check,
+                "target_pages":         target_pages,
+                "page_budget_mode":     page_budget_mode,
                 "draft":               draft,
             }, bucket="chat", metadata={
                 "agent": "Reviewer",
@@ -938,7 +1125,7 @@ Do not rewrite anything unrelated to em dash cleanup.
 
 [CONSTRAINT]
 - Preserve all Markdown headings, heading numbers, math notation, code blocks,
-  image tags, lists, and paragraph order.
+  lists, and paragraph order.
 - If the em dash appears inside an acronym or term explanation, replace it with
   ASCII hyphen-minus (-). Example: (ALU — Arithmetic and Logic Unit) becomes
   (ALU - Arithmetic and Logic Unit).
@@ -1013,6 +1200,8 @@ Return raw Markdown only. No preamble, no explanation, no fences.
         char_min: int = 300,
         review_feedback: str = "",
         textbook_mode: str = "standard",
+        target_pages: int | None = None,
+        page_budget_mode: str = "standard",
     ) -> str:
         """
         Full editorial pass: sanitize, refine tone, fix structure, audit visuals.
@@ -1061,6 +1250,8 @@ Return raw Markdown only. No preamble, no explanation, no fences.
         )
 
         balanced = use_balanced_cost(advanced_config)
+        safe_draft = _normalize_unnumbered_h3_to_bold(safe_draft)
+
         needs_format_pass = (
             not balanced
             or _has_format_issues(safe_draft, section_num, section_title, language)
@@ -1088,7 +1279,12 @@ Return raw Markdown only. No preamble, no explanation, no fences.
                 review_feedback
                 and _balanced_rejection_kind(review_feedback) != "formatting_error"
             )
-            or _has_content_issues(format_fixed, char_min, review_feedback)
+            or _has_content_issues(
+                format_fixed,
+                char_min,
+                review_feedback,
+                page_budget_mode=page_budget_mode,
+            )
         )
 
         # --- Pass B: Content quality ---
@@ -1105,6 +1301,8 @@ Return raw Markdown only. No preamble, no explanation, no fences.
                 language=language,
                 enable_images=enable_images,
                 textbook_mode=textbook_mode,
+                target_pages=target_pages,
+                page_budget_mode=page_budget_mode,
             )
         else:
             logger.info("  Pass B skipped: deterministic content checks passed")
@@ -1323,9 +1521,48 @@ def review_section(state: AgentState) -> dict:
             advanced_config,
             language=language,
         )
+        page_target_min = (
+            subsection.target_chars_min if isinstance(subsection, SubSection)
+            else subsection.get("target_chars_min")
+        )
+        page_target_max = (
+            subsection.target_chars_max if isinstance(subsection, SubSection)
+            else subsection.get("target_chars_max")
+        )
+        section_target_pages = (
+            subsection.target_pages if isinstance(subsection, SubSection)
+            else subsection.get("target_pages")
+        )
+        section_page_budget_mode = (
+            subsection.page_budget_mode if isinstance(subsection, SubSection)
+            else subsection.get("page_budget_mode")
+        )
+        formula_density = (
+            subsection.formula_density if isinstance(subsection, SubSection)
+            else subsection.get("formula_density")
+        )
+        expansion_strategy = (
+            subsection.expansion_strategy if isinstance(subsection, SubSection)
+            else subsection.get("expansion_strategy")
+        )
+        if page_target_min and page_target_max:
+            try:
+                char_min = max(250, int(page_target_min))
+                char_max = max(char_min + 250, int(page_target_max))
+                logger.info(
+                    "Reviewer using page-budget char target for %s: %s-%s",
+                    sec_title,
+                    char_min,
+                    char_max,
+                )
+            except (TypeError, ValueError):
+                logger.warning("Invalid reviewer page-budget char target; falling back")
         min_chars_floor = state.get("min_chars_per_section", 0)
         char_min = max(char_min, min_chars_floor)
         char_max = max(char_max, char_min + 250)
+        if not section_page_budget_mode:
+            section_page_budget_mode = _page_budget_mode(section_target_pages, char_max)
+        section_page_budget_mode = str(section_page_budget_mode or "standard")
 
         source_audit = state.get("rag_source_audit", {}) or {}
         source_context_quality = source_audit.get("context_quality")
@@ -1371,6 +1608,8 @@ def review_section(state: AgentState) -> dict:
             char_min=char_min,
             review_feedback=state.get("review_feedback", ""),
             textbook_mode=textbook_mode,
+            target_pages=section_target_pages,
+            page_budget_mode=section_page_budget_mode,
         )
 
         # ------------------------------------------------------------------
@@ -1415,6 +1654,27 @@ def review_section(state: AgentState) -> dict:
         if not enable_images:
             polished = strip_image_markers_when_disabled(polished)
 
+        structured_feedback = _structured_expansion_feedback(
+            polished,
+            target_pages=section_target_pages,
+            formula_density=formula_density,
+            expansion_strategy=expansion_strategy,
+            language=language,
+        )
+        if structured_feedback and revision_number < (1 if balanced else MAX_REVISIONS):
+            logger.info("Structured expansion requested: %s", structured_feedback[:120])
+            return {
+                "current_content": polished,
+                "review_feedback": structured_feedback,
+                "revision_number": revision_number + 1,
+                "rejection_type": "length_depth",
+                "messages": [
+                    f"↺ Revision {revision_number + 1}/"
+                    f"{1 if balanced else MAX_REVISIONS} [structured_expansion]: "
+                    f"{structured_feedback[:80]}"
+                ],
+            }
+
         # ------------------------------------------------------------------
         # Step 2 — Quality gate.
         #
@@ -1434,6 +1694,7 @@ def review_section(state: AgentState) -> dict:
             section_title=sec_title,
             section_type=sec_type,
             language=language,
+            page_budget_mode=section_page_budget_mode,
             )
         ):
             logger.info("Balanced deterministic gate: APPROVE — skipped LLM quality gate")
@@ -1492,6 +1753,7 @@ def review_section(state: AgentState) -> dict:
                         )
                         if not enable_images:
                             repaired = strip_image_markers_when_disabled(repaired)
+                        repaired = _normalize_unnumbered_h3_to_bold(repaired)
                         logger.info("Balanced reviewer self-repair: formatting fixed without Writer rewrite")
                         return {
                             "current_content":  repaired,
@@ -1515,6 +1777,8 @@ def review_section(state: AgentState) -> dict:
                         language=language,
                         enable_images=enable_images,
                         textbook_mode=textbook_mode,
+                        target_pages=section_target_pages,
+                        page_budget_mode=section_page_budget_mode,
                     )
                     repaired = agent._fix_heading_levels(repaired, display_sec_num, sec_title)
                     if not enable_images:

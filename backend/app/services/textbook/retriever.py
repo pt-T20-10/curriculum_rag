@@ -139,6 +139,12 @@ def build_source_audit_summary(
         })
 
     counts = Counter(record["url"] for record in records)
+    status_counts = Counter(record.get("status") or "pass" for record in records)
+    verified_sources = {
+        record["url"]
+        for record in records
+        if (record.get("status") or "pass") == "verified"
+    }
     first_seen = {record["url"]: idx for idx, record in enumerate(records)}
     top_sources = sorted(
         counts.items(),
@@ -150,6 +156,10 @@ def build_source_audit_summary(
         "total_chunks": len(records),
         "unique_sources": len(counts),
         "valid_chunks": len(records),
+        "verified_chunks": int(status_counts.get("verified", 0)),
+        "pass_chunks": int(status_counts.get("pass", 0)),
+        "verified_sources": len(verified_sources),
+        "source_status_summary": dict(status_counts),
         "discarded_chunks": len(discarded_chunks),
         "discarded_details": discarded_chunks[:max_sources],
         "warnings": [],

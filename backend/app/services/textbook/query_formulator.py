@@ -33,6 +33,20 @@ def _compact_query(parts: list[str], max_terms: int = 28) -> str:
     return " ".join(terms)
 
 
+def _section_value(section: Chapter | SubSection | dict, key: str, default: str = "") -> str:
+    if isinstance(section, dict):
+        return str(section.get(key, default) or default)
+    return str(getattr(section, key, default) or default)
+
+
+def _target_pages_value(subsection: SubSection | dict) -> int | None:
+    value = subsection.target_pages if isinstance(subsection, SubSection) else subsection.get("target_pages")
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def formulate_query(state: AgentState) -> dict:
     """
     QueryFormulator node: derive an enhanced ChromaDB search query.
@@ -65,22 +79,22 @@ def formulate_query(state: AgentState) -> dict:
     try:
         chapter, subsection = get_chapter_and_subsection(curriculum, chap_idx, sub_idx)
 
-        chap_title = (
-            chapter.title if isinstance(chapter, Chapter)
-            else chapter.get("title", "Unknown")
-        )
-        sec_title = (
-            subsection.title if isinstance(subsection, SubSection)
-            else subsection.get("title", "Unknown")
-        )
-        sec_desc = (
-            subsection.description if isinstance(subsection, SubSection)
-            else subsection.get("description", "")
-        )
+        chap_title = _section_value(chapter, "title", "Unknown")
+        sec_title = _section_value(subsection, "title", "Unknown")
+        sec_desc = _section_value(subsection, "description", "")
+        sec_type = _section_value(subsection, "section_type", "medium")
+        target_pages = _target_pages_value(subsection)
         base_query = (
             subsection.search_query if isinstance(subsection, SubSection)
             else subsection.get("search_query", f"{chap_title} - {sec_title}")
         )
+        course_topic = str(
+            state.get("core_topic")
+            or state.get("request")
+            or state.get("topic")
+            or ""
+        )
+        compact_section = target_pages is not None and target_pages <= 2
 
         logger.info(f"Target: Chapter {chap_idx + 1}.{sub_idx + 1} — {sec_title}")
         logger.info(f"Base query: {base_query}")
@@ -89,24 +103,35 @@ def formulate_query(state: AgentState) -> dict:
         # Revision mode: shift query angle away from already-tried queries
         # to avoid retrieving the same chunks that produced rejected content.
         # ----------------------------------------------------------------
-        section_anchor = _compact_query([chap_title, sec_title, sec_desc], max_terms=18)
-        base_with_anchor = _compact_query([section_anchor, base_query], max_terms=28)
+        metadata_anchor = _compact_query(
+            [
+                base_query,
+                sec_title,
+                sec_desc,
+                chap_title,
+                course_topic,
+                f"{sec_type} section",
+                f"{target_pages} pages" if target_pages else "",
+            ],
+            max_terms=36,
+        )
 
         if used_queries:
             logger.info(f"Retry mode — shifting query angle (used: {len(used_queries)})")
             # Rotate the angle so repeated strict-gate retries do not ask
             # ChromaDB for the same neighborhood again.
             retry_angles = [
-                "definition concepts overview examples",
-                "core principles explanation textbook",
-                "applications comparison fundamentals",
+                "definition core concepts textbook explanation",
+                "implementation configuration examples tutorial",
+                "troubleshooting best practices assessment criteria",
+                "official documentation course notes worked example",
             ]
-            suffix = retry_angles[len(used_queries) % len(retry_angles)]
+            suffix = retry_angles[(len(used_queries) - 1) % len(retry_angles)]
             if review_feedback:
                 suffix = f"{suffix} missing details examples"
-            enhanced_query = _compact_query([base_with_anchor, suffix], max_terms=34)
+            enhanced_query = _compact_query([metadata_anchor, suffix], max_terms=42)
         else:
-            enhanced_query = base_with_anchor
+            enhanced_query = metadata_anchor
 
         # ----------------------------------------------------------------
         # User requirements enrichment for targeted retrieval.
@@ -126,7 +151,10 @@ def formulate_query(state: AgentState) -> dict:
 
             if ("ứng dụng" in user_requirements or "thực tế" in user_requirements
                     or "real" in req_lower or "application" in req_lower):
-                query_extensions.extend(["real world applications", "use cases", "practical examples"])
+                if compact_section:
+                    query_extensions.extend(["short practical example"])
+                else:
+                    query_extensions.extend(["real world applications", "use cases", "practical examples"])
                 logger.info("  → Adding application-focused keywords")
 
             if "project" in req_lower or "dự án" in user_requirements:
@@ -150,13 +178,13 @@ def formulate_query(state: AgentState) -> dict:
             )
             logger.info(f"Practice-mode query: {enhanced_query}")
 
-        if formula_policy == "include" and formula_need != "none":
+        if formula_policy == "include":
             enhanced_query = _compact_query(
                 [
                     enhanced_query,
-                    "formula equation derivation mathematical notation worked example",
+                    "formula equation model metric rubric KPI calculation worked example evaluation criteria quantitative framework",
                 ],
-                max_terms=44,
+                max_terms=48,
             )
             logger.info(f"Formula-focused query: {enhanced_query}")
 

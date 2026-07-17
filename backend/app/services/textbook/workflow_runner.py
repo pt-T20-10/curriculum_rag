@@ -20,6 +20,7 @@ from app.services.api_rate_limiter import (
     reset_api_usage_summary,
 )
 from app.services.textbook.language import get_language_profile, progress_text
+from app.services.textbook.page_budget import allocate_page_budget
 from app.utils.log_config import setup_logger
 from app.utils.stop_signal import WorkflowStoppedException
 
@@ -184,6 +185,7 @@ async def run_textbook_workflow(
         language_val = textbook_record.language if textbook_record else language
         source_preferences_val = textbook_record.source_preferences if textbook_record else {}
         progress_data_val = dict(textbook_record.progress_data or {}) if textbook_record else {}
+        target_pages_val = progress_data_val.get("target_pages")
         planning_mode_val = str(
             progress_data_val.get("planning_mode")
             or ("structured" if textbook_record and textbook_record.curriculum_json else "auto")
@@ -202,6 +204,7 @@ async def run_textbook_workflow(
         formula_need_val = "none"
         language_val = language
         source_preferences_val = {}
+        target_pages_val = None
         planning_mode_val = "auto"
         initial_structure_val = None
     # Build initial state
@@ -267,6 +270,7 @@ async def run_textbook_workflow(
 
                         curriculum_data = None
                         chapter_titles = []
+                        page_validation = None
 
                         if curriculum:
                             profile = get_language_profile(language_val) #type: ignore
@@ -285,7 +289,15 @@ async def run_textbook_workflow(
                                 )
                                 for i, ch in enumerate(chapters)
                             ]
-
+                            if target_pages_val:
+                                curriculum_data, page_validation = allocate_page_budget(
+                                    curriculum_data,
+                                    target_pages=target_pages_val,
+                                    enable_images=enable_images,
+                                    language=language_val,  # type: ignore[arg-type]
+                                    textbook_mode=textbook_mode_val,  # type: ignore[arg-type]
+                                    formula_policy=formula_policy_val,  # type: ignore[arg-type]
+                                )
                         # ⭐ Update textbook title in database
                         if textbook_title:
                             result = await db.execute(select(Textbook).where(Textbook.id == textbook_id))
@@ -296,14 +308,8 @@ async def run_textbook_workflow(
                                 logger.info(f"✓ Updated textbook title: {textbook_title}")
 
                         api_usage = get_api_usage_summary(api_run_id)
-                        review_phase = (
-                            "reviewing" if planning_mode_val != "structured" else "planning"
-                        )
-                        review_status_key = (
-                            "review_curriculum"
-                            if planning_mode_val != "structured"
-                            else "content_generation_started"
-                        )
+                        review_phase = "reviewing"
+                        review_status_key = "review_curriculum"
                         await update_progress(db, textbook_id, {
                             "phase": review_phase,
                             "progress_value": 15.0,
@@ -317,13 +323,12 @@ async def run_textbook_workflow(
                             "language": language_val,
                             "planning_mode": planning_mode_val,
                             "textbook_mode": textbook_mode_val,
+                            "target_pages": target_pages_val,
+                            "page_validation": page_validation,
                             "api_usage_summary": api_usage,
                         })
 
-                        if planning_mode_val == "structured":
-                            logger.info("[Workflow] Structured planning complete. Continuing to content generation...")
-                        else:
-                            logger.info("[Workflow] Planning complete. Waiting for curriculum confirmation...")
+                        logger.info("[Workflow] Planning complete. Waiting for curriculum confirmation...")
                         logger.info("[Workflow] API usage summary: %s", api_usage)
 
                         return {
@@ -332,11 +337,7 @@ async def run_textbook_workflow(
                             "planning_mode": planning_mode_val,
                             "curriculum": curriculum_data,
                             "api_usage_summary": api_usage,
-                            "message": (
-                                "Structured planning complete. Continuing to content generation."
-                                if planning_mode_val == "structured"
-                                else "Planning complete. Awaiting curriculum confirmation."
-                            )
+                            "message": "Planning complete. Awaiting curriculum confirmation."
                         }
 
         return {
@@ -406,6 +407,7 @@ async def continue_after_curriculum_confirmation(
     user_requirements = initial_state.get("user_requirements", "")  # type: ignore[union-attr]
     planning_mode = str(initial_state.get("planning_mode", "auto"))  # type: ignore[union-attr]
     textbook_mode = str(initial_state.get("textbook_mode", "standard"))  # type: ignore[union-attr]
+    target_pages = confirmed_curriculum.get("target_pages") if isinstance(confirmed_curriculum, dict) else None
     rag_collection_name = f"dynamic_context_{textbook_id}_{int(time.time())}"
     # Content-generation nodes that participate in the CRAG loop.
     _CRAG_NODES = (
@@ -483,6 +485,7 @@ async def continue_after_curriculum_confirmation(
                 "language": initial_state.get("language", "vi"),
                 "planning_mode": planning_mode,
                 "textbook_mode": textbook_mode,
+                "target_pages": target_pages,
             })
 
         cumulative_state: Dict[str, Any] = dict(content_state)
@@ -538,6 +541,7 @@ async def continue_after_curriculum_confirmation(
                             "language":       initial_state.get("language", "vi"),
                             "planning_mode":  planning_mode,
                             "textbook_mode":  textbook_mode,
+                            "target_pages": target_pages,
                         })
                         logger.error(f"[Workflow] Ingestion failed: {failed_msg}")
                     else:
@@ -560,6 +564,7 @@ async def continue_after_curriculum_confirmation(
                             "language": initial_state.get("language", "vi"),
                             "planning_mode": planning_mode,
                             "textbook_mode": textbook_mode,
+                            "target_pages": target_pages,
                         })
 
                 elif node_name in _CRAG_NODES and db:
@@ -587,6 +592,7 @@ async def continue_after_curriculum_confirmation(
                         "language": initial_state.get("language", "vi"),
                         "planning_mode": planning_mode,
                         "textbook_mode": textbook_mode,
+                        "target_pages": target_pages,
                         "sub_stages": {
                             "retriever":  "active" if node_name in ("query_formulator", "retriever_node", "context_evaluator") else "done",
                             "writer":     "active" if node_name == "content_writer"  else ("done" if node_name in ("reviewer", "illustrator") else "pending"),

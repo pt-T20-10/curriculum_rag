@@ -1,7 +1,14 @@
 from app.services.textbook.publisher import (
     fix_inline_display_math,
+    lint_math_export_risks,
+    normalize_display_math_blocks,
     normalize_formula_explanations,
+    normalize_math_identifier_formatting,
+    normalize_lead_in_labels,
+    normalize_list_lead_in_labels,
     promote_standalone_inline_math,
+    repair_mixed_math_markdown_blocks,
+    wrap_bare_formula_lines,
 )
 
 
@@ -103,3 +110,113 @@ def test_fix_inline_display_math_does_not_inline_short_equations():
 
     assert "$$\nT = N \\times S\n$$" in normalized
     assert "$x$" in normalized
+
+
+def test_normalize_display_math_repairs_closing_delimiter_same_line():
+    content = "$$\nI'(x, y) = \\mu + \\frac{\\sigma^2 - v^2}{\\sigma^2} [I(x, y) - \\mu]$$"
+
+    normalized = normalize_display_math_blocks(content)
+    normalized = normalize_math_identifier_formatting(normalized)
+
+    assert normalized == (
+        "$$\n"
+        "I'(x, y) = \\mu + \\frac{\\sigma^2 - v^2}{\\sigma^2} [I(x, y) - \\mu]\n"
+        "$$"
+    )
+
+
+def test_normalize_display_math_wraps_plain_multiline_equations_in_aligned():
+    content = "$$\nY = 0.299R + 0.587G + 0.114B \\\\\nCb = 0.564(B - Y) \\\\\nCr = 0.713(R - Y)\n$$"
+
+    normalized = normalize_display_math_blocks(content)
+
+    assert "\\begin{aligned}" in normalized
+    assert "Y = 0.299R + 0.587G + 0.114B \\\\" in normalized
+    assert "\\end{aligned}" in normalized
+
+
+def test_normalize_display_math_does_not_wrap_cases_or_matrices():
+    content = (
+        "$$\n"
+        "\\begin{cases}\n"
+        "1, & x > 0 \\\\\n"
+        "0, & x \\leq 0\n"
+        "\\end{cases}\n"
+        "$$\n\n"
+        "$$\n"
+        "\\begin{bmatrix}\n"
+        "1 & 0 \\\\\n"
+        "0 & 1\n"
+        "\\end{bmatrix}\n"
+        "$$"
+    )
+
+    normalized = normalize_display_math_blocks(content)
+
+    assert normalized.count("\\begin{aligned}") == 0
+    assert "\\begin{cases}" in normalized
+    assert "\\begin{bmatrix}" in normalized
+
+
+def test_normalize_lead_in_labels_splits_hard_break_paragraphs():
+    content = "**Bài tập thực hành:**  \nChọn một ảnh số bất kỳ và thực hiện các bước."
+
+    normalized = normalize_lead_in_labels(content)
+
+    assert normalized == (
+        "**Bài tập thực hành:**\n\n"
+        "Chọn một ảnh số bất kỳ và thực hiện các bước."
+    )
+
+
+def test_repair_mixed_math_markdown_blocks_splits_swallowed_list_steps():
+    content = (
+        "1. Tổng quang thông cần thiết:\n"
+        "$$\n"
+        "\\Phi_{total} = 300~lux \\times 40~m^2 = 12,000~lm\n\n"
+        "2. Quang thông của một đèn:\n"
+        "\\Phi_{den} = 20~W \\times 100~lm/W = 2,000~lm\n\n"
+        "3. Số lượng đèn:\n"
+        "N = \\frac{12,000~lm}{2,000~lm} = 6~đèn\n"
+        "$$"
+    )
+
+    repaired = repair_mixed_math_markdown_blocks(content)
+
+    assert repaired.count("$$") == 6
+    assert "2. Quang thông của một đèn:" in repaired
+    assert "$$\n\\Phi_{den} = 20~W \\times 100~lm/W = 2,000~lm\n$$" in repaired
+    assert "$$\nN = \\frac{12,000~lm}{2,000~lm} = 6~đèn\n$$" in repaired
+
+
+def test_wrap_bare_formula_lines_wraps_strong_formula_only():
+    content = (
+        "Quang thông của một đèn:\n"
+        "\\Phi_{den} = 20~W \\times 100~lm/W = 2,000~lm\n"
+        "Đây là một dòng văn xuôi bình thường."
+    )
+
+    wrapped = wrap_bare_formula_lines(content)
+
+    assert "$$\n\\Phi_{den} = 20~W \\times 100~lm/W = 2,000~lm\n$$" in wrapped
+    assert "Đây là một dòng văn xuôi bình thường." in wrapped
+
+
+def test_lint_math_export_risks_repairs_double_equals_in_formula():
+    content = "$$\nI_{tong} = = \\frac{P}{U}\n$$"
+
+    linted = lint_math_export_risks(content)
+
+    assert "I_{tong} = \\frac{P}{U}" in linted
+    assert "= =" not in linted
+
+
+def test_normalize_list_lead_in_labels_splits_numbered_bold_label():
+    content = "3. **Áp dụng các định luật Kirchhoff trong miền phức:** Các định luật được áp dụng trực tiếp."
+
+    normalized = normalize_list_lead_in_labels(content)
+
+    assert normalized == (
+        "3. **Áp dụng các định luật Kirchhoff trong miền phức:**\n\n"
+        "   Các định luật được áp dụng trực tiếp."
+    )

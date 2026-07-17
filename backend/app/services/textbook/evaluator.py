@@ -20,7 +20,10 @@ from typing import Any
 
 from app.config import settings
 from app.services.cost_profile import (
+    BALANCED_COST,
+    AGGRESSIVE_COST,
     auxiliary_chat_model,
+    get_cost_profile,
     get_rag_chunk_llm_filter_mode,
     should_skip_context_evaluator_when_sufficient,
 )
@@ -78,6 +81,9 @@ def _context_evidence_score(
 def deterministic_context_is_sufficient(
     rag_context: str,
     source_audit: dict[str, Any] | None = None,
+    *,
+    require_verified: bool = False,
+    min_verified_chunks: int = 2,
 ) -> bool:
     """
     Fast no-LLM sufficiency check for balanced-cost mode.
@@ -93,6 +99,14 @@ def deterministic_context_is_sufficient(
         or 0
     )
     unique_sources = int(audit.get("unique_sources") or 0)
+    verified_chunks = int(audit.get("verified_chunks") or 0)
+    verified_sources = int(audit.get("verified_sources") or 0)
+    if not verified_sources:
+        verified_sources = sum(
+            1
+            for source in audit.get("sources", [])
+            if isinstance(source, dict) and source.get("status") == "verified"
+        )
     source_scores = [
         source.get("avg_score")
         for source in audit.get("sources", [])
@@ -107,9 +121,40 @@ def deterministic_context_is_sufficient(
         return False
     if valid_chunks < 2 or unique_sources < 2:
         return False
+    if require_verified:
+        if verified_chunks < min_verified_chunks or verified_sources < 2:
+            return False
     if source_scores and avg_source_score < 0.30:
         return False
     return True
+
+
+def _verified_gate_requirement(section_type: str | None, target_pages: Any = None) -> int:
+    try:
+        pages = int(target_pages) if target_pages is not None else None
+    except (TypeError, ValueError):
+        pages = None
+    if str(section_type or "").lower() in {"deep", "applied"} or (pages is not None and pages >= 3):
+        return 3
+    return 2
+
+
+def _section_gate_metadata(curriculum: Any, chap_idx: int, sub_idx: int) -> tuple[str, int | None]:
+    try:
+        _chapter, subsection = get_chapter_and_subsection(curriculum, chap_idx, sub_idx)
+        section_type = (
+            subsection.section_type
+            if isinstance(subsection, SubSection)
+            else subsection.get("section_type", "medium")
+        )
+        target_pages = (
+            subsection.target_pages
+            if isinstance(subsection, SubSection)
+            else subsection.get("target_pages")
+        )
+        return str(section_type or "medium"), target_pages
+    except Exception:
+        return "medium", None
 
 
 # ============================================================================
@@ -318,11 +363,20 @@ def evaluate_context(state: AgentState) -> dict:
     max_retries = max(1, getattr(settings, "CRAG_MAX_CONTEXT_RETRIES", 2))
     allow_best_effort = _runtime_bool("CRAG_BEST_EFFORT_AFTER_RETRIES", False)
     advanced_config = state.get("advanced_config", {}) or {}
+    cost_profile = get_cost_profile(advanced_config)
+    require_verified_gate = cost_profile in {BALANCED_COST, AGGRESSIVE_COST}
+    gate_section_type, gate_target_pages = _section_gate_metadata(curriculum, chap_idx, sub_idx)
+    min_verified_chunks = _verified_gate_requirement(gate_section_type, gate_target_pages)
 
     if (
         should_skip_context_evaluator_when_sufficient(advanced_config)
         and not review_feedback
-        and deterministic_context_is_sufficient(initial_context, prior_source_audit)
+        and deterministic_context_is_sufficient(
+            initial_context,
+            prior_source_audit,
+            require_verified=require_verified_gate,
+            min_verified_chunks=min_verified_chunks,
+        )
     ):
         source_audit = dict(prior_source_audit) if prior_source_audit else build_source_audit_summary(
             initial_context,
@@ -340,10 +394,12 @@ def evaluate_context(state: AgentState) -> dict:
         }
         logger.info(
             "ContextEvaluator skipped LLM: deterministic audit is sufficient "
-            "(len=%s, chunks=%s, sources=%s)",
+            "(len=%s, chunks=%s, sources=%s, verified=%s/%s)",
             len(initial_context),
             source_audit.get("valid_chunks"),
             source_audit.get("unique_sources"),
+            source_audit.get("verified_chunks"),
+            source_audit.get("verified_sources"),
         )
         return {
             "rag_context":             initial_context,
@@ -453,6 +509,31 @@ def evaluate_context(state: AgentState) -> dict:
             discarded_chunks=prior_discarded_chunks,
         )
         source_audit["warnings"] = source_audit_probe.get("warnings", [])
+        if (
+            context_quality == "sufficient"
+            and require_verified_gate
+            and not deterministic_context_is_sufficient(
+                enriched_context,
+                source_audit,
+                require_verified=True,
+                min_verified_chunks=min_verified_chunks,
+            )
+        ):
+            context_quality = "insufficient"
+            source_audit["context_quality"] = "insufficient"
+            source_audit.setdefault("warnings", []).append(
+                "Balanced-cost verified gate not met: "
+                f"verified_chunks={source_audit.get('verified_chunks', 0)}, "
+                f"verified_sources={source_audit.get('verified_sources', 0)}; "
+                f"required={min_verified_chunks} verified chunks from at least 2 sources."
+            )
+            logger.warning(
+                "ContextEvaluator: verified gate failed "
+                "(verified_chunks=%s, verified_sources=%s, required=%s)",
+                source_audit.get("verified_chunks", 0),
+                source_audit.get("verified_sources", 0),
+                min_verified_chunks,
+            )
 
         best_context = state.get("rag_best_effort_context", "") or ""
         best_audit = state.get("rag_best_effort_audit", {}) or {}

@@ -81,6 +81,13 @@ class TextbookCreate(BaseModel):
     num_chapters: int = Field(default=3, ge=1, le=50)
     content_level: str = Field(default="Trung Bình")
     max_subsections_per_chapter: int = Field(default=3, ge=1, le=30)
+    target_pages: int = Field(
+        ...,
+        ge=5,
+        le=2000,
+        description="Desired content pages only, from preface through chapters; excludes cover, TOC, and figure-list pages.",
+    )
+    page_plan_confirmed: bool = False
     enable_images: bool = False
     ui_language: str = Field(default="vi", pattern="^(vi|en)$")
     export_formats: List[str] = Field(default_factory=lambda: ["PDF", "Word"])
@@ -89,6 +96,7 @@ class TextbookCreate(BaseModel):
     formula_policy: Literal["auto", "include", "exclude"] = "auto"
     formula_confirmed: bool = False
     source_preferences: SourcePreferences = Field(default_factory=SourcePreferences)
+    initial_structure: Optional[Dict[str, Any]] = None
     initial_structure_markdown: Optional[str] = Field(default=None, max_length=20000)
 
 
@@ -167,6 +175,7 @@ class TextbookProgressResponse(BaseModel):
 
 class CurriculumConfirmRequest(BaseModel):
     curriculum: Dict[str, Any]
+    page_plan_confirmed: bool = False
 
 
 class CurriculumCreditEstimateRequest(BaseModel):
@@ -180,3 +189,4 @@ class CurriculumCreditEstimateResponse(BaseModel):
     enable_images: bool
     content_level: str
     is_admin_free: bool
+    page_validation: Optional[Dict[str, Any]] = None

@@ -1,7 +1,24 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 import { textbooksAPI } from '../../api/textbooks'
+import { getChapterPageBudgetIssues } from '../../utils/curriculumStructure'
 import { Button } from '../common/Button'
+
+function pageValueForSubmit(value, fallback) {
+  if (value !== '' && value !== undefined && value !== null) {
+    return parseInt(value, 10)
+  }
+  if (fallback !== '' && fallback !== undefined && fallback !== null) {
+    const parsed = Math.round(Number(fallback))
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
+  }
+  return undefined
+}
+
+function numericPage(value, fallback) {
+  const parsed = pageValueForSubmit(value, fallback)
+  return Number.isFinite(parsed) ? parsed : null
+}
 
 export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, confirming = false }) {
   const { t } = useTranslation()
@@ -22,10 +39,22 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
     setEditedCurriculum(updated)
   }
 
+  const handleChapterPagesChange = (chapterIdx, value) => {
+    const updated = { ...editedCurriculum }
+    updated.chapters[chapterIdx].target_pages = value
+    setEditedCurriculum(updated)
+  }
+
   // Handle subsection title change
   const handleSubChange = (chapterIdx, subIdx, newTitle) => {
     const updated = { ...editedCurriculum }
     updated.chapters[chapterIdx].subsections[subIdx].title = newTitle
+    setEditedCurriculum(updated)
+  }
+
+  const handleSubPagesChange = (chapterIdx, subIdx, value) => {
+    const updated = { ...editedCurriculum }
+    updated.chapters[chapterIdx].subsections[subIdx].target_pages = value
     setEditedCurriculum(updated)
   }
 
@@ -44,6 +73,7 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
             description: `Content about ${subsectionTitle}`,
             search_query: subsectionTitle,
             section_type: 'medium',
+            target_pages: '',
           }],
         },
       ],
@@ -83,7 +113,10 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
     }
     const currentCount = editedCurriculum.chapters[chapterIdx].subsections.length
     const newCount = updated[chapterIdx].length
-    updated[chapterIdx].push(`${t('textbook.contentSidebar.subsections')} ${chapterIdx + 1}.${currentCount + newCount + 1}`)
+    updated[chapterIdx].push({
+      title: `${t('textbook.contentSidebar.subsections')} ${chapterIdx + 1}.${currentCount + newCount + 1}`,
+      target_pages: '',
+    })
     setNewSubs(updated)
   }
 
@@ -108,6 +141,7 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
               description: sub.description?.trim() || `Content about ${title}`,
               search_query: sub.search_query?.trim() || title,
               section_type: sub.section_type || 'medium',
+              target_pages: pageValueForSubmit(sub.target_pages, sub.estimated_pages),
             }
           })
           .filter(Boolean)
@@ -116,14 +150,17 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
 
         // Add new subsections
         const newSubsForChapter = newSubs[chIdx] || []
-        const newSubObjects = newSubsForChapter.map(title => {
-          const cleanTitle = title.trim()
+        const newSubObjects = newSubsForChapter.map(item => {
+          const cleanTitle = String(typeof item === 'string' ? item : item.title || '').trim()
           if (!cleanTitle) return { invalid: true }
           return {
             title: cleanTitle,
             description: `Content about ${cleanTitle}`,
             search_query: cleanTitle,
             section_type: 'medium',
+            target_pages: typeof item === 'string'
+              ? undefined
+              : pageValueForSubmit(item.target_pages),
           }
         })
 
@@ -131,6 +168,7 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
 
         return {
           title: chapterTitle,
+          target_pages: pageValueForSubmit(chapter.target_pages, chapter.estimated_pages),
           subsections: [...activeSubs, ...newSubObjects],
         }
       })
@@ -149,9 +187,17 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
 
     return {
       topic: editedCurriculum.topic,
+      target_pages: editedCurriculum.target_pages === '' || editedCurriculum.target_pages === undefined
+        ? undefined
+        : parseInt(editedCurriculum.target_pages, 10),
       chapters: compactChapters,
     }
   }, [deletedChapters, deletedSubs, editedCurriculum, newSubs])
+
+  const chapterPageBudgetIssues = useMemo(() => {
+    if (finalCurriculum.invalid) return []
+    return getChapterPageBudgetIssues(finalCurriculum.chapters, t)
+  }, [finalCurriculum, t])
 
   useEffect(() => {
     let cancelled = false
@@ -200,6 +246,16 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
       )
       return
     }
+    if (chapterPageBudgetIssues.length > 0) {
+      setValidationError(chapterPageBudgetIssues[0])
+      return
+    }
+    if (creditEstimate?.page_validation?.severity === 'error') {
+      setValidationError(
+        creditEstimate.page_validation.ai_note || t('textbook.curriculum.pageValidationError')
+      )
+      return
+    }
     setValidationError('')
     setPendingConfirmCurriculum(finalCurriculum)
   }
@@ -214,7 +270,10 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
     if (!pendingConfirmCurriculum || estimatingCredits) {
       return
     }
-    onConfirm(pendingConfirmCurriculum)
+    onConfirm(
+      pendingConfirmCurriculum,
+      creditEstimate?.page_validation?.severity === 'warning',
+    )
   }
 
   const handleReset = () => {
@@ -238,6 +297,26 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
           <p className="text-sm font-medium text-red-700">⚠️ {validationError}</p>
         </div>
       )}
+
+      <div className="rounded-lg border border-gray-200 bg-white p-4">
+        <label className="block text-sm font-semibold text-gray-800 mb-2">
+          {t('textbook.form.targetPages')}
+        </label>
+        <input
+          type="number"
+          min="5"
+          step="1"
+          value={editedCurriculum.target_pages ?? ''}
+          onChange={(e) => setEditedCurriculum({
+            ...editedCurriculum,
+            target_pages: e.target.value,
+          })}
+          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+        />
+        <p className="mt-1 text-xs text-gray-500">
+          {t('textbook.form.targetPagesHint')}
+        </p>
+      </div>
 
       <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4">
         <div className="flex items-start justify-between gap-4">
@@ -279,6 +358,39 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
         </div>
       </div>
 
+      {creditEstimate?.page_validation && (
+        <div className={`rounded-lg border p-4 ${
+          creditEstimate.page_validation.severity === 'error'
+            ? 'border-red-200 bg-red-50'
+            : creditEstimate.page_validation.severity === 'warning'
+              ? 'border-amber-200 bg-amber-50'
+              : 'border-blue-200 bg-blue-50'
+        }`}>
+          <p className="text-sm font-semibold text-gray-900">
+            {t('textbook.curriculum.pageEstimateTitle')}
+          </p>
+          <p className="mt-1 text-xs text-gray-700">
+            {t('textbook.curriculum.pageEstimateDetails', {
+              estimated: creditEstimate.page_validation.estimated_total_pages || '...',
+              target: creditEstimate.page_validation.target_pages || '...',
+            })}
+          </p>
+          {creditEstimate.page_validation.ai_note && (
+            <p className="mt-2 text-xs text-gray-700">
+              {creditEstimate.page_validation.ai_note}
+            </p>
+          )}
+          {[
+            ...(creditEstimate.page_validation.errors || []),
+            ...(creditEstimate.page_validation.warnings || []),
+          ].map((item, index) => (
+            <p key={index} className="mt-1 text-xs text-gray-700">
+              {item}
+            </p>
+          ))}
+        </div>
+      )}
+
       {/* Chapters */}
       {editedCurriculum.chapters.map((chapter, chIdx) => {
         const isDeleted = deletedChapters.has(chIdx)
@@ -318,9 +430,19 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
         )
         const newSubsForChapter = newSubs[chIdx] || []
         const totalVisible = activeSubs.length + newSubsForChapter.length
+        const chapterPages = numericPage(chapter.target_pages, chapter.estimated_pages)
+        const allocatedPages = [
+          ...activeSubs.map(sub => numericPage(sub.target_pages, sub.estimated_pages)),
+          ...newSubsForChapter.map(item => (
+            typeof item === 'string' ? null : numericPage(item.target_pages)
+          )),
+        ].reduce((sum, pages) => sum + (pages || 0), 0)
+        const isOverBudget = chapterPages && allocatedPages > chapterPages
 
         return (
-          <div key={chIdx} className="bg-white rounded-lg border border-gray-200 p-4">
+          <div key={chIdx} className={`bg-white rounded-lg border p-4 ${
+            isOverBudget ? 'border-red-300' : 'border-gray-200'
+          }`}>
             {/* ⭐ Chapter header with delete button */}
             <div className="mb-3 flex items-start gap-3">
               <div className="flex-1">
@@ -331,6 +453,19 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
                   type="text"
                   value={chapter.title}
                   onChange={(e) => handleChapterChange(chIdx, e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                />
+              </div>
+              <div className="w-28 shrink-0">
+                <label className="block text-sm font-medium text-gray-600 mb-2">
+                  {t('textbook.curriculum.pages')}
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={chapter.target_pages ?? (Math.round(chapter.estimated_pages || 0) || '')}
+                  onChange={(e) => handleChapterPagesChange(chIdx, e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
                 />
               </div>
@@ -355,6 +490,28 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
               </div>
             )}
 
+            {chapterPages && (
+              <div className={`mb-3 rounded-lg border px-3 py-2 text-xs ${
+                isOverBudget
+                  ? 'border-red-200 bg-red-50 text-red-700'
+                  : 'border-blue-100 bg-blue-50 text-blue-700'
+              }`}>
+                {t('textbook.curriculum.pageAllocationStatus', {
+                  allocated: allocatedPages,
+                  target: chapterPages,
+                })}
+                {isOverBudget && (
+                  <span className="ml-2 font-semibold">
+                    {t('textbook.structure.errors.subsectionPagesExceedChapter', {
+                      chapter: chIdx + 1,
+                      allocated: allocatedPages,
+                      target: chapterPages,
+                    })}
+                  </span>
+                )}
+              </div>
+            )}
+
             {/* Subsections */}
             <div className="space-y-2">
               {chapter.subsections.map((sub, subIdx) => {
@@ -376,6 +533,16 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
                       onChange={(e) => handleSubChange(chIdx, subIdx, e.target.value)}
                       className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
                     />
+                    <input
+                      type="number"
+                      min="1"
+                      max={chapterPages || undefined}
+                      step="1"
+                      value={sub.target_pages ?? (Math.round(sub.estimated_pages || 0) || '')}
+                      onChange={(e) => handleSubPagesChange(chIdx, subIdx, e.target.value)}
+                      className="w-24 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                      title={t('textbook.curriculum.pages')}
+                    />
                     <button
                       onClick={() => handleDeleteSub(chIdx, subIdx)}
                       className="px-3 py-2 text-red-600 hover:bg-red-50 rounded-lg"
@@ -388,8 +555,10 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
               })}
 
               {/* New subsections */}
-              {newSubsForChapter.map((title, newIdx) => {
+              {newSubsForChapter.map((item, newIdx) => {
                 const displayIdx = activeSubs.length + newIdx + 1
+                const title = typeof item === 'string' ? item : item.title
+                const pages = typeof item === 'string' ? '' : item.target_pages
                 
                 return (
                   <div key={`new-${newIdx}`} className="flex gap-2 items-center">
@@ -401,11 +570,35 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
                       value={title}
                       onChange={(e) => {
                         const updated = { ...newSubs }
-                        updated[chIdx][newIdx] = e.target.value
+                        updated[chIdx][newIdx] = {
+                          ...(typeof updated[chIdx][newIdx] === 'string'
+                            ? { title: updated[chIdx][newIdx], target_pages: '' }
+                            : updated[chIdx][newIdx]),
+                          title: e.target.value,
+                        }
                         setNewSubs(updated)
                       }}
                       className="flex-1 px-3 py-2 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary bg-blue-50"
                       placeholder={t('textbook.curriculum.newSubsectionPlaceholder')}
+                    />
+                    <input
+                      type="number"
+                      min="1"
+                      max={chapterPages || undefined}
+                      step="1"
+                      value={pages ?? ''}
+                      onChange={(e) => {
+                        const updated = { ...newSubs }
+                        updated[chIdx][newIdx] = {
+                          ...(typeof updated[chIdx][newIdx] === 'string'
+                            ? { title: updated[chIdx][newIdx], target_pages: '' }
+                            : updated[chIdx][newIdx]),
+                          target_pages: e.target.value,
+                        }
+                        setNewSubs(updated)
+                      }}
+                      className="w-24 px-3 py-2 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary bg-blue-50"
+                      title={t('textbook.curriculum.pages')}
                     />
                     <button
                       onClick={() => handleDeleteNewSub(chIdx, newIdx)}
@@ -442,7 +635,7 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
         <Button
           onClick={handleConfirm}
           className="flex-1"
-          disabled={confirming}
+          disabled={confirming || chapterPageBudgetIssues.length > 0}
         >
           ✅ {confirming ? t('textbook.curriculum.confirming') : t('textbook.curriculum.confirm')}
         </Button>
@@ -510,6 +703,17 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
                 )}
               </div>
             </div>
+
+            {creditEstimate?.page_validation?.severity === 'warning' && (
+              <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4">
+                <p className="text-xs font-semibold uppercase text-amber-700">
+                  {t('textbook.curriculum.pageEstimateTitle')}
+                </p>
+                <p className="mt-2 text-xs text-amber-800">
+                  {creditEstimate.page_validation.ai_note}
+                </p>
+              </div>
+            )}
 
             {estimateError && (
               <p className="mt-3 text-xs text-yellow-700">

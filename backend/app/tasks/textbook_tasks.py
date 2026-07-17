@@ -56,8 +56,12 @@ async def _prepare_structured_content_generation(
 ) -> tuple[dict, dict]:
     from app.routers.textbook import (
         _apply_confirmed_curriculum_counts,
+        _apply_page_budget_if_needed,
+        _clean_positive_float,
+        _curriculum_page_configuration_validation,
         _insufficient_credits_detail,
         _is_free_admin,
+        _merge_page_validations,
         _sanitize_confirmed_curriculum,
         estimate_textbook_credits,
     )
@@ -73,6 +77,46 @@ async def _prepare_structured_content_generation(
     confirmed_curriculum, chapter_titles, total_subsections = _sanitize_confirmed_curriculum(
         curriculum
     )
+    progress_data = dict(textbook.progress_data or {})  # type: ignore
+    target_pages = (
+        _clean_positive_float(confirmed_curriculum.get("target_pages"))
+        or _clean_positive_float(progress_data.get("target_pages"))
+    )
+    confirmed_curriculum, page_validation = _apply_page_budget_if_needed(
+        confirmed_curriculum,
+        target_pages=target_pages,
+        enable_images=bool(textbook.enable_images),
+        language=textbook.language,  # type: ignore[arg-type]
+        textbook_mode=textbook.textbook_mode or "standard",  # type: ignore[attr-defined]
+        formula_policy=textbook.formula_policy or "auto",  # type: ignore[attr-defined]
+    )
+    compatibility_validation = _curriculum_page_configuration_validation(
+        confirmed_curriculum,
+        target_pages=target_pages,
+        enable_images=bool(textbook.enable_images),
+        language=textbook.language,  # type: ignore[arg-type]
+        textbook_mode=textbook.textbook_mode or "standard",  # type: ignore[attr-defined]
+    )
+    page_validation = _merge_page_validations(compatibility_validation, page_validation)
+    if page_validation and page_validation.get("severity") == "error":
+        detail = page_validation.get("ai_note") or "Invalid page plan"
+        progress_data.update({
+            "phase": "idle",
+            "progress_value": 15.0,
+            "status_text": detail,
+            "error_message": detail,
+            "planner_status": "completed",
+            "planning_mode": "structured",
+            "textbook_mode": textbook.textbook_mode or "standard",  # type: ignore[attr-defined]
+            "curriculum_data": confirmed_curriculum,
+            "target_pages": target_pages,
+            "page_validation": page_validation,
+        })
+        textbook.progress_data = progress_data  # type: ignore
+        textbook.status = TextbookStatus.FAILED.value  # type: ignore
+        textbook.error_message = detail  # type: ignore
+        await db.commit()
+        return {"success": False, "error": detail}, {}
     estimated_credits = estimate_textbook_credits(
         total_subsections=total_subsections,
         content_level=textbook.content_level,  # type: ignore[arg-type]
@@ -89,7 +133,6 @@ async def _prepare_structured_content_generation(
                 credits_required,
                 current_credits,
             )
-            progress_data = dict(textbook.progress_data or {})  # type: ignore
             progress_data.update({
                 "phase": "idle",
                 "progress_value": 15.0,
@@ -99,6 +142,8 @@ async def _prepare_structured_content_generation(
                 "planning_mode": "structured",
                 "textbook_mode": textbook.textbook_mode or "standard",  # type: ignore[attr-defined]
                 "curriculum_data": confirmed_curriculum,
+                "target_pages": target_pages,
+                "page_validation": page_validation,
             })
             textbook.progress_data = progress_data  # type: ignore
             textbook.status = TextbookStatus.FAILED.value  # type: ignore
@@ -119,7 +164,6 @@ async def _prepare_structured_content_generation(
         textbook.credits_used = 0  # type: ignore
 
     chapter_count = len(chapter_titles)
-    progress_data = dict(textbook.progress_data or {})  # type: ignore
     progress_data.update({
         "phase": "generating",
         "progress_value": 20.0,
@@ -138,6 +182,8 @@ async def _prepare_structured_content_generation(
         "credits_required": credits_required,
         "credits_charged": credits_charged,
         "is_admin_free": is_admin_free,
+        "target_pages": target_pages,
+        "page_validation": page_validation,
     })
     textbook.progress_data = progress_data  # type: ignore
     _apply_confirmed_curriculum_counts(
@@ -340,27 +386,6 @@ def generate_textbook_task(self, textbook_id: int):
                             )
                         )
 
-                    if planning_mode == "structured":
-                        if not curriculum:
-                            raise ValueError("Structured planner did not return a curriculum")
-                        charge_result, confirmed_curriculum = await _prepare_structured_content_generation(
-                            db,
-                            textbook,
-                            curriculum,
-                        )
-                        if not charge_result.get("success"):
-                            return {
-                                "status": "error",
-                                "phase": "idle",
-                                "error": charge_result.get("error"),
-                            }
-                        return await _run_content_generation_for_textbook(
-                            db,
-                            textbook,
-                            confirmed_curriculum,
-                            planning_mode="structured",
-                        )
-                    
                     logger.info(f"[TASK] Planning complete for textbook {textbook_id}")
                     return {
                         "status": "success",

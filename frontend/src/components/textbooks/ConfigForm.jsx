@@ -1,22 +1,14 @@
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { CONTENT_LEVEL } from '../../constants/textbookOptions'
-import { createDefaultStructure, serializeStructureToMarkdown, validateStructure } from '../../utils/curriculumStructure'
+import {
+  createDefaultStructure,
+  getChapterPageBudgetIssues,
+  normalizeStructureForApi,
+  serializeStructureToMarkdown,
+  validateStructure,
+} from '../../utils/curriculumStructure'
 import { CurriculumStructureEditor } from './CurriculumStructureEditor'
-
-const CONTENT_LEVEL_LABEL_KEYS = {
-  [CONTENT_LEVEL.SHORT]: 'textbook.form.levelShort',
-  [CONTENT_LEVEL.MEDIUM]: 'textbook.form.levelMedium',
-  [CONTENT_LEVEL.LONG]: 'textbook.form.levelLong',
-  [CONTENT_LEVEL.VERY_LONG]: 'textbook.form.levelVeryLong',
-}
-
-const CONTENT_LEVEL_HINT_KEYS = {
-  [CONTENT_LEVEL.SHORT]: 'textbook.form.levelShortHint',
-  [CONTENT_LEVEL.MEDIUM]: 'textbook.form.levelMediumHint',
-  [CONTENT_LEVEL.LONG]: 'textbook.form.levelLongHint',
-  [CONTENT_LEVEL.VERY_LONG]: 'textbook.form.levelVeryLongHint',
-}
 
 const LANGUAGE_LABEL_KEYS = {
   vi: 'textbook.language.vi',
@@ -64,6 +56,10 @@ const ABSOLUTE_CONFIG_LIMITS = {
   max_subsections_per_chapter: { min: 1, max: 30 },
 }
 
+const MIN_PAGES_PER_SUBSECTION = 1
+const IMAGE_PAGE_OVERHEAD_PER_SUBSECTION = 0.25
+const PAGE_COMPATIBILITY_WARNING_MULTIPLIER = 1.25
+
 const VI_DIACRITIC_RE = /[ăâđêôơưáàảãạắằẳẵặấầẩẫậéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựýỳỷỹỵ]/i
 const DOMAIN_RE = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i
 
@@ -105,6 +101,56 @@ function parseIntegerInput(value) {
   if (value === '' || value === null || value === undefined) return null
   const parsed = Number(value)
   return Number.isInteger(parsed) ? parsed : NaN
+}
+
+function isMissingPageValue(value) {
+  return value === '' || value === null || value === undefined
+}
+
+function hasMissingStructurePageTargets(structure) {
+  return (structure?.chapters || []).some(chapter => (
+    isMissingPageValue(chapter.target_pages) ||
+    (chapter.subsections || []).some(subsection => isMissingPageValue(subsection.target_pages))
+  ))
+}
+
+function estimateContentIntroPages(textbookMode) {
+  return (textbookMode || 'standard') === 'practice' ? 0 : 1
+}
+
+function getPageCompatibility(data) {
+  const targetPages = data.target_pages
+  if (!Number.isInteger(targetPages)) return null
+
+  const chapters = data.initial_structure?.chapters
+  const chapterCount = Array.isArray(chapters)
+    ? chapters.length
+    : data.num_chapters
+  const subsectionCounts = Array.isArray(chapters)
+    ? chapters.map(chapter => chapter.subsections?.length || 0)
+    : []
+  const subsectionCount = subsectionCounts.length > 0
+    ? subsectionCounts.reduce((sum, count) => sum + count, 0)
+    : chapterCount * data.max_subsections_per_chapter
+  const safeChapterCount = Math.max(1, chapterCount || 1)
+  const safeSubsectionCount = Math.max(1, subsectionCount || 1)
+  const contentIntroPages = estimateContentIntroPages(data.textbook_mode)
+  const bodyPages = targetPages - contentIntroPages
+  const minPagesPerSubsection = MIN_PAGES_PER_SUBSECTION + (
+    data.enable_images ? IMAGE_PAGE_OVERHEAD_PER_SUBSECTION : 0
+  )
+  const minBodyPages = Math.max(
+    safeChapterCount,
+    safeSubsectionCount * minPagesPerSubsection,
+  )
+
+  return {
+    bodyPages,
+    chapterCount: safeChapterCount,
+    subsectionCount: safeSubsectionCount,
+    minTotalPages: Math.ceil(contentIntroPages + minBodyPages),
+    recommendedTotalPages: Math.ceil(contentIntroPages + (minBodyPages * PAGE_COMPATIBILITY_WARNING_MULTIPLIER)),
+  }
 }
 
 function normalizeAscii(value) {
@@ -196,6 +242,8 @@ export function ConfigForm({
     num_chapters: 3,
     content_level: CONTENT_LEVEL.MEDIUM,
     max_subsections_per_chapter: 5,
+    target_pages: '',
+    page_plan_confirmed: false,
     enable_images: true,
     formula_policy: 'auto'
   })
@@ -204,6 +252,7 @@ export function ConfigForm({
   const [fieldErrors, setFieldErrors] = useState({})
   const [confirmWarnings, setConfirmWarnings] = useState([])
   const [pendingSubmitData, setPendingSubmitData] = useState(null)
+  const [pendingStructuredPageData, setPendingStructuredPageData] = useState(null)
   const isAdmin = user?.role === 'admin'
 
   const getConfigIssues = (data) => {
@@ -247,6 +296,35 @@ export function ConfigForm({
       }
     })
 
+    if (data.target_pages === null || data.target_pages === undefined || data.target_pages === '') {
+      errors.target_pages = t('textbook.form.targetPagesRequired')
+    } else if (Number.isNaN(data.target_pages)) {
+      errors.target_pages = t('textbook.form.numberInteger')
+    } else if (data.target_pages < 5) {
+      errors.target_pages = t('textbook.form.targetPagesTooLow', { min: 5 })
+    } else if (data.target_pages > 2000) {
+      errors.target_pages = t('textbook.form.targetPagesTooHigh', { max: 2000 })
+    }
+
+    if (!errors.target_pages) {
+      const compatibility = getPageCompatibility(data)
+      if (compatibility) {
+        if (compatibility.bodyPages <= 0 || data.target_pages < compatibility.minTotalPages) {
+          errors.target_pages = t('textbook.form.targetPagesIncompatible', {
+            min: compatibility.minTotalPages,
+            chapters: compatibility.chapterCount,
+            sections: compatibility.subsectionCount,
+          })
+        } else if (data.target_pages < compatibility.recommendedTotalPages) {
+          warnings.push(t('textbook.form.targetPagesTightWarning', {
+            recommended: compatibility.recommendedTotalPages,
+            chapters: compatibility.chapterCount,
+            sections: compatibility.subsectionCount,
+          }))
+        }
+      }
+    }
+
     return { errors, warnings }
   }
 
@@ -274,6 +352,8 @@ export function ConfigForm({
       topic: formData.topic.trim(),
       num_chapters: parseIntegerInput(formData.num_chapters),
       max_subsections_per_chapter: parseIntegerInput(formData.max_subsections_per_chapter),
+      target_pages: parseIntegerInput(formData.target_pages),
+      page_plan_confirmed: Boolean(formData.page_plan_confirmed),
     }
     const shouldUseCustomSources = (formData.source_preferences?.source_mode || 'system_default') !== 'system_default'
     const parsedSources = shouldUseCustomSources
@@ -310,11 +390,20 @@ export function ConfigForm({
         setFieldErrors({ initial_structure: structureError })
         return
       }
+      const pageBudgetIssues = getChapterPageBudgetIssues(initialStructure.chapters, t)
+      if (pageBudgetIssues.length > 0) {
+        setFieldErrors({ initial_structure: pageBudgetIssues[0] })
+        return
+      }
       const chapterCount = initialStructure.chapters.length
       const maxSubsectionCount = Math.max(
         ...initialStructure.chapters.map(chapter => chapter.subsections.length)
       )
       submitData.initial_structure_markdown = serializeStructureToMarkdown(initialStructure)
+      submitData.initial_structure = normalizeStructureForApi(
+        initialStructure,
+        submitData.target_pages,
+      )
       submitData.num_chapters = chapterCount
       submitData.max_subsections_per_chapter = maxSubsectionCount
     }
@@ -334,8 +423,21 @@ export function ConfigForm({
       return
     }
 
-    if (warnings.length > 0 || topicWarnings.length > 0) {
-      setConfirmWarnings([...topicWarnings, ...warnings])
+    const combinedWarnings = [...topicWarnings, ...warnings]
+
+    if (
+      submitData.planning_mode === 'structured' &&
+      hasMissingStructurePageTargets(initialStructure)
+    ) {
+      setPendingStructuredPageData({
+        submitData,
+        warnings: combinedWarnings,
+      })
+      return
+    }
+
+    if (combinedWarnings.length > 0) {
+      setConfirmWarnings(combinedWarnings)
       setPendingSubmitData(submitData)
       return
     }
@@ -442,9 +544,9 @@ export function ConfigForm({
                 <span className="font-semibold text-gray-800">{submittedConfig?.num_chapters || formData.num_chapters}</span>
               </div>
               <div className="flex flex-col gap-0.5">
-                <span className="text-xs text-gray-500">{t('textbook.form.contentLength')}</span>
+                <span className="text-xs text-gray-500">{t('textbook.form.targetPages')}</span>
                 <span className="font-semibold text-gray-800">
-                  {t(CONTENT_LEVEL_LABEL_KEYS[submittedConfig?.content_level || formData.content_level] || 'textbook.form.levelMedium')}
+                  {submittedConfig?.target_pages || formData.target_pages}
                 </span>
               </div>
               <div className="flex flex-col gap-0.5">
@@ -636,6 +738,29 @@ export function ConfigForm({
         </p>
       </div>
 
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-2">
+          {t('textbook.form.targetPages')} <span className="text-red-500">*</span>
+        </label>
+        <input
+          type="number"
+          name="target_pages"
+          value={formData.target_pages}
+          onChange={handleChange}
+          step={1}
+          min={5}
+          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+          disabled={loading}
+          required
+        />
+        {fieldErrors.target_pages && (
+          <p className="mt-1 text-xs text-red-600">{fieldErrors.target_pages}</p>
+        )}
+        <p className="mt-1 text-xs text-gray-500">
+          {t('textbook.form.targetPagesHint')}
+        </p>
+      </div>
+
       {formData.planning_mode === 'structured' && (
         <div className="space-y-3 rounded-lg border border-blue-100 bg-blue-50/40 p-4">
           <div>
@@ -804,27 +929,6 @@ export function ConfigForm({
             )}
           </div>
 
-          {/* Content Level */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              {t('textbook.form.contentLength')}
-            </label>
-            <select
-              name="content_level"
-              value={formData.content_level}
-              onChange={handleChange}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              disabled={loading}
-            >
-              {Object.entries(CONTENT_LEVEL_LABEL_KEYS).map(([value, labelKey]) => (
-                <option key={value} value={value}>{t(labelKey)}</option>
-              ))}
-            </select>
-            <p className="mt-1 text-xs text-gray-500">
-              {t(CONTENT_LEVEL_HINT_KEYS[formData.content_level] || 'textbook.form.levelMediumHint')}
-            </p>
-          </div>
-
           {formData.planning_mode === 'auto' && (
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -932,6 +1036,57 @@ export function ConfigForm({
           `🚀 ${t('textbook.form.submit')}`
         )}
       </button>
+
+      {pendingStructuredPageData && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black bg-opacity-50 backdrop-blur-sm"
+            onClick={() => setPendingStructuredPageData(null)}
+          />
+          <div className="relative bg-white rounded-lg shadow-2xl max-w-lg w-full mx-4 p-6">
+            <div className="flex items-center justify-center w-12 h-12 mx-auto mb-4 bg-amber-100 rounded-full">
+              <svg className="w-6 h-6 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-6h6v6m-9 4h12a2 2 0 002-2V7.828a2 2 0 00-.586-1.414l-3.828-3.828A2 2 0 0014.172 2H6a2 2 0 00-2 2v15a2 2 0 002 2z" />
+              </svg>
+            </div>
+            <h3 className="text-xl font-bold text-gray-900 text-center mb-2">
+              {t('textbook.form.structuredMissingPagesTitle')}
+            </h3>
+            <p className="text-sm text-gray-600 text-center mb-4">
+              {t('textbook.form.structuredMissingPagesDescription')}
+            </p>
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 mb-6">
+              {t('textbook.form.structuredMissingPagesNote')}
+            </div>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => setPendingStructuredPageData(null)}
+                className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 font-medium rounded-lg hover:bg-gray-300 transition-colors"
+              >
+                {t('textbook.form.structuredMissingPagesReview')}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const pending = pendingStructuredPageData
+                  setPendingStructuredPageData(null)
+                  if (!pending?.submitData) return
+                  if (pending.warnings?.length > 0) {
+                    setConfirmWarnings(pending.warnings)
+                    setPendingSubmitData(pending.submitData)
+                    return
+                  }
+                  onSubmit(pending.submitData)
+                }}
+                className="flex-1 px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                {t('textbook.form.structuredMissingPagesAutoFill')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {confirmWarnings.length > 0 && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">

@@ -59,6 +59,50 @@ class SubSection(BaseModel):
             "  'applied' : exercises, hands-on tasks, practice drills (2500-3500 chars)"
         )
     )
+    target_pages: Optional[int] = Field(
+        default=None,
+        description="Optional user-requested or allocated page budget for this subsection"
+    )
+    estimated_pages: Optional[int] = Field(
+        default=None,
+        description="Approximate page estimate after page-budget allocation"
+    )
+    target_words: Optional[int] = Field(
+        default=None,
+        description="Approximate word target derived from page budget"
+    )
+    target_chars_min: Optional[int] = Field(
+        default=None,
+        description="Minimum character target derived from page budget"
+    )
+    target_chars_max: Optional[int] = Field(
+        default=None,
+        description="Maximum character target derived from page budget"
+    )
+    writer_call_count: Optional[int] = Field(
+        default=None,
+        description="Number of internal writer calls recommended for long sections"
+    )
+    layout_profile: Optional[str] = Field(
+        default=None,
+        description="Estimated layout density profile used for page-budget calibration"
+    )
+    page_fill_bias: Optional[float] = Field(
+        default=None,
+        description="Length bias applied to avoid under-filling target pages"
+    )
+    page_budget_mode: Optional[str] = Field(
+        default=None,
+        description="Writer pacing mode derived from page budget: compact, standard, or expanded"
+    )
+    formula_density: Optional[str] = Field(
+        default=None,
+        description="Formula or structured-tool density requested for this subsection"
+    )
+    expansion_strategy: Optional[str] = Field(
+        default=None,
+        description="Pedagogical expansion strategy used to reach page budget"
+    )
 
 
 class Chapter(BaseModel):
@@ -71,6 +115,14 @@ class Chapter(BaseModel):
     )
     subsections: List[SubSection] = Field(
         description="Ordered list of subsections within this chapter"
+    )
+    target_pages: Optional[int] = Field(
+        default=None,
+        description="Optional user-requested or allocated page budget for this chapter"
+    )
+    estimated_pages: Optional[int] = Field(
+        default=None,
+        description="Approximate page estimate after page-budget allocation"
     )
 
 
@@ -88,6 +140,50 @@ class CurriculumOutline(BaseModel):
     )
     chapters: List[Chapter] = Field(
         description="Ordered list of all chapters in the curriculum"
+    )
+    target_pages: Optional[int] = Field(
+        default=None,
+        description="Optional target content pages, excluding cover/TOC/figure-list pages"
+    )
+    estimated_pages: Optional[int] = Field(
+        default=None,
+        description="Approximate content page estimate"
+    )
+    front_matter_pages: Optional[int] = Field(
+        default=None,
+        description="Estimated content intro pages before chapters, such as a preface"
+    )
+    body_target_pages: Optional[int] = Field(
+        default=None,
+        description="Target pages available for chapter body content"
+    )
+    content_intro_pages: Optional[int] = Field(
+        default=None,
+        description="Estimated content pages before chapters, such as a preface"
+    )
+    excluded_export_pages: Optional[int] = Field(
+        default=None,
+        description="Estimated export pages excluded from content target, such as cover, TOC, and figure list"
+    )
+    layout_profile: Optional[str] = Field(
+        default=None,
+        description="Estimated layout density profile used for page-budget calibration"
+    )
+    layout_word_scale: Optional[float] = Field(
+        default=None,
+        description="Words-per-page scale used for layout calibration"
+    )
+    page_fill_bias: Optional[float] = Field(
+        default=None,
+        description="Length bias applied to avoid under-filling target pages"
+    )
+    formula_density: Optional[str] = Field(
+        default=None,
+        description="Formula or structured-tool density requested for this curriculum"
+    )
+    expansion_strategy: Optional[str] = Field(
+        default=None,
+        description="Pedagogical expansion strategy used to reach page budget"
     )
 
 

@@ -1081,18 +1081,31 @@ Each object must have "description", "search_query", and "section_type".
                 language=language,
                 textbook_mode=textbook_mode,
             )
-            enriched_chapters.append({
+            original_subsections = [
+                sub for sub in chapter.get("subsections", [])
+                if isinstance(sub, dict) and str(sub.get("title") or "").strip()
+            ]
+            enriched_subsections: List[Dict[str, Any]] = []
+            for idx, title in enumerate(subsection_titles):
+                enriched_subsection: Dict[str, Any] = {
+                    "title": title,
+                    "description": metadata[idx]["description"],
+                    "search_query": metadata[idx]["search_query"],
+                    "section_type": metadata[idx]["section_type"],
+                }
+                if idx < len(original_subsections):
+                    target_pages = original_subsections[idx].get("target_pages")
+                    if target_pages is not None:
+                        enriched_subsection["target_pages"] = target_pages
+                enriched_subsections.append(enriched_subsection)
+
+            enriched_chapter: Dict[str, Any] = {
                 "title": chapter_title,
-                "subsections": [
-                    {
-                        "title": title,
-                        "description": metadata[idx]["description"],
-                        "search_query": metadata[idx]["search_query"],
-                        "section_type": metadata[idx]["section_type"],
-                    }
-                    for idx, title in enumerate(subsection_titles)
-                ],
-            })
+                "subsections": enriched_subsections,
+            }
+            if chapter.get("target_pages") is not None:
+                enriched_chapter["target_pages"] = chapter.get("target_pages")
+            enriched_chapters.append(enriched_chapter)
 
         try:
             return CurriculumOutline(topic=core_topic, chapters=enriched_chapters)
@@ -1194,12 +1207,12 @@ def plan_curriculum(state: AgentState) -> dict:
     formula_need = state.get("formula_need", "none")
     initial_structure = state.get("initial_curriculum_structure")
     planner_requirements = user_requirements
-    if formula_policy == "include" and formula_need != "none":
+    if formula_policy == "include":
         formula_note = (
-            "Khi phù hợp, đưa các mục có công thức, phương trình hoặc ví dụ tính toán "
-            "vào những phần tự nhiên của dàn ý."
+            "Khi phù hợp, đưa công thức, mô hình, chỉ số, rubric, bảng tiêu chí "
+            "hoặc ví dụ tính toán vào những phần tự nhiên của dàn ý; không ép công thức giả."
             if language == "vi"
-            else "When appropriate, include formula, equation, or worked-calculation sections in natural parts of the outline."
+            else "When appropriate, include formulas, models, metrics, rubrics, criteria tables, or worked calculations in natural parts of the outline; do not force artificial math."
         )
         planner_requirements = (
             f"{user_requirements}\n{formula_note}" if user_requirements else formula_note

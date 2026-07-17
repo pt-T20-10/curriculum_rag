@@ -24,6 +24,7 @@ logger = setup_logger(name="ValidatorAgent", logfile="logs/agents.log")
 
 _FORMULA_NEEDS = {"none", "likely", "essential"}
 _FORMULA_POLICIES = {"auto", "include", "exclude"}
+_FORMULA_NEED_RANK = {"none": 0, "likely": 1, "essential": 2}
 
 
 def _strip_accents(text: str) -> str:
@@ -111,9 +112,9 @@ def classify_formula_need(topic: str, core_topic: str = "") -> str:
         r"\b(econometrics|kinh\s+te\s+luong|quantitative|dinh\s+luong)\b",
         r"\b(finance|tai\s+chinh|risk\s+management)\b",
         r"\b(algorithm\s+analysis|phan\s+tich\s+thuat\s+toan)\b",
-        r"\b(signal\s+processing|xu\s+ly\s+tin\s+hieu|control\s+system)\b",
+        r"\b(signal\s+processing|xu\s+l[yi]\s+tin\s+hieu|control\s+system)\b",
         r"\b(cryptography|mat\s+ma\s+hoc|optimization|toi\s+uu)\b",
-        r"\b(image\s+processing|computer\s+vision|xu\s+ly\s+anh|thi\s+giac\s+may)\b",
+        r"\b(image\s+processing|computer\s+vision|xu\s+l[yi]\s+anh|thi\s+giac\s+may)\b",
         r"\b(nen\s+anh|image\s+compression|nhan\s+dang\s+anh|image\s+recognition)\b",
         r"\b(edge\s+detection|bien\s+anh|filtering|loc\s+anh|transform|chuyen\s+doi\s+anh)\b",
         r"\b(software\s+engineering|cong\s+nghe\s+phan\s+mem|software\s+metrics)\b",
@@ -124,6 +125,20 @@ def classify_formula_need(topic: str, core_topic: str = "") -> str:
         return "likely"
 
     return "none"
+
+
+def _normalize_formula_need(value: object) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in _FORMULA_NEEDS else "none"
+
+
+def _resolve_formula_need(topic: str, core_topic: str, llm_formula_need: object) -> str:
+    deterministic_need = classify_formula_need(topic, core_topic)
+    llm_need = _normalize_formula_need(llm_formula_need)
+    return max(
+        (deterministic_need, llm_need),
+        key=lambda need: _FORMULA_NEED_RANK.get(need, 0),
+    )
 
 
 def formula_reason(
@@ -170,7 +185,11 @@ def apply_formula_validation(
     ui_language: str = "vi",
 ) -> dict:
     policy = formula_policy if formula_policy in _FORMULA_POLICIES else "auto"
-    formula_need = classify_formula_need(topic, str(result.get("core_topic") or ""))
+    formula_need = _resolve_formula_need(
+        topic,
+        str(result.get("core_topic") or ""),
+        result.get("formula_need"),
+    )
     intent = detect_formula_intent(
         " ".join([
             topic,
@@ -660,6 +679,31 @@ Requirement indicators (extract these phrases):
   - "hands-on" / "thực hành"
 [/TASK 2]
 
+[TASK 3 - FORMULA SUITABILITY]
+Classify whether formulas or structured quantitative tools naturally fit the
+topic. This is advisory and must not be overly strict.
+
+Return formula_need as:
+  - "essential": formulas/equations are intrinsic to the subject
+    (mathematics, physics, chemistry, electronics, statistics, engineering calculations).
+  - "likely": formulas, equations, metrics, models, rubrics, scoring rules,
+    quantitative examples, algorithmic measures, or structured evaluation tools
+    can reasonably improve the textbook.
+  - "none": only when formulas/quantitative tools are clearly unsuitable for
+    the user's topic and would be artificial.
+
+Important:
+  - If unsure, choose "likely", not "none".
+  - Technical, engineering, image/signal processing, computer vision, data,
+    finance, management metrics, accounting, quality evaluation, and software
+    engineering topics are usually at least "likely".
+  - Humanities/social topics may still be "likely" if timelines, comparison
+    tables, indices, rubrics, or analytical frameworks are appropriate.
+  - "Formula" is broad here: it includes mathematical equations, variables,
+    algorithm metrics, KPI/rubric formulas, scoring tables, timelines, and
+    worked calculations when suitable.
+[/TASK 3]
+
 [CRITICAL RULES]
 
 Rule 0 — DO NOT IGNORE JUNK:
@@ -702,6 +746,7 @@ Return ONLY a JSON object. No markdown, no explanation.
   "content_type": "scholarly|technical|practical|lifestyle",
   "core_topic": "extracted core subject normalized to target textbook language",
   "user_requirements": "extracted requirements normalized to target textbook language",
+  "formula_need": "none|likely|essential",
   "input_language": "detected input language code, e.g. vi|en|cs|zh|unknown",
   "requested_language": "vi|en|unsupported language code|empty string",
   "target_language": "vi|en",

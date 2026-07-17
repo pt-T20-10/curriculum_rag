@@ -32,6 +32,11 @@ from app.services.textbook.structure_parser import (
     StructureParseError,
     parse_structure_markdown,
 )
+from app.services.textbook.page_budget import (
+    allocate_page_budget,
+    page_budget_enabled,
+    validate_page_configuration,
+)
 from app.services.textbook.validator import validate_topic
 
 router = APIRouter(prefix="/textbooks", tags=["textbooks"])
@@ -39,6 +44,16 @@ router = APIRouter(prefix="/textbooks", tags=["textbooks"])
 
 def _clean_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _clean_positive_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 CONTENT_LEVEL_CREDIT_MULTIPLIERS: dict[str, float] = {
@@ -117,25 +132,187 @@ def _sanitize_confirmed_curriculum(curriculum: dict) -> tuple[dict, list[str], i
             description = _clean_text(subsection.get("description")) or f"Content about {title}"
             search_query = _clean_text(subsection.get("search_query")) or title
             section_type = _clean_text(subsection.get("section_type")) or "medium"
-            sanitized_subsections.append({
+            sanitized_subsection = {
                 "title": title,
                 "description": description,
                 "search_query": search_query,
                 "section_type": section_type,
-            })
+            }
+            for page_key in (
+                "target_pages",
+                "estimated_pages",
+                "target_words",
+                "target_chars_min",
+                "target_chars_max",
+                "writer_call_count",
+            ):
+                page_value = _clean_positive_float(subsection.get(page_key))
+                if page_value is None:
+                    continue
+                sanitized_subsection[page_key] = int(round(page_value))
+            for meta_key in (
+                "layout_profile",
+                "page_budget_mode",
+                "formula_density",
+                "expansion_strategy",
+            ):
+                meta_value = _clean_text(subsection.get(meta_key))
+                if meta_value:
+                    sanitized_subsection[meta_key] = meta_value
+            bias_value = _clean_positive_float(subsection.get("page_fill_bias"))
+            if bias_value is not None:
+                sanitized_subsection["page_fill_bias"] = round(bias_value, 3)
+            sanitized_subsections.append(sanitized_subsection)
 
-        sanitized_chapters.append({
+        sanitized_chapter = {
             "title": chapter_title,
             "subsections": sanitized_subsections,
-        })
+        }
+        for page_key in ("target_pages", "estimated_pages"):
+            page_value = _clean_positive_float(chapter.get(page_key))
+            if page_value is not None:
+                sanitized_chapter[page_key] = int(round(page_value))
+        sanitized_chapters.append(sanitized_chapter)
 
     sanitized = {
         "topic": _clean_text(curriculum.get("topic")),
         "chapters": sanitized_chapters,
     }
+    for page_key in (
+        "target_pages",
+        "estimated_pages",
+        "front_matter_pages",
+        "body_target_pages",
+        "content_intro_pages",
+        "excluded_export_pages",
+    ):
+        page_value = _clean_positive_float(curriculum.get(page_key))
+        if page_value is not None:
+            sanitized[page_key] = int(round(page_value))
+    for meta_key in ("layout_profile", "formula_density", "expansion_strategy"):
+        meta_value = _clean_text(curriculum.get(meta_key))
+        if meta_value:
+            sanitized[meta_key] = meta_value
+    for numeric_meta_key in ("layout_word_scale", "page_fill_bias"):
+        meta_number = _clean_positive_float(curriculum.get(numeric_meta_key))
+        if meta_number is not None:
+            sanitized[numeric_meta_key] = round(meta_number, 3)
     chapter_titles = [chapter["title"] for chapter in sanitized_chapters]
     total_subsections = sum(len(chapter["subsections"]) for chapter in sanitized_chapters)
     return sanitized, chapter_titles, total_subsections
+
+
+def _apply_page_budget_if_needed(
+    curriculum: dict,
+    *,
+    target_pages: int | float | None,
+    enable_images: bool,
+    language: str,
+    textbook_mode: str,
+    formula_policy: str = "auto",
+) -> tuple[dict, dict | None]:
+    if target_pages is None and not page_budget_enabled(curriculum):
+        return curriculum, None
+    return allocate_page_budget(
+        curriculum,
+        target_pages=target_pages,
+        enable_images=enable_images,
+        language=language,
+        textbook_mode=textbook_mode,
+        formula_policy=formula_policy,
+    )
+
+
+def _page_validation_exception(
+    page_validation: dict | None,
+    *,
+    confirmed: bool,
+) -> None:
+    if not page_validation:
+        return
+    severity = page_validation.get("severity")
+    if severity == "error":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "page_validation": page_validation,
+                "message": page_validation.get("ai_note") or "Invalid page plan",
+            },
+        )
+    if severity == "warning" and not confirmed:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "page_validation_required": True,
+                "page_validation": page_validation,
+                "message": page_validation.get("ai_note") or "Please confirm the page estimate warning",
+            },
+        )
+
+
+def _merge_page_validations(*validations: dict | None) -> dict | None:
+    merged: dict | None = None
+    rank = {"ok": 0, "warning": 1, "error": 2}
+    for validation in validations:
+        if not validation:
+            continue
+        if merged is None:
+            merged = {
+                **validation,
+                "warnings": list(validation.get("warnings") or []),
+                "errors": list(validation.get("errors") or []),
+            }
+            continue
+        if rank.get(validation.get("severity"), 0) > rank.get(merged.get("severity"), 0):
+            merged["severity"] = validation.get("severity")
+            merged["ai_note"] = validation.get("ai_note") or merged.get("ai_note", "")
+        for key in ("warnings", "errors"):
+            for item in validation.get(key) or []:
+                if item not in merged[key]:
+                    merged[key].append(item)
+        for key in (
+            "estimated_total_pages",
+            "target_pages",
+            "front_matter_pages",
+            "content_intro_pages",
+            "excluded_export_pages",
+            "layout_profile",
+            "layout_word_scale",
+            "page_fill_bias",
+            "formula_density",
+            "expansion_strategy",
+        ):
+            if validation.get(key) is not None:
+                merged[key] = validation.get(key)
+    return merged
+
+
+def _curriculum_page_configuration_validation(
+    curriculum: dict,
+    *,
+    target_pages: int | float | None,
+    enable_images: bool,
+    language: str,
+    textbook_mode: str,
+) -> dict:
+    chapters = curriculum.get("chapters") if isinstance(curriculum, dict) else []
+    chapter_count = len(chapters) if isinstance(chapters, list) else 0
+    subsection_counts = [
+        len(chapter.get("subsections") or [])
+        for chapter in chapters
+        if isinstance(chapter, dict)
+    ]
+    total_subsections = sum(subsection_counts)
+    max_subsections = max(subsection_counts) if subsection_counts else 1
+    return validate_page_configuration(
+        target_pages=target_pages,
+        num_chapters=chapter_count,
+        max_subsections_per_chapter=max_subsections,
+        subsection_count=total_subsections,
+        enable_images=enable_images,
+        language=language,
+        textbook_mode=textbook_mode,
+    )
 
 
 def _apply_confirmed_curriculum_counts(
@@ -304,19 +481,49 @@ async def create_textbook(
     )
     initial_curriculum: dict[str, Any] | None = None
     initial_total_subsections = 0
+    preflight_page_validation: dict | None = None
+    page_validation: dict | None = None
 
     if planning_mode == "structured":
-        try:
-            initial_curriculum = parse_structure_markdown(
-                textbook_data.initial_structure_markdown or "",
-                topic=core_topic,
-            )
-        except StructureParseError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if textbook_data.initial_structure:
+            initial_curriculum = dict(textbook_data.initial_structure)
+            initial_curriculum.setdefault("topic", core_topic)
+        else:
+            try:
+                initial_curriculum = parse_structure_markdown(
+                    textbook_data.initial_structure_markdown or "",
+                    topic=core_topic,
+                )
+            except StructureParseError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         initial_total_subsections = sum(
             len(chapter.get("subsections") or [])
             for chapter in initial_curriculum.get("chapters", [])
+        )
+        preflight_page_validation = _curriculum_page_configuration_validation(
+            initial_curriculum,
+            target_pages=textbook_data.target_pages,
+            enable_images=textbook_data.enable_images,
+            language=textbook_language,
+            textbook_mode=textbook_data.textbook_mode,
+        )
+        _page_validation_exception(
+            preflight_page_validation,
+            confirmed=textbook_data.page_plan_confirmed,
+        )
+    else:
+        preflight_page_validation = validate_page_configuration(
+            target_pages=textbook_data.target_pages,
+            num_chapters=textbook_data.num_chapters,
+            max_subsections_per_chapter=textbook_data.max_subsections_per_chapter,
+            enable_images=textbook_data.enable_images,
+            language=textbook_language,
+            textbook_mode=textbook_data.textbook_mode,
+        )
+        _page_validation_exception(
+            preflight_page_validation,
+            confirmed=textbook_data.page_plan_confirmed,
         )
     
     # ================ CHECK CREDITS ================
@@ -374,15 +581,21 @@ async def create_textbook(
             "formula_policy": formula_policy,
             "formula_need": formula_need,
             "source_preferences": source_preferences,
+            "target_pages": textbook_data.target_pages,
+            "page_plan_confirmed": textbook_data.page_plan_confirmed,
             "curriculum_data": initial_curriculum,
             "total_chapters": len(initial_curriculum["chapters"]) if initial_curriculum else 0,
             "total_subsections": initial_total_subsections,
+            "page_validation": page_validation if initial_curriculum else None,
         } if initial_curriculum else {
             "planning_mode": planning_mode,
             "textbook_mode": textbook_data.textbook_mode,
             "formula_policy": formula_policy,
             "formula_need": formula_need,
             "source_preferences": source_preferences,
+            "target_pages": textbook_data.target_pages,
+            "page_plan_confirmed": textbook_data.page_plan_confirmed,
+            "page_validation": preflight_page_validation,
         },
     )
 
@@ -624,7 +837,28 @@ async def estimate_curriculum_credits(
         raise HTTPException(status_code=404, detail="User not found")
     is_admin_free = _is_free_admin(user)
 
-    _, chapter_titles, total_subsections = _sanitize_confirmed_curriculum(request.curriculum)
+    sanitized_curriculum, chapter_titles, total_subsections = _sanitize_confirmed_curriculum(request.curriculum)
+    progress_data = dict(textbook.progress_data or {})  # type: ignore
+    target_pages = (
+        _clean_positive_float(sanitized_curriculum.get("target_pages"))
+        or _clean_positive_float(progress_data.get("target_pages"))
+    )
+    _, page_validation = _apply_page_budget_if_needed(
+        sanitized_curriculum,
+        target_pages=target_pages,
+        enable_images=bool(textbook.enable_images),  # type: ignore
+        language=textbook.language,  # type: ignore
+        textbook_mode=textbook.textbook_mode or "standard",  # type: ignore
+        formula_policy=textbook.formula_policy or "auto",  # type: ignore
+    )
+    compatibility_validation = _curriculum_page_configuration_validation(
+        sanitized_curriculum,
+        target_pages=target_pages,
+        enable_images=bool(textbook.enable_images),  # type: ignore
+        language=textbook.language,  # type: ignore
+        textbook_mode=textbook.textbook_mode or "standard",  # type: ignore
+    )
+    page_validation = _merge_page_validations(compatibility_validation, page_validation)
     credits_required = estimate_textbook_credits(
         total_subsections=total_subsections,
         content_level=textbook.content_level,  # type: ignore
@@ -638,6 +872,7 @@ async def estimate_curriculum_credits(
         enable_images=bool(textbook.enable_images),  # type: ignore
         content_level=textbook.content_level,  # type: ignore
         is_admin_free=is_admin_free,
+        page_validation=page_validation,
     )
 
 
@@ -683,9 +918,35 @@ async def confirm_curriculum(
             "credits_charged": 0,
             "balance_after": user.credits,  # type: ignore
             "is_admin_free": is_admin_free,
+            "page_validation": dict(textbook.progress_data or {}).get("page_validation"),  # type: ignore
         }
 
     confirmed_curriculum, chapter_titles, total_subsections = _sanitize_confirmed_curriculum(request.curriculum)
+    existing_progress = dict(textbook.progress_data or {})  # type: ignore
+    target_pages = (
+        _clean_positive_float(confirmed_curriculum.get("target_pages"))
+        or _clean_positive_float(existing_progress.get("target_pages"))
+    )
+    confirmed_curriculum, page_validation = _apply_page_budget_if_needed(
+        confirmed_curriculum,
+        target_pages=target_pages,
+        enable_images=bool(textbook.enable_images),  # type: ignore
+        language=textbook.language,  # type: ignore
+        textbook_mode=textbook.textbook_mode or "standard",  # type: ignore
+        formula_policy=textbook.formula_policy or "auto",  # type: ignore
+    )
+    compatibility_validation = _curriculum_page_configuration_validation(
+        confirmed_curriculum,
+        target_pages=target_pages,
+        enable_images=bool(textbook.enable_images),  # type: ignore
+        language=textbook.language,  # type: ignore
+        textbook_mode=textbook.textbook_mode or "standard",  # type: ignore
+    )
+    page_validation = _merge_page_validations(compatibility_validation, page_validation)
+    _page_validation_exception(
+        page_validation,
+        confirmed=request.page_plan_confirmed,
+    )
     estimated_credits = estimate_textbook_credits(
         total_subsections=total_subsections,
         content_level=textbook.content_level,  # type: ignore
@@ -736,6 +997,9 @@ async def confirm_curriculum(
         "credits_required": credits_required,
         "credits_charged": credits_charged,
         "is_admin_free": is_admin_free,
+        "target_pages": target_pages,
+        "page_plan_confirmed": request.page_plan_confirmed,
+        "page_validation": page_validation,
     })
 
     textbook.progress_data = progress_data  # type: ignore
@@ -764,6 +1028,7 @@ async def confirm_curriculum(
         "credits_charged": credits_charged,
         "balance_after": user.credits,  # type: ignore
         "is_admin_free": is_admin_free,
+        "page_validation": page_validation,
     }
 
 

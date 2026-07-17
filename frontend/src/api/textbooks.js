@@ -24,6 +24,9 @@ export const textbooksAPI = {
     axios.post(`/textbooks/${id}/estimate-credits`, { curriculum }),
   
   // ⭐ Confirm curriculum (simplified - no Chapter 1 preview)
-  confirmCurriculum: (id, curriculum) => 
-    axios.post(`/textbooks/${id}/confirm-curriculum`, { curriculum }),
+  confirmCurriculum: (id, curriculum, pagePlanConfirmed = false) =>
+    axios.post(`/textbooks/${id}/confirm-curriculum`, {
+      curriculum,
+      page_plan_confirmed: pagePlanConfirmed,
+    }),
 }

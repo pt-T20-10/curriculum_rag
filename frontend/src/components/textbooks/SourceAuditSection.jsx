@@ -8,7 +8,7 @@ function qualityClass(quality) {
     return 'bg-amber-50 text-amber-700 border-amber-200'
   }
   if (quality === 'best_effort') {
-    return 'bg-blue-50 text-blue-700 border-blue-200'
+    return 'bg-amber-50 text-amber-700 border-amber-200'
   }
   return 'bg-gray-50 text-gray-600 border-gray-200'
 }
@@ -48,7 +48,7 @@ export function SourceAuditSection({ sourceAudit, className = '' }) {
         </span>
       </div>
 
-      <div className="grid grid-cols-3 gap-2 text-center">
+      <div className="grid grid-cols-4 gap-2 text-center">
         <div className="rounded border border-gray-200 bg-gray-50 px-2 py-2">
           <div className="text-[11px] text-gray-500">
             {t('textbook.contentSidebar.sourceAudit.sources')}
@@ -65,6 +65,14 @@ export function SourceAuditSection({ sourceAudit, className = '' }) {
             {sourceAudit?.total_chunks || 0}
           </div>
         </div>
+        <div className="rounded border border-green-200 bg-green-50 px-2 py-2">
+          <div className="text-[11px] text-green-700">
+            {t('textbook.contentSidebar.sourceAudit.verifiedChunks')}
+          </div>
+          <div className="text-sm font-bold text-green-800">
+            {sourceAudit?.verified_chunks || 0}
+          </div>
+        </div>
         <div className="rounded border border-gray-200 bg-gray-50 px-2 py-2">
           <div className="text-[11px] text-gray-500">
             {t('textbook.contentSidebar.sourceAudit.retrievals')}
@@ -74,6 +82,12 @@ export function SourceAuditSection({ sourceAudit, className = '' }) {
           </div>
         </div>
       </div>
+
+      {quality === 'best_effort' && (
+        <p className="mt-2 rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] leading-4 text-amber-700">
+          {t('textbook.contentSidebar.sourceAudit.bestEffortNote')}
+        </p>
+      )}
 
       {!hasSources ? (
         <p className="mt-3 text-xs text-gray-500">

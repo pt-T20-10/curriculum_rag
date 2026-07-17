@@ -39,6 +39,7 @@ export function CreateTextbookPage() {
   const [confirmingCurriculum, setConfirmingCurriculum] = useState(false)
   const [creatingTextbook, setCreatingTextbook] = useState(false)
   const [formulaConfirmation, setFormulaConfirmation] = useState(null)
+  const [pagePlanConfirmation, setPagePlanConfirmation] = useState(null)
   const pollingRef = useRef(null)
 
   const clearDraftState = () => {
@@ -54,6 +55,7 @@ export function CreateTextbookPage() {
     setConfirmingCurriculum(false)
     setCreatingTextbook(false)
     setFormulaConfirmation(null)
+    setPagePlanConfirmation(null)
     setConfigExpanded(true)
 
     if (pollingRef.current) {
@@ -94,6 +96,8 @@ export function CreateTextbookPage() {
               textbook_mode: data.textbook_mode || 'standard',
               formula_policy: data.formula_policy || 'auto',
               formula_need: data.formula_need || 'none',
+              target_pages: data.target_pages || null,
+              page_validation: data.page_validation || null,
               source_preferences: data.source_preferences || {
                 source_mode: 'system_default',
                 selected_source_ids: [],
@@ -188,6 +192,7 @@ export function CreateTextbookPage() {
           custom_urls: [],
           custom_domains: [],
         },
+        target_pages: formData.target_pages || null,
       }) // ⭐ Save actual submitted config
       setConfigExpanded(false)
 
@@ -213,6 +218,16 @@ export function CreateTextbookPage() {
       } else if (errorDetail?.formula_conflict) {
         setError({
           message: errorDetail.reason || t('textbook.formulaConflict'),
+        })
+      } else if (errorDetail?.page_validation_required) {
+        setPagePlanConfirmation({
+          formData,
+          pageValidation: errorDetail.page_validation,
+        })
+        setError(null)
+      } else if (errorDetail?.page_validation) {
+        setError({
+          message: errorDetail.page_validation.ai_note || errorDetail.message || t('textbook.pagePlanInvalid'),
         })
       } else {
         setError({
@@ -240,19 +255,32 @@ export function CreateTextbookPage() {
     }
   }
 
-  const handleCurriculumConfirm = async (curriculum) => {
+  const handleCurriculumConfirm = async (curriculum, pagePlanConfirmed = false) => {
     if (!textbookId || confirmingCurriculum) return
 
     try {
       setConfirmingCurriculum(true)
       setConfirmedCurriculum(curriculum)
-      await textbooksAPI.confirmCurriculum(textbookId, curriculum)
+      await textbooksAPI.confirmCurriculum(textbookId, curriculum, pagePlanConfirmed)
       await loadUser?.()
       setPhase('generating')
     } catch (err) {
       console.error('Confirm curriculum error:', err)
       const detail = err.response?.data?.detail
-      setError({ message: typeof detail === 'string' ? detail : t('textbook.confirmError') })
+      if (detail?.page_validation_required) {
+        setPagePlanConfirmation({
+          curriculum,
+          pageValidation: detail.page_validation,
+          confirmCurriculum: true,
+        })
+        setError(null)
+      } else if (detail?.page_validation) {
+        setError({
+          message: detail.page_validation.ai_note || detail.message || t('textbook.pagePlanInvalid'),
+        })
+      } else {
+        setError({ message: typeof detail === 'string' ? detail : t('textbook.confirmError') })
+      }
     } finally {
       setConfirmingCurriculum(false)
     }
@@ -531,6 +559,67 @@ export function CreateTextbookPage() {
                 className="flex-1 rounded-lg bg-blue-600 px-4 py-2 font-medium text-white transition-colors hover:bg-blue-700"
               >
                 {t('textbook.formulaConfirmYes')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pagePlanConfirmation && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black bg-opacity-50 backdrop-blur-sm"
+            onClick={() => setPagePlanConfirmation(null)}
+          />
+          <div className="relative mx-4 w-full max-w-lg rounded-lg bg-white p-6 shadow-2xl">
+            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-amber-100 text-xl font-bold text-amber-700">
+              #
+            </div>
+            <h3 className="mb-2 text-center text-xl font-bold text-gray-900">
+              {t('textbook.pagePlanConfirmTitle')}
+            </h3>
+            <p className="mb-4 text-center text-sm text-gray-600">
+              {pagePlanConfirmation.pageValidation?.ai_note || t('textbook.pagePlanConfirmDescription')}
+            </p>
+            <div className="mb-4 space-y-2">
+              {(pagePlanConfirmation.pageValidation?.warnings || []).map((warning, index) => (
+                <div key={index} className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                  {warning}
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => setPagePlanConfirmation(null)}
+                className="flex-1 rounded-lg bg-gray-200 px-4 py-2 font-medium text-gray-700 transition-colors hover:bg-gray-300"
+              >
+                {t('textbook.form.reviewConfig')}
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const pending = pagePlanConfirmation
+                  setPagePlanConfirmation(null)
+                  if (pending.confirmCurriculum && pending.curriculum && textbookId) {
+                    setConfirmingCurriculum(true)
+                    try {
+                      await textbooksAPI.confirmCurriculum(textbookId, pending.curriculum, true)
+                      await loadUser?.()
+                      setPhase('generating')
+                    } finally {
+                      setConfirmingCurriculum(false)
+                    }
+                  } else if (pending.formData) {
+                    handleSubmit({
+                      ...pending.formData,
+                      page_plan_confirmed: true,
+                    })
+                  }
+                }}
+                className="flex-1 rounded-lg bg-blue-600 px-4 py-2 font-medium text-white transition-colors hover:bg-blue-700"
+              >
+                {t('textbook.pagePlanConfirmProceed')}
               </button>
             </div>
           </div>

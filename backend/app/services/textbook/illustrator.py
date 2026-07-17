@@ -184,6 +184,138 @@ _WIKIMEDIA_GENERIC_TECHNICAL_TERMS = (
     "pixel",
 )
 
+_IMAGE_TAG_RE = re.compile(
+    r"^\s*>?\s*\[(?:IMAGE|IMAGE SUGGESTION|IMAGE_NEEDED):[^\]]*\]\s*$",
+    flags=re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _image_plan_cap(
+    section_type: str,
+    target_pages: int | None,
+    layout_profile: str | None,
+) -> int:
+    """Balanced cap for post-review image insertion."""
+    try:
+        pages = int(target_pages) if target_pages is not None else None
+    except (TypeError, ValueError):
+        pages = None
+
+    profile = str(layout_profile or "").lower()
+    sec_type = str(section_type or "medium").lower()
+
+    if pages is not None and pages <= 1:
+        return 1
+    if pages is not None and pages <= 2:
+        return 1
+    if profile in {"code", "formula"}:
+        return 1
+    if sec_type == "light":
+        return 1
+    if sec_type == "applied":
+        return 2
+    if sec_type in {"medium", "deep"}:
+        return 3 if pages is not None and pages >= 6 else 2
+    return 2
+
+
+def _strip_image_tags(content: str) -> str:
+    cleaned = _IMAGE_TAG_RE.sub("", content or "")
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
+def _image_plan_key(value: str) -> str:
+    key = re.sub(r"[^a-z0-9À-ỹ]+", " ", (value or "").lower(), flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", key).strip()
+
+
+def _is_specific_image_description(description: str) -> bool:
+    text = re.sub(r"\s+", " ", (description or "").strip())
+    if len(text.split()) < 16:
+        return False
+    lowered = text.lower()
+    generic_phrases = (
+        "technology concept",
+        "process diagram",
+        "educational diagram",
+        "technical diagram",
+        "abstract concept",
+        "generic illustration",
+    )
+    if any(phrase in lowered for phrase in generic_phrases) and len(text.split()) < 26:
+        return False
+    has_relationship = any(
+        term in lowered
+        for term in (
+            "showing",
+            "illustrating",
+            "relationship",
+            "workflow",
+            "pipeline",
+            "comparison",
+            "sequence",
+            "layers",
+            "stages",
+            "components",
+            "input",
+            "output",
+            "before",
+            "after",
+            "cause",
+            "effect",
+        )
+    )
+    has_subject_detail = len(set(re.findall(r"[A-Za-zÀ-ỹ]{4,}", lowered))) >= 8
+    return has_relationship and has_subject_detail
+
+
+def _candidate_image_paragraphs(content: str, cap: int) -> list[str]:
+    """Select stable paragraphs where a visual could aid understanding."""
+    if cap <= 0:
+        return []
+
+    paragraphs = [
+        part.strip()
+        for part in re.split(r"\n\s*\n", content or "")
+        if part.strip()
+    ]
+    candidates: list[tuple[int, int, str]] = []
+    visual_terms = (
+        "quy trình", "process", "workflow", "pipeline", "kiến trúc", "architecture",
+        "mô hình", "model", "so sánh", "comparison", "cấu trúc", "structure",
+        "hệ thống", "system", "bước", "step", "dữ liệu", "data", "timeline",
+        "dòng thời gian", "rubric", "kpi", "metric", "chỉ số", "case study",
+        "tình huống", "checklist", "sơ đồ", "diagram",
+    )
+
+    for idx, paragraph in enumerate(paragraphs):
+        stripped = paragraph.lstrip()
+        if stripped.startswith(("#", ">", "-", "*", "```", "$$")):
+            continue
+        if "|" in paragraph and "\n" in paragraph:
+            continue
+        compact = re.sub(r"\s+", " ", paragraph)
+        if len(compact) < 180:
+            continue
+        lower = compact.lower()
+        score = sum(1 for term in visual_terms if term in lower)
+        if re.search(r"\b(?:1|2|3|4|5|first|second|third|bước)\b", lower):
+            score += 1
+        if score <= 0:
+            continue
+        candidates.append((score, -idx, paragraph))
+
+    candidates.sort(reverse=True)
+    if not candidates:
+        fallback = [
+            paragraph
+            for paragraph in paragraphs
+            if len(re.sub(r"\s+", " ", paragraph)) >= 220
+            and not paragraph.lstrip().startswith(("#", ">", "-", "*", "```", "$$"))
+        ]
+        return fallback[:cap]
+    return [paragraph for _score, _neg_idx, paragraph in candidates[:cap]]
+
 
 def _is_vietnamese(text: str) -> bool:
     """
@@ -252,6 +384,7 @@ class IllustratorAgent:
             if openai_api_key
             else None
         )
+        self._image_plan_metadata: dict[str, dict[str, str]] = {}
 
     # ------------------------------------------------------------------
     # LLM helper methods
@@ -503,6 +636,8 @@ class IllustratorAgent:
         description: str,
         is_search_fallback: bool = False,
         section_type: str = "medium",
+        caption: str = "",
+        validation_feedback: str = "",
         ) -> str:
         """
         Generate an educational illustration via OpenAI GPT Image API.
@@ -557,14 +692,20 @@ class IllustratorAgent:
                 dalle_prompt = (
                     "Educational illustration for a university textbook.\n"
                     "CRITICAL: No text, words, numbers, or labels anywhere in the image.\n"
-                    "Depict accurately: " + description
+                    f"Must match this figure caption exactly: {caption or 'caption not provided'}.\n"
+                    "Do not substitute with a related but different concept.\n"
+                    + (f"Previous validation issue to avoid: {validation_feedback}\n" if validation_feedback else "")
+                    + "Depict accurately: " + description
                 )
             else:
                 sanitized = self.sanitize_description_for_dalle(description)
                 dalle_prompt = (
                     "Educational illustration for a university textbook.\n"
                     "CRITICAL: No text, words, numbers, or labels anywhere in the image.\n"
-                    "Illustrate: " + sanitized
+                    f"Must match this figure caption exactly: {caption or 'caption not provided'}.\n"
+                    "Do not substitute with a related but different concept.\n"
+                    + (f"Previous validation issue to avoid: {validation_feedback}\n" if validation_feedback else "")
+                    + "Illustrate: " + sanitized
                 )
 
             response = rate_limited_call(
@@ -835,14 +976,16 @@ class IllustratorAgent:
         self,
         local_path: str,
         description: str,
+        caption: str = "",
+        source_excerpt: str = "",
     ) -> bool:
         """
         Verify downloaded image matches the intended description using vision API.
 
         Calls the configured vision model with the image + description and asks
         for a strict pass/fail judgment covering relevance and visual quality.
-        Returns True (use image) or False (try next candidate).
-        Fails open — returns True on any API error to avoid blocking pipeline.
+        Returns True (use image) or False (try next candidate). Validation is
+        fail-closed: uncertain images are skipped instead of inserted.
 
         Args:
             local_path:  Absolute path to the locally saved PNG.
@@ -871,12 +1014,17 @@ class IllustratorAgent:
                                 "type": "text",
                                 "text": (
                                     "Evaluate this candidate image for a university textbook.\n\n"
-                                    f"Intended description: {description}\n\n"
+                                    f"Figure caption: {caption or '(not provided)'}\n"
+                                    f"Intended description: {description}\n"
+                                    f"Source paragraph excerpt: {source_excerpt or '(not provided)'}\n\n"
                                     "Reply ONLY with 'PASS' when all criteria are satisfied: "
-                                    "the central subject and relationships match the description; "
+                                    "the central subject, relationships, and educational context match the caption, "
+                                    "the intended description, and the source paragraph; "
                                     "the image is clear, coherent, and educationally useful; "
+                                    "the image does not substitute a related but different concept, circuit type, "
+                                    "waveform, device, process, or relationship; "
                                     "there are no obvious visual artifacts, misleading details, "
-                                    "unwanted text, watermarks, or inappropriate content. "
+                                    "duplicate-looking generic visuals, unwanted text, watermarks, or inappropriate content. "
                                     "Otherwise reply only with 'FAIL'."
                                 ),
                             },
@@ -903,8 +1051,157 @@ class IllustratorAgent:
             )
             return passed
         except Exception as e:
-            logger.warning(f"Image validation failed ({e}) — defaulting to PASS")
-            return True  # Fail open
+            logger.warning(f"Image validation failed ({e}) — defaulting to FAIL")
+            return False
+
+    def plan_image_tags(
+        self,
+        content: str,
+        *,
+        section_type: str = "medium",
+        language: str = "vi",
+        target_pages: int | None = None,
+        layout_profile: str | None = None,
+    ) -> str:
+        """
+        Add balanced image tags after Reviewer approval.
+
+        The LLM never rewrites the section. Code selects paragraph anchors,
+        asks for compact visual specs, then inserts image tags after anchors.
+        """
+        if not content or _IMAGE_TAG_RE.search(content):
+            return content
+        if self.llm is None:
+            logger.info("Image planner skipped: no LLM client available")
+            return content
+
+        cap = _image_plan_cap(section_type, target_pages, layout_profile)
+        candidates = _candidate_image_paragraphs(content, cap)
+        if not candidates:
+            logger.info("Image planner found no useful visual anchors")
+            return content
+
+        profile = get_language_profile(language)
+        excerpts = []
+        for idx, paragraph in enumerate(candidates, 1):
+            compact = re.sub(r"\s+", " ", paragraph).strip()
+            excerpts.append(f"{idx}. {compact[:900]}")
+
+        system_prompt = (
+            "You are an educational textbook visual planner. Decide whether each "
+            "provided paragraph should receive a helpful figure. Return only JSON.\n\n"
+            "Rules:\n"
+            "- Use at most one image per paragraph.\n"
+            "- Prefer diagrams, workflows, comparisons, concrete objects, timelines, "
+            "rubrics, metrics, or process visuals that directly match the paragraph.\n"
+            "- Insert an image only when the visual is anchored to a concrete idea, "
+            "process, relationship, comparison, object, or before/after state in the paragraph.\n"
+            "- Skip generic, decorative, atmospheric, redundant, or merely motivational images.\n"
+            "- Do not include visible text, words, labels, numbers, or captions inside "
+            "the image description; describe visual structure instead.\n"
+            "- Titles must be 3-6 words in the textbook language.\n"
+            "- Descriptions must be English, 2-3 sentences, and include the subject, "
+            "the relationship/process, viewpoint/composition, and textbook context.\n"
+            "- Do not repeat titles, captions, or visual concepts within this section.\n"
+            "- Avoid vague descriptions such as 'technology concept', 'process diagram', "
+            "or 'educational illustration' unless concrete objects and relationships are named.\n\n"
+            "JSON format: [{\"paragraph\": 1, \"title\": \"...\", "
+            "\"description\": \"...\", \"visual_type\": \"diagram|photo|comparison|workflow|timeline|object\", "
+            "\"why_here\": \"...\", \"avoid_duplicates_key\": \"...\"}]"
+        )
+        user_prompt = (
+            f"Section type: {section_type}\n"
+            f"Target content pages: {target_pages or 'unknown'}\n"
+            f"Layout profile: {layout_profile or 'unknown'}\n"
+            f"Textbook language: {profile.prompt_name}\n"
+            f"Maximum images: {cap}\n\n"
+            "Paragraphs:\n" + "\n\n".join(excerpts)
+        )
+
+        try:
+            self.prompt_logger.log(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                context_label=f"Image planner | {section_type} | cap={cap}",
+            )
+            response = rate_limited_invoke(
+                self.llm,
+                system_prompt + "\n\n" + user_prompt,
+                metadata={
+                    "agent": "Illustrator",
+                    "node": "illustrator",
+                    "model": LLM_MODEL_CHEAP,
+                    "operation": "image_planning",
+                },
+            )
+            raw = str(response.content).strip()
+            if "```json" in raw:
+                raw = raw.split("```json", 1)[1].split("```", 1)[0].strip()
+            elif "```" in raw:
+                raw = raw.split("```", 1)[1].split("```", 1)[0].strip()
+            plans = json.loads(raw)
+            if not isinstance(plans, list):
+                return content
+        except Exception as e:
+            logger.warning("Image planning failed; continuing without new tags: %s", e)
+            return content
+
+        new_content = content
+        inserted = 0
+        used_indices: set[int] = set()
+        used_plan_keys: set[str] = set()
+        self._image_plan_metadata = {}
+        for item in plans:
+            if inserted >= cap or not isinstance(item, dict):
+                break
+            try:
+                paragraph_index = int(item.get("paragraph"))
+            except (TypeError, ValueError):
+                continue
+            if paragraph_index < 1 or paragraph_index > len(candidates):
+                continue
+            if paragraph_index in used_indices:
+                continue
+
+            title = str(item.get("title") or "").strip()
+            description = str(item.get("description") or "").strip()
+            why_here = str(item.get("why_here") or "").strip()
+            duplicate_key = str(item.get("avoid_duplicates_key") or "").strip()
+            title_key = _image_plan_key(title)
+            desc_key = _image_plan_key(description)
+            plan_key = _image_plan_key(duplicate_key or f"{title} {description[:80]}")
+            if (
+                not title
+                or not description
+                or not why_here
+                or not plan_key
+                or title_key in used_plan_keys
+                or desc_key in used_plan_keys
+                or plan_key in used_plan_keys
+                or not _is_specific_image_description(description)
+            ):
+                logger.info("Image planner rejected weak/duplicate plan for paragraph %s", paragraph_index)
+                continue
+
+            anchor = candidates[paragraph_index - 1]
+            tag = f"\n\n> [IMAGE: {title} | {description}]\n\n"
+            if anchor in new_content:
+                new_content = new_content.replace(anchor, anchor + tag, 1)
+                tag_key = f"> [IMAGE: {title} | {description}]"
+                self._image_plan_metadata[tag_key] = {
+                    "caption": title,
+                    "description": description,
+                    "source_excerpt": re.sub(r"\s+", " ", anchor).strip()[:1000],
+                    "visual_type": str(item.get("visual_type") or "").strip(),
+                    "why_here": why_here,
+                    "duplicate_key": duplicate_key,
+                }
+                used_indices.add(paragraph_index)
+                used_plan_keys.update({title_key, desc_key, plan_key})
+                inserted += 1
+
+        logger.info("Image planner inserted %s/%s tag(s)", inserted, cap)
+        return new_content
 
     # ------------------------------------------------------------------
     # Main orchestration
@@ -915,6 +1212,8 @@ class IllustratorAgent:
         content: str,
         section_type: str = "medium",
         language: str = "vi",
+        target_pages: int | None = None,
+        layout_profile: str | None = None,
     ) -> str:
         """
         Process all image tags in `content` and replace them with figure blocks.
@@ -939,6 +1238,14 @@ class IllustratorAgent:
         Returns:
             Content with all image tags replaced by figure blocks (or removed).
         """
+        content = self.plan_image_tags(
+            content,
+            section_type=section_type,
+            language=language,
+            target_pages=target_pages,
+            layout_profile=layout_profile,
+        )
+
         # -- Backward compatibility: convert legacy tags to current format ------
         OLD_PATTERN = r"> \[IMAGE SUGGESTION: (.*?)\]"
         old_matches = re.findall(OLD_PATTERN, content)
@@ -948,6 +1255,18 @@ class IllustratorAgent:
                 old_tag = f"> [IMAGE SUGGESTION: {desc}]"
                 # Use the description as both title and description (best-effort)
                 content = content.replace(old_tag, f"> [IMAGE: {desc} | {desc}]")
+
+        needed_pattern = r">? ?\[IMAGE_NEEDED: (.*?)\]"
+        needed_matches = re.findall(needed_pattern, content)
+        if needed_matches:
+            logger.info(f"Found {len(needed_matches)} legacy IMAGE_NEEDED tag(s) — converting")
+            for desc in needed_matches:
+                content = re.sub(
+                    rf">? ?\[IMAGE_NEEDED: {re.escape(desc)}\]",
+                    f"> [IMAGE: {desc} | {desc}]",
+                    content,
+                    count=1,
+                )
 
         # -- Find all current-format tags --------------------------------------
         pattern = r"> \[IMAGE: (.*?)\]"
@@ -960,11 +1279,13 @@ class IllustratorAgent:
         logger.info(f"Found {len(matches)} image tag(s) to process")
         new_content     = content
         images_inserted = 0
+        used_caption_keys: set[str] = set()
+        used_path_keys: set[str] = set()
+        plan_metadata = getattr(self, "_image_plan_metadata", {})
 
         for match in matches:
             old_tag    = f"> [IMAGE: {match}]"
             local_path = ""
-            last_resort = ""
 
             # -- Parse title | description -------------------------------------
             # Format: "Short Vietnamese/English title | Detailed English description"
@@ -978,6 +1299,15 @@ class IllustratorAgent:
                 description = match.strip()
 
             label = title if title else description  # used only for log messages
+            metadata = plan_metadata.get(old_tag, {})
+            source_excerpt = metadata.get("source_excerpt", "")
+            visual_type = metadata.get("visual_type", "")
+            caption_for_validation = title if title else metadata.get("caption", "")
+            semantic_description = (
+                f"{description}\nVisual type: {visual_type}."
+                if visual_type
+                else description
+            )
 
             # -- Route ---------------------------------------------------------
             action = self.route_image_request(description)
@@ -985,50 +1315,63 @@ class IllustratorAgent:
             # ── DRAW ──────────────────────────────────────────────────────────
             if action == "DRAW":
                 local_path = self.generate_image_openai(
-                    description, is_search_fallback=False, section_type=section_type
+                    description,
+                    is_search_fallback=False,
+                    section_type=section_type,
+                    caption=caption_for_validation,
                 )
                 if local_path:
-                    if not self._validate_image_relevance(local_path, description):
+                    if not self._validate_image_relevance(
+                        local_path,
+                        semantic_description,
+                        caption=caption_for_validation,
+                        source_excerpt=source_excerpt,
+                    ):
                         logger.info("DRAW attempt 1 failed validation — retrying once")
                         retry_path = self.generate_image_openai(
-                            description, is_search_fallback=False, section_type=section_type
+                            description,
+                            is_search_fallback=False,
+                            section_type=section_type,
+                            caption=caption_for_validation,
+                            validation_feedback=(
+                                "The previous image did not match the caption, "
+                                "source paragraph, or intended relationship closely enough."
+                            ),
                         )
-                        if retry_path:
-                            if self._validate_image_relevance(retry_path, description):
-                                local_path = retry_path   # retry tốt hơn → dùng retry
-                                logger.info("✓ DRAW retry passed validation")
-                            else:
-                                logger.info(
-                                    "DRAW retry also failed validation — "
-                                    "falling back to SEARCH (keeping retry as last resort)"
-                                )
-                                last_resort = retry_path  # giữ lại phòng SEARCH fail
-                                local_path  = ""
-                                action      = "SEARCH"
+                        if retry_path and self._validate_image_relevance(
+                            retry_path,
+                            semantic_description,
+                            caption=caption_for_validation,
+                            source_excerpt=source_excerpt,
+                        ):
+                            local_path = retry_path
+                            logger.info("✓ DRAW retry passed validation")
                         else:
-                            logger.info("DRAW retry generation failed — falling back to SEARCH")
-                            last_resort = local_path  # giữ attempt 1 phòng SEARCH fail
-                            local_path  = ""
-                            action      = "SEARCH"
+                            logger.info("DRAW retry failed validation/generation — falling back to SEARCH")
+                            local_path = ""
+                            action = "SEARCH"
                 else:
                     logger.info("DRAW attempt 1 generation failed — falling back to SEARCH")
-                    last_resort = ""
                     action      = "SEARCH"
 
             # ── SEARCH / DIAGRAM (bao gồm fallback từ DRAW) ───────────────────
             if action in ("SEARCH", "DIAGRAM"):
                 _MAX_SEARCH_ROUNDS = 3   # số lần thử tối đa với các candidate khác nhau
-                candidate_urls     = [candidate.url for candidate in self.find_serper_image_candidates(description)]
+                search_query_text = (
+                    f"{caption_for_validation}. {description}. {visual_type}"
+                    if caption_for_validation or visual_type
+                    else description
+                )
+                candidate_urls     = [candidate.url for candidate in self.find_serper_image_candidates(search_query_text)]
                 
 
                 round_path   = ""
-                last_valid   = ""   # ảnh cuối cùng download được dù chưa pass validate
 
                 for attempt, image_url in enumerate(candidate_urls, 1):
                     if attempt > _MAX_SEARCH_ROUNDS:
                         logger.info(
                             f"Reached max search rounds ({_MAX_SEARCH_ROUNDS}) — "
-                            f"keeping last downloaded result"
+                            f"stopping candidate validation"
                         )
                         break
 
@@ -1037,9 +1380,12 @@ class IllustratorAgent:
                         logger.warning(f"✗ Download failed candidate {attempt}: {image_url[:60]}")
                         continue
 
-                    last_valid = dl_path  # lưu lại mọi ảnh download được
-
-                    if self._validate_image_relevance(dl_path, description):
+                    if self._validate_image_relevance(
+                        dl_path,
+                        semantic_description,
+                        caption=caption_for_validation,
+                        source_excerpt=source_excerpt,
+                    ):
                         logger.info(f"✓ Download + validated on candidate {attempt}")
                         round_path = dl_path
                         break
@@ -1048,39 +1394,43 @@ class IllustratorAgent:
                             f"✗ Validation failed candidate {attempt} — trying next"
                         )
 
-                # Resolve kết quả theo ưu tiên:
-                # 1. Ảnh pass validate
-                # 2. Ảnh download được nhưng chưa pass (last_valid)
-                # 3. DRAW result giữ lại từ trước (last_resort)
                 if round_path:
                     local_path = round_path
-                elif last_valid:
-                    logger.info(
-                        "No candidate passed validation — using last downloaded result"
-                    )
-                    local_path = last_valid
-                elif last_resort:
-                    logger.info(
-                        "All SEARCH candidates failed — falling back to DRAW result"
-                    )
-                    local_path = last_resort
                 else:
-                    # Serper hoàn toàn thất bại → thử DALL-E/OpenAI trước.
                     logger.info(
-                        f"All candidates failed for '{label[:50]}' — "
-                        f"last-resort OpenAI DRAW"
+                        f"No SEARCH/DIAGRAM candidate passed validation for '{label[:50]}' — "
+                        f"trying validated OpenAI DRAW fallback"
                     )
-                    local_path = self.generate_image_openai(
-                        description, is_search_fallback=True, section_type=section_type
+                    fallback_path = self.generate_image_openai(
+                        description,
+                        is_search_fallback=True,
+                        section_type=section_type,
+                        caption=caption_for_validation,
+                        validation_feedback=(
+                            "Search candidates did not semantically match the caption "
+                            "and source paragraph."
+                        ),
                     )
-                    if not local_path and _looks_like_wikimedia_entity_query(description):
+                    if fallback_path and self._validate_image_relevance(
+                        fallback_path,
+                        semantic_description,
+                        caption=caption_for_validation,
+                        source_excerpt=source_excerpt,
+                    ):
+                        local_path = fallback_path
+                    elif _looks_like_wikimedia_entity_query(description):
                         logger.info(
-                            "OpenAI fallback failed — trying limited Wikimedia fallback "
+                            "OpenAI fallback failed validation/generation — trying limited Wikimedia fallback "
                             "for entity-like query"
                         )
                         for candidate in self.find_wikimedia_image_candidates(description)[:_MAX_SEARCH_ROUNDS]:
                             dl_path = download_and_convert_image(candidate.url, IMAGE_OUTPUT_DIR)
-                            if dl_path:
+                            if dl_path and self._validate_image_relevance(
+                                dl_path,
+                                semantic_description,
+                                caption=caption_for_validation,
+                                source_excerpt=source_excerpt,
+                            ):
                                 local_path = dl_path
                                 break
             # -- Build figure block --------------------------------------------
@@ -1091,6 +1441,16 @@ class IllustratorAgent:
                     title if title else description,
                     language=language,
                 )
+                caption_key = _image_plan_key(figure_caption)
+                path_key = Path(local_path).name.lower()
+                if caption_key in used_caption_keys or path_key in used_path_keys:
+                    logger.warning(
+                        "Skipping duplicate image/caption in section: caption='%s', path='%s'",
+                        figure_caption[:60],
+                        path_key,
+                    )
+                    new_content = new_content.replace(old_tag, "")
+                    continue
 
                 # Relative path from BASE_DIR — Typst sandbox requires paths
                 # relative to the document root, not absolute system paths.
@@ -1106,6 +1466,8 @@ class IllustratorAgent:
                 )
 
                 new_content = new_content.replace(old_tag, figure_block)
+                used_caption_keys.add(caption_key)
+                used_path_keys.add(path_key)
                 images_inserted += 1
                 logger.info(
                     f"✓ Inserted image {images_inserted}/{len(matches)}: "
@@ -1251,7 +1613,7 @@ def illustrate_section(state: AgentState) -> dict:
 
     if not enable_images:
         logger.info("Images disabled by user — removing all image tags")
-        cleaned = re.sub(r"> \[IMAGE(?:\s+SUGGESTION)?: .*?\]", "", current_content)
+        cleaned = _strip_image_tags(current_content)
         return {"current_content": cleaned}
 
     # Graceful degradation: Wikimedia Commons search is no-key, so missing
@@ -1264,6 +1626,8 @@ def illustrate_section(state: AgentState) -> dict:
         )
 
     sec_type = "medium"
+    target_pages = None
+    layout_profile = None
     try:
             from app.schemas.curriculum import get_chapter_and_subsection
             curriculum = state.get("curriculum")
@@ -1278,6 +1642,16 @@ def illustrate_section(state: AgentState) -> dict:
                     if hasattr(subsection, "section_type")
                     else subsection.get("section_type", "medium")
                 )
+                target_pages = (
+                    subsection.target_pages
+                    if hasattr(subsection, "target_pages")
+                    else subsection.get("target_pages")
+                )
+                layout_profile = (
+                    subsection.layout_profile
+                    if hasattr(subsection, "layout_profile")
+                    else subsection.get("layout_profile")
+                )
     except Exception:
             pass
 
@@ -1287,6 +1661,8 @@ def illustrate_section(state: AgentState) -> dict:
             current_content,
             section_type=sec_type,
             language=state.get("language", "vi"),
+            target_pages=target_pages,
+            layout_profile=layout_profile,
         )
     except Exception as e:
         logger.warning(
@@ -1295,9 +1671,5 @@ def illustrate_section(state: AgentState) -> dict:
             e,
             exc_info=True,
         )
-        illustrated_content = re.sub(
-            r"> \[IMAGE(?:\s+SUGGESTION)?: .*?\]",
-            "",
-            current_content,
-        )
+        illustrated_content = _strip_image_tags(current_content)
     return {"current_content": illustrated_content}

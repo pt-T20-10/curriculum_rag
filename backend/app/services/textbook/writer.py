@@ -8,13 +8,8 @@ Components in this module:
                               context — no tool calls during writing.
                               Uses section summaries for continuity enforcement.
 
-    ImageDescriptionGenerator — Post-processes written content by replacing
-                                [IMAGE_NEEDED: hint] placeholders with fully
-                                formatted [IMAGE: Title | Description] tags
-                                using gpt-4o-mini in a single batch call.
-
     WriterAgent             — Orchestrator: sequences ContentWriter and
-                              ImageDescriptionGenerator, then applies
+                              deterministic post-processing.
                               deterministic post-processing.
 
     write_section_crag()    — LangGraph node for the CRAG pipeline. Merges
@@ -34,7 +29,6 @@ from app.services.runtime_config import get_api_key
 from app.services.textbook.language import get_language_profile
 
 LLM_MODEL_PREMIUM = settings.LLM_MODEL_PREMIUM
-LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
 
 from app.utils.log_config import setup_logger, setup_prompt_logger
 from app.schemas.curriculum import (
@@ -68,7 +62,23 @@ _MAX_PRIOR_SUMMARIES:   int = settings.WRITER_MAX_PRIOR_SUMMARIES
 # principles most relevant to each depth level.
 # ============================================================================
 
-def _get_hk_hint(section_type: str) -> str:
+def _page_budget_mode(target_pages: int | None, char_target: tuple[int, int] | None = None) -> str:
+    try:
+        pages = int(target_pages) if target_pages is not None else None
+    except (TypeError, ValueError):
+        pages = None
+    if pages is not None:
+        if pages <= 2:
+            return "compact"
+        if pages <= 4:
+            return "standard"
+        return "expanded"
+    if char_target and char_target[1] <= 2600:
+        return "compact"
+    return "standard"
+
+
+def _get_hk_hint(section_type: str, page_budget_mode: str = "standard") -> str:
     """
     Return a concise HK pedagogy nudge tailored to the section's depth level.
 
@@ -84,6 +94,14 @@ def _get_hk_hint(section_type: str) -> str:
     Returns:
         A 2–6 line pedagogical hint string for prompt injection.
     """
+    if page_budget_mode == "compact":
+        return (
+            "Pedagogy (COMPACT): Connect briefly, organise only the core ideas, "
+            "and avoid padding. A short example or bullet list is enough when it "
+            "clarifies the concept; do not add reflection or real-world transfer "
+            "unless it is clearly valuable for this exact section."
+        )
+
     hints: dict[str, str] = {
         "light": (
             "Pedagogy (CONNECT + ORIENT): Open by activating prior knowledge "
@@ -148,6 +166,7 @@ def _build_length_rule(
     content_level: str,
     char_min: int,
     char_max: int,
+    page_budget_mode: str = "standard",
 ) -> str:
     """
     Build RULE 2.5 prompt text scaled to the user's chosen content_level.
@@ -179,6 +198,22 @@ def _build_length_rule(
             f"most body paragraphs should fully develop an idea across {sents}+ sentences"
         )
 
+    if page_budget_mode == "compact":
+        return (
+            f"RULE 2.5 — LENGTH TARGET (COMPACT PAGE BUDGET):\n"
+            f"Target range: {char_min}-{char_max} characters. Reach the core ideas "
+            f"without padding; aim for the lower-to-middle part of this range when "
+            f"the section is conceptual or introductory.\n\n"
+            f"Calibration for this compact section ({section_type} / {content_level}):\n"
+            f"- Write directly under the ## section heading when possible.\n"
+            f"- Do not create a lone ### block. Use no ### by default.\n"
+            f"- Use bullets, a compact table, or bold lead-ins for short labels.\n"
+            f"- Concepts, basic features, and component lists may be concise.\n\n"
+            f"If short: add one precise explanation or short example that improves learning.\n"
+            f"If long: remove repeated framing, routine summaries, unnecessary real-world "
+            f"applications, and reflective commentary before adding more content."
+        )
+
     return (
         f"RULE 2.5 — LENGTH TARGET (NON-NEGOTIABLE FLOOR, SOFT CEILING):\n"
         f"Your output MUST contain at least {char_min} characters. "
@@ -200,6 +235,70 @@ def _build_length_rule(
         f"add more depth to existing blocks. If you are above {char_max}, tighten "
         f"wording and remove redundancy. Do NOT create many short paragraphs."
     )
+
+
+def _build_expansion_rule(
+    *,
+    layout_profile: str | None,
+    formula_density: str | None,
+    expansion_strategy: str | None,
+    target_pages: int | None,
+    page_budget_mode: str = "standard",
+    language: str,
+) -> str:
+    density = str(formula_density or "none")
+    strategy = str(expansion_strategy or "")
+    profile = str(layout_profile or "prose")
+    page_note = (
+        f"This section has a target of about {target_pages} content page(s)."
+        if target_pages
+        else "This section has a page-budget target."
+    )
+    lines = [
+        "RULE 2.6 — PAGE-BUDGET EXPANSION STRATEGY:",
+        page_note,
+        f"Layout profile: {profile}. Expansion strategy: {strategy or 'structured academic support'}.",
+        (
+            "For compact sections, use only the structured element that genuinely helps; "
+            "for longer sections, prefer relevant structured learning elements over simply stretching prose."
+            if page_budget_mode == "compact"
+            else "Prefer relevant structured learning elements over simply stretching prose."
+        ),
+    ]
+
+    if density in {"contextual", "high"}:
+        lines.extend([
+            "Because formula/structured tools are preferred, include them when they genuinely fit the subject:",
+            "- quantitative subjects: formulas, variables, derivations, and worked calculations;",
+            "- technical or management subjects: metrics, simple models, rubrics, scoring tables, KPIs, or workflow measurements;",
+            "- social/history/humanities subjects: timelines, comparison matrices, cause-effect frameworks, qualitative indicators, or evidence tables;",
+            "- practical subjects: checklists, procedures, worked examples, exercises, and evaluation criteria.",
+            "Do NOT invent artificial math for prose-only concepts; use the best domain-appropriate structured tool instead.",
+        ])
+
+    strategy_rules = {
+        "quantitative_formula_examples": "Add formulas, symbol explanations, worked examples, and short interpretation paragraphs where appropriate.",
+        "code_examples_debugging_tasks": "Use compact code examples, expected output, common mistakes, debugging notes, and short practice tasks.",
+        "workflow_checklists_practice_steps": "Use workflow steps, checklists, decision points, quality gates, and practice tasks.",
+        "case_studies_rubrics_metrics": "Use case studies, rubrics, metrics/KPIs, scoring criteria, and small decision tables.",
+        "comparison_tables_timelines_frameworks": "Use comparison tables, timelines, classification criteria, cause-effect frameworks, and synthesis prompts.",
+        "models_metrics_examples": "Use conceptual models, metrics, examples, tables, and practical interpretation.",
+        "domain_structuring_tools": "Use the most appropriate domain tool: formula, model, rubric, timeline, table, checklist, or worked example.",
+        "analytical_examples_structured_synthesis": (
+            "Use analytical examples, structured synthesis, and comparison points."
+            if page_budget_mode == "compact"
+            else "Use analytical examples, structured synthesis, comparison points, and reflection prompts."
+        ),
+    }
+    selected_rule = strategy_rules.get(strategy, strategy_rules["analytical_examples_structured_synthesis"])
+    lines.append(selected_rule)
+    if target_pages and target_pages >= 4:
+        lines.append(
+            "For a large section target, include at least two structured learning elements across the section, not only long paragraphs."
+        )
+    if language == "vi":
+        lines.append("Write all labels, tables, examples, and explanations in Vietnamese.")
+    return "\n".join(lines)
 
 
 def _build_prior_summary_block(
@@ -240,49 +339,12 @@ class ContentWriter:
     Responsibilities:
     - Generate Vietnamese academic prose from pre-enriched context.
     - Enforce structural rules (headers, blank lines, section depth).
-    - Inject [IMAGE_NEEDED: hint] placeholders where images are appropriate.
     - Use prior section summaries for continuity (no repetition).
     - No tool calls — receives fully prepared context from ContextEvaluator.
 
     Premium model is used here exclusively because output quality directly
     determines the textbook content quality.
     """
-
-    _VISUAL_RULES: dict[str, str] = {
-    "disabled": "Do NOT add any image suggestions.",
-
-    "light": (
-        "This is an orientation or recap section.\n"
-        "Insert AT MOST 1 image placeholder, only if it significantly aids understanding.\n"
-        "Format: > [IMAGE_NEEDED: <1-line Vietnamese hint>]\n"
-        "Do NOT write English descriptions here."
-    ),
-
-    "applied": (
-        "This is a hands-on section with step-by-step instructions.\n"
-        "Insert 1 image placeholder per major step that has a visible physical outcome.\n"
-        "Maximum 3 placeholders total — prefer fewer, higher-quality images over many generic ones.\n"
-        "Format: > [IMAGE_NEEDED: <1-line Vietnamese hint>]\n"
-        "Do NOT write English descriptions here."
-    ),
-
-    "default": (
-        "Insert image placeholders where they genuinely aid understanding.\n"
-        "QUALITY OVER QUANTITY — follow these rules strictly:\n\n"
-        "INSERT after a paragraph when:\n"
-        "- A physical process, pose, or technique is described step-by-step\n"
-        "- A real-world object or entity is introduced for the first time\n"
-        "- A comparison or before/after scenario is discussed\n"
-        "- A system or structure with multiple components is explained\n\n"
-        "DO NOT INSERT when:\n"
-        "- The paragraph is abstract theory or pure definition\n"
-        "- The same subject was already illustrated in a previous image\n"
-        "- The paragraph is a summary or transition\n\n"
-        "Target: 2–3 images per section. Never exceed 4.\n"
-        "Format: > [IMAGE_NEEDED: <1-line Vietnamese hint>]\n"
-        "Do NOT write English descriptions here."
-    ),
-}
 
     def __init__(self) -> None:
         self._llm = ChatOpenAI(
@@ -291,20 +353,6 @@ class ContentWriter:
             temperature=0.4,
         )
         self._prompt_logger = setup_prompt_logger("writer")
-
-    def _get_visual_rule(self, section_type: str, enable_images: bool, language: str) -> str:
-        """Return the appropriate visual placeholder rule for this section."""
-        if not enable_images:
-            return self._VISUAL_RULES["disabled"]
-        profile = get_language_profile(language)
-        if section_type == "light":
-            rule = self._VISUAL_RULES["light"]
-            return rule.replace("Vietnamese hint", f"{profile.image_hint_language} hint")
-        if section_type == "applied":
-            rule = self._VISUAL_RULES["applied"]
-            return rule.replace("Vietnamese hint", f"{profile.image_hint_language} hint")
-        rule = self._VISUAL_RULES["default"]
-        return rule.replace("Vietnamese hint", f"{profile.image_hint_language} hint")
 
     def generate(
         self,
@@ -326,6 +374,11 @@ class ContentWriter:
         textbook_mode: str = "standard",
         formula_policy: str = "auto",
         formula_need: str = "none",
+        target_pages: int | None = None,
+        layout_profile: str | None = None,
+        formula_density: str | None = None,
+        expansion_strategy: str | None = None,
+        page_fill_bias: float | None = None,
     ) -> str:
         """
         Generate academic content for a single textbook section.
@@ -342,19 +395,34 @@ class ContentWriter:
             section_type:        Depth level ('light'|'medium'|'deep'|'applied').
             char_target:         (min_chars, max_chars) tuple.
             content_level:       User-configured length level.
-            enable_images:       Whether to insert image placeholders.
+            enable_images:       Kept for workflow compatibility; image planning
+                                 is handled by the downstream Illustrator node.
             review_feedback:     Non-empty → revision mode.
             section_summaries:   Summaries of previously written sections.
 
         Returns:
-            Generated Markdown string with [IMAGE_NEEDED: ...] placeholders.
+            Generated Markdown string without image placeholders.
         """
         char_min, char_max = char_target
         profile = get_language_profile(language)
-        length_rule   = _build_length_rule(section_type, content_level, char_min, char_max)
-        visual_rule   = self._get_visual_rule(section_type, enable_images, language)
+        page_budget_mode = _page_budget_mode(target_pages, char_target)
+        length_rule   = _build_length_rule(
+            section_type,
+            content_level,
+            char_min,
+            char_max,
+            page_budget_mode,
+        )
+        expansion_rule = _build_expansion_rule(
+            layout_profile=layout_profile,
+            formula_density=formula_density,
+            expansion_strategy=expansion_strategy,
+            target_pages=target_pages,
+            page_budget_mode=page_budget_mode,
+            language=language,
+        )
         prior_block   = _build_prior_summary_block(section_summaries)
-        hk_hint       = _get_hk_hint(section_type)
+        hk_hint       = _get_hk_hint(section_type, page_budget_mode)
         back_reference = (
             'When writing in Vietnamese, reference prior concepts with a natural '
             'phrase such as "như đã trình bày ở mục X.Y" when relevant.'
@@ -367,12 +435,6 @@ class ContentWriter:
             if language == "vi"
             else "NEVER double-number: ❌ ## 1.1. Section 1.1 → ✅ ## 1.1 Title"
         )
-        good_heading_1 = "Định nghĩa và nguồn gốc" if language == "vi" else "Definitions and Origins"
-        good_heading_2 = "Ứng dụng trong thực tế" if language == "vi" else "Real-World Applications"
-        bad_heading_1 = "Định nghĩa" if language == "vi" else "Definitions"
-        bad_heading_2 = "Nguồn gốc" if language == "vi" else "Origins"
-        bad_heading_3 = "Đặc điểm" if language == "vi" else "Characteristics"
-        bad_heading_4 = "Ứng dụng" if language == "vi" else "Applications"
         style_rule = (
             "English punctuation: do NOT use em dash or en dash characters "
             "(—, –). Use commas, parentheses, semicolons, or ASCII hyphen-minus (-) instead."
@@ -385,27 +447,68 @@ class ContentWriter:
                 "\"đây là\", \"là\", \"điều này cho thấy\", a comma, or a separate sentence."
             )
         )
-        paragraph_flow_rule = (
-            "Paragraph rhythm: write cohesive prose in the target language, "
-            "not note-like fragments. Most body paragraphs should develop one "
-            "idea across 4-7 sentences. Use a short 2-3 sentence paragraph only "
-            "for orientation, transition, or emphasis. If adjacent short "
-            "paragraphs continue the same idea, merge them into one stronger paragraph."
-        )
+        if page_budget_mode == "compact":
+            paragraph_flow_rule = (
+                "Paragraph rhythm: concise academic prose is acceptable. Use bullets "
+                "for definitions, features, or components when that keeps the section clear. "
+                "Avoid reflective wrap-ups and repeated application framing."
+            )
+            pedagogy_line = (
+                "Use a compact teaching pattern: connect briefly, organise the core "
+                "ideas, and stop when the section has enough learning value. Do not "
+                "force reflection, application, or summary paragraphs into short sections."
+            )
+            example_rule = (
+                "Use at most one short concrete example when it clarifies the concept; "
+                "omit examples that only repeat the prose."
+            )
+            subsection_depth_rule = (
+                "Compact sub-section discipline:\n"
+                "- Default: no ### blocks; write directly under the ## section heading.\n"
+                "- Create ### only for real second-level subsections such as "
+                f"### {section_num}.1 and only if there are at least two genuinely "
+                "distinct child groups.\n"
+                "- Never create one lone ### block; use bold lead-ins, bullets, or a table instead."
+            )
+            subsection_count_rule = (
+                "Rule 5 — SUB-SECTION COUNT FOR COMPACT MODE:\n"
+                "- Default: 0 ### blocks.\n"
+                "- If real child groups are necessary: use at least 2 numbered ### blocks, "
+                "never a single ### block.\n"
+                "- Absolute ceiling: 2 ### blocks for compact sections."
+            )
+        else:
+            paragraph_flow_rule = (
+                "Paragraph rhythm: write cohesive prose in the target language, "
+                "not note-like fragments. Most body paragraphs should develop one "
+                "idea across 4-7 sentences. Use a short 2-3 sentence paragraph only "
+                "for orientation, transition, or emphasis. If adjacent short "
+                "paragraphs continue the same idea, merge them into one stronger paragraph."
+            )
+            pedagogy_line = (
+                "Apply the CORE model per section: Connect to prior knowledge → Organise new "
+                "content incrementally → Reflect via a synthesis checkpoint when useful → "
+                "Extend to a real-world context only when it adds clear value."
+            )
+            example_rule = "Use concrete, domain-relevant examples when they improve understanding."
+            subsection_depth_rule = (
+                "Sub-section depth:\n"
+                "- Each ### block: use fewer, fuller paragraphs rather than many short ones.\n"
+                "- Paragraphs may vary by depth and content; avoid a repeated pattern of 2–3 sentence paragraphs.\n"
+                "- light → 1–2 ### blocks; medium → 2–3; deep → 3–4; applied → 2–3.\n"
+                "- PREFER fewer, deeper blocks over many shallow ones.\n"
+                f"- {paragraph_flow_rule}"
+            )
+            subsection_count_rule = (
+                "Rule 5 — SUB-SECTION COUNT PER DEPTH LEVEL (STRICT CEILING):\n"
+                "- light   → maximum 2 ### blocks\n"
+                "- medium  → maximum 3 ### blocks\n"
+                "- deep    → maximum 4 ### blocks\n"
+                "- applied → maximum 3 ### blocks"
+            )
         practice_mode = _is_practice_mode(textbook_mode)
         practice_criterion = ""
         practice_constraint = ""
-        formula_guidance = ""
-        if formula_policy == "include" and formula_need != "none":
-            formula_guidance = """
-Formula requirement:
-- When the section naturally involves quantitative definitions, models,
-  probabilities, losses, metrics, or transformations, include the appropriate
-  formulas and explain each symbol clearly.
-- Use $...$ for inline math and $$...$$ for display equations.
-- Do not add artificial formulas to prose-only concepts; formulas must support
-  real understanding of this subject.
-"""
         if practice_mode:
             practice_criterion = f"""
 Practice-course content standards:
@@ -425,7 +528,7 @@ Rule 8 — PRACTICE COURSE MODE:
 - Do NOT write a theory-first explanation, concept catalogue, or summary block.
 - Include concrete action steps the learner can follow.
 - Include at least one similar exercise and one slightly advanced exercise.
-- Keep all existing heading, numbering, blank-line, code, math, and image rules.
+- Keep all existing heading, numbering, blank-line, code, and math rules.
 """
 
         revision_block = ""
@@ -441,9 +544,8 @@ Rule 8 — PRACTICE COURSE MODE:
         system_prompt = f"""
 [CONTEXT]
 You are a pedagogical architect producing learner-focused academic content.
-Apply the CORE model per section: Connect to prior knowledge → Organise new
-content incrementally → Reflect via a synthesis checkpoint → Extend to a
-real-world context. Prioritise analysis and evaluation over fact-listing.
+{pedagogy_line}
+Prioritise analysis and evaluation over fact-listing.
 Adapt tone to the subject domain. Output only final Markdown — no preamble.
 [/CONTEXT]
 
@@ -455,6 +557,7 @@ Write content for the following textbook section.
 <section num="{section_num}">{section_title}</section>
 <description>{section_description}</description>
 <section_type>{section_type}</section_type>
+<page_budget_mode>{page_budget_mode}</page_budget_mode>
 <char_target>{char_min}–{char_max} characters</char_target>
 <research_material>
 {enriched_context}
@@ -479,18 +582,15 @@ Adapt depth to section_type:
 
 {length_rule}
 
-Sub-section depth:
-- Each ### block: use fewer, fuller paragraphs rather than many short ones.
-- Paragraphs may vary by depth and content; avoid a repeated pattern of 2–3 sentence paragraphs.
-- light → 1–2 ### blocks; medium → 2–3; deep → 3–4; applied → 2–3.
-- PREFER fewer, deeper blocks over many shallow ones.
-- {paragraph_flow_rule}
+{expansion_rule}
+
+{subsection_depth_rule}
 
 Content standards:
 - {profile.tone_rule} No conversational fillers.
 - Adapt tone: precise for IT/Engineering, narrative for History/Arts.
 - Bold (**term**) ONLY for the primary concept defined for the first time.
-- At least one concrete, domain-relevant example per section.
+- {example_rule}
 - Code blocks must include language identifier: ```python, ```bash, etc.
 - Inline code rule: programming identifiers, keywords, function names, method
   names, operators, and code expressions MUST use backticks, not $...$ math.
@@ -504,10 +604,12 @@ Content standards:
   - $C_{{dev}}$: ...
   Never write "Trong đó: - ..." on one line, and never use backticks for
   mathematical symbols.
+- In numbered/bulleted calculation steps, each step label must stay outside
+  math. Put only that step's formula inside its own $$...$$ block. Never open
+  one $$ block that spans multiple numbered/bulleted steps or prose labels.
 - {style_rule}
 
 {hk_hint}
-{formula_guidance}
 {practice_criterion}
 [/CRITERION]
 
@@ -518,7 +620,10 @@ Rule 1 — CHAPTER HEADER (non-negotiable):
 Rule 2 — DOCUMENT STRUCTURE:
 - Section header: ## {section_num} {section_title}
 - Sub-section: ### {section_num}.N Title (N starts at 1)
-- NEVER use unnumbered ### headers
+- ### is only for real second-level subsections such as {section_num}.1.
+- NEVER use unnumbered ### headers such as "### Đặc điểm kỹ thuật",
+  "### Ví dụ thực tiễn", "### Bảng so sánh nhanh", or "### Quy trình thực hiện".
+  Use bold lead-ins instead, for example **Đặc điểm chính:** or **Ví dụ ngắn:**.
 - NEVER use # unless Rule 1 explicitly instructs it
 - {double_number_example}
 - NEVER use colon after number: ❌ ## 1.1: → ✅ ## 1.1
@@ -531,53 +636,19 @@ Rule 3.5 — NO HORIZONTAL RULES:
 Do NOT output standalone separator lines such as --- or ---- anywhere.
 Use headings and blank lines only to separate sections.
 
-Rule 4 — No ### heading for content that fits in 1–2 paragraphs.
+Rule 4 — DEPTH AND CLOSURE:
+- Do NOT create a ### heading for content that fits in 1–2 paragraphs.
+- Do NOT create a '### Kết luận' or '### Conclusion' subsection.
+- Do NOT create sections named "Phản tư", "Suy ngẫm", or "Mở rộng thực tiễn".
+- Do NOT end every section with routine "Sinh viên có thể..." statements.
+Concluding thoughts, when genuinely needed, must be woven into the last body paragraph.
 
-Rule 5 — Do NOT create a '### Kết luận' or '### Conclusion' subsection.
-Concluding thoughts must be woven into the last paragraph of the final ### block.
-A dedicated conclusion sub-heading is redundant and breaks academic prose flow.
+{subsection_count_rule}
 
-Rule 6 — SUB-SECTION COUNT PER DEPTH LEVEL (STRICT CEILING):
-- light   → maximum 2 ### blocks
-- medium  → maximum 3 ### blocks
-- deep    → maximum 4 ### blocks
-- applied → maximum 3 ### blocks
-
-CRITICAL — MERGE OVER SPLIT:
-If you have more sub-topics than the limit above, MERGE related topics
-into the same ### block. Write DEEPER within each block — fuller paragraphs,
-richer analysis, concrete examples — instead of creating more ### headings.
-
-Each ### block must contain substantial paragraph development.
-Do NOT create a ### heading for content that cannot sustain several full paragraphs.
-
-PREFER: Fewer ### blocks with rich, flowing prose inside each block.
-AVOID: Many ### blocks with thin content (1-2 paragraphs each).
-AVOID: Long sequences of separate 2-3 sentence paragraphs that should be merged.
-
-Rule 7 — EXAMPLE STRUCTURE:
-GOOD (medium section with 2 ### blocks):
-  ### 1.1.1 {good_heading_1}
-  [5-6 paragraphs of deep explanation with examples]
-  
-  ### 1.1.2 {good_heading_2}
-  [5-6 paragraphs of practical analysis]
-
-BAD (medium section with 4 ### blocks):
-  ### 1.1.1 {bad_heading_1}
-  [2 paragraphs — TOO THIN]
-  
-  ### 1.1.2 {bad_heading_2}
-  [2 paragraphs — TOO THIN]
-  
-  ### 1.1.3 {bad_heading_3}
-  [2 paragraphs — TOO THIN]
-  
-  ### 1.1.4 {bad_heading_4}
-  [2 paragraphs — TOO THIN]
-
-The BAD example splits content unnecessarily. Merge 1.1.1 + 1.1.2 into one
-rich ### block, merge 1.1.3 + 1.1.4 into another.
+Rule 6 — MERGE OVER SPLIT:
+If you have more sub-topics than the ceiling, merge related topics into the
+same ### block. Prefer fewer, deeper blocks with substantial paragraphs over
+many thin blocks or long sequences of short paragraphs.
 {practice_constraint}
 [/CONSTRAINT]
 
@@ -585,9 +656,7 @@ rich ### block, merge 1.1.3 + 1.1.4 into another.
 - Language: {profile.prompt_name}
 - Output: raw Markdown — NO outer fences
 - First line: strictly follow Rule 1
-- Character count target: {char_min}-{char_max}; {char_min} is a hard minimum, {char_max} is the soft ceiling
-
-{visual_rule}
+- Character count target: {char_min}-{char_max}; respect page_budget_mode={page_budget_mode}
 [/FORMAT]"""
 
         user_prompt = f"Write section **{section_num}: {section_title}**."
@@ -622,135 +691,6 @@ rich ### block, merge 1.1.3 + 1.1.4 into another.
 
 
 # ============================================================================
-# COMPONENT 3 — Image Description Generator
-# ============================================================================
-
-class ImageDescriptionGenerator:
-    """
-    Post-processing component that replaces image placeholders with
-    fully formatted image tags containing English descriptions.
-
-    Responsibilities:
-    - Find all [IMAGE_NEEDED: hint] placeholders in generated content.
-    - Batch-generate English visual descriptions using gpt-4o-mini.
-    - Replace placeholders with [IMAGE: Title | Description] tags.
-
-    Uses gpt-4o-mini because description generation is a focused,
-    low-complexity task that does not require premium model capability.
-    Processes ALL placeholders in a section in a single API call to
-    minimise latency and cost.
-    """
-
-    _SYSTEM_PROMPT_TEMPLATE = """You are a visual art director writing image generation prompts
-for an educational textbook.
-
-For each {hint_language} hint provided, write a fully formatted image tag.
-
-Output format (one per line, same order as input):
-[IMAGE: <{title_language} title 3-6 words> | <English description 2-3 sentences>]
-
-English description rules:
-- Describe shapes, composition, key visual elements, mood, and atmosphere.
-- Be specific: "five service nodes connected by arrows" not "a diagram".
-- For abstract concepts: describe the metaphor and visual composition.
-- For real entities: name the subject and describe the scene clearly.
-- CRITICAL: Do NOT mention text, labels, captions, or written words as
-  visual elements — they render literally and appear garbled in images.
-- Do NOT over-constrain style (avoid "white background", "clean technical").
-
-Return ONLY the formatted [IMAGE: ...] tags, one per line. No commentary."""
-
-    def __init__(self) -> None:
-        self._llm = ChatOpenAI(
-            model=LLM_MODEL_CHEAP,
-            api_key=get_api_key("OPENAI_API_KEY"), #type: ignore
-            temperature=0.3,
-        )
-
-    def process(
-        self,
-        content: str,
-        course_topic: str,
-        section_title: str,
-        language: str = "vi",
-    ) -> str:
-        """
-        Replace all [IMAGE_NEEDED: hint] placeholders with formatted image tags.
-
-        If no placeholders are present, returns content unchanged.
-        On any LLM error, returns content with placeholders left as-is
-        rather than failing the entire section.
-
-        Args:
-            content:       Section Markdown containing [IMAGE_NEEDED: ...] tags.
-            course_topic:  Textbook topic — provides visual context.
-            section_title: Current section title — provides visual context.
-
-        Returns:
-            Content with all placeholders replaced by [IMAGE: ...] tags.
-        """
-        placeholders = re.findall(r'\[IMAGE_NEEDED: ([^\]]+)\]', content)
-        if not placeholders:
-            return content
-
-        profile = get_language_profile(language)
-        system_prompt = self._SYSTEM_PROMPT_TEMPLATE.format(
-            hint_language=profile.image_hint_language,
-            title_language=profile.prompt_name,
-        )
-
-        hints_text = "\n".join(
-            f"{i + 1}. {hint}" for i, hint in enumerate(placeholders)
-        )
-        user_prompt = (
-            f"Textbook topic: {course_topic}\n"
-            f"Section: {section_title}\n\n"
-            f"Hints:\n{hints_text}"
-        )
-
-        try:
-            response = rate_limited_invoke(
-                self._llm,
-                [
-                    SystemMessage(content=system_prompt),
-                    HumanMessage(content=user_prompt),
-                ],
-                bucket="chat",
-                metadata={
-                    "agent": "ImageDescriptionGenerator",
-                    "node": "content_writer",
-                    "model": LLM_MODEL_CHEAP,
-                },
-            )
-
-            generated_tags = [
-                line.strip()
-                for line in str(response.content).split('\n')
-                if line.strip().startswith('[IMAGE:')
-            ]
-
-            result = content
-            for i, hint in enumerate(placeholders):
-                if i < len(generated_tags):
-                    result = result.replace(
-                        f'[IMAGE_NEEDED: {hint}]',
-                        f'> {generated_tags[i]}',
-                        1,
-                    )
-                else:
-                    logger.warning(
-                        f"Missing image tag for placeholder {i + 1}: '{hint[:50]}'"
-                    )
-
-            logger.info(f"✓ Image descriptions generated: {len(generated_tags)} tags")
-            return result
-
-        except Exception as e:
-            logger.error(f"Image description generation failed: {e}", exc_info=True)
-            return content  # Graceful fallback — placeholders remain
-
-
-# ============================================================================
 # ORCHESTRATOR — Writer Agent
 # ============================================================================
 
@@ -761,15 +701,12 @@ class WriterAgent:
     Pipeline per section:
         1. ContextEvaluator       — enrich RAG context with optional tools
         2. ContentWriter          — generate prose    (LLM_MODEL_PREMIUM)
-        3. ImageDescriptionGenerator — fill image tags (gpt-4o-mini, if images enabled)
-
     Also applies deterministic post-processing (blank line enforcement,
     chapter header compliance) after content generation.
     """
 
     def __init__(self) -> None:
-        self._writer      = ContentWriter()
-        self._illustrator = ImageDescriptionGenerator()
+        self._writer = ContentWriter()
 
     def write_section(
         self,
@@ -792,13 +729,19 @@ class WriterAgent:
         textbook_mode: str = "standard",
         formula_policy: str = "auto",
         formula_need: str = "none",
+        writer_call_count: int = 1,
+        target_pages: int | None = None,
+        layout_profile: str | None = None,
+        formula_density: str | None = None,
+        expansion_strategy: str | None = None,
+        page_fill_bias: float | None = None,
         
     ) -> str:
         """
         Generate or revise content for a single textbook section.
 
-        Sequences ContextEvaluator-prepared context → ContentWriter →
-        ImageDescriptionGenerator, then applies post-processing.
+        Sequences ContextEvaluator-prepared context → ContentWriter,
+        then applies post-processing.
 
         Args:
             course_topic:        Main textbook topic.
@@ -812,7 +755,8 @@ class WriterAgent:
             section_type:        Depth level.
             char_target:         (min_chars, max_chars) tuple.
             content_level:       User-configured length level.
-            enable_images:       Whether to insert image placeholders.
+            enable_images:       Kept for page-budget compatibility; the
+                                 downstream Illustrator handles images.
             review_feedback:     Non-empty → revision mode.
             section_summaries:   Summaries of previously written sections.
 
@@ -829,43 +773,106 @@ class WriterAgent:
         enriched_context = context
 
         # ------------------------------------------------------------------
-        # Step 2: Generate content (premium model, no tools)
+        # Step 2: Generate content (premium model, no tools). Very large page
+        # budgets are split into a small number of internal writer calls so a
+        # single prompt does not become too hard to satisfy.
         # ------------------------------------------------------------------
-        content = self._writer.generate(
-            course_topic=course_topic,
-            chapter_num=chapter_num,
-            chapter_title=chapter_title,
-            section_num=section_num,
-            section_title=section_title,
-            section_description=section_description,
-            enriched_context=enriched_context,
-            chapter_instruction=chapter_instruction,
-            section_type=section_type,
-            char_target=char_target,
-            content_level=content_level,
-            enable_images=enable_images,
-            review_feedback=review_feedback,
-            section_summaries=list(section_summaries),
-            language=language,
-            textbook_mode=textbook_mode,
-            formula_policy=formula_policy,
-            formula_need=formula_need,
-        )
+        try:
+            safe_call_count = max(1, min(int(writer_call_count or 1), 5))
+        except (TypeError, ValueError):
+            safe_call_count = 1
+
+        if safe_call_count == 1:
+            content = self._writer.generate(
+                course_topic=course_topic,
+                chapter_num=chapter_num,
+                chapter_title=chapter_title,
+                section_num=section_num,
+                section_title=section_title,
+                section_description=section_description,
+                enriched_context=enriched_context,
+                chapter_instruction=chapter_instruction,
+                section_type=section_type,
+                char_target=char_target,
+                content_level=content_level,
+                enable_images=enable_images,
+                review_feedback=review_feedback,
+                section_summaries=list(section_summaries),
+                language=language,
+                textbook_mode=textbook_mode,
+                formula_policy=formula_policy,
+                formula_need=formula_need,
+                target_pages=target_pages,
+                layout_profile=layout_profile,
+                formula_density=formula_density,
+                expansion_strategy=expansion_strategy,
+                page_fill_bias=page_fill_bias,
+            )
+        else:
+            logger.info(
+                "Splitting long section %s into %s writer calls",
+                section_num,
+                safe_call_count,
+            )
+            pieces: list[str] = []
+            part_min = max(1200, int(char_target[0] / safe_call_count))
+            part_max = max(part_min + 250, int(char_target[1] / safe_call_count))
+            for part_idx in range(safe_call_count):
+                is_first_part = part_idx == 0
+                part_instruction = (
+                    chapter_instruction
+                    if is_first_part
+                    else (
+                        f"Continue the same section ## {section_num} {section_title}. "
+                        "Do NOT output any # or ## heading. Continue with body prose "
+                        "and numbered ### blocks only when they add real structure."
+                    )
+                )
+                part_description = (
+                    f"{section_description}\n\n"
+                    f"Internal page-budget split: write part {part_idx + 1} of "
+                    f"{safe_call_count}. Keep continuity with earlier parts and avoid "
+                    "repeating definitions already written in this section."
+                )
+                piece = self._writer.generate(
+                    course_topic=course_topic,
+                    chapter_num=chapter_num,
+                    chapter_title=chapter_title,
+                    section_num=section_num,
+                    section_title=section_title,
+                    section_description=part_description,
+                    enriched_context=enriched_context,
+                    chapter_instruction=part_instruction,
+                    section_type=section_type,
+                    char_target=(part_min, part_max),
+                    content_level=content_level,
+                    enable_images=enable_images,
+                    review_feedback=review_feedback if is_first_part else "",
+                    section_summaries=list(section_summaries) + pieces[-1:],
+                    language=language,
+                    textbook_mode=textbook_mode,
+                    formula_policy=formula_policy,
+                    formula_need=formula_need,
+                    target_pages=target_pages,
+                    layout_profile=layout_profile,
+                    formula_density=formula_density,
+                    expansion_strategy=expansion_strategy,
+                    page_fill_bias=page_fill_bias,
+                )
+                if not is_first_part:
+                    piece = re.sub(r'^# [^\n]*\n?', '', piece, flags=re.MULTILINE).lstrip()
+                    piece = re.sub(
+                        rf'^##\s+{re.escape(section_num)}\s+{re.escape(section_title)}\s*\n?',
+                        '',
+                        piece,
+                        flags=re.MULTILINE,
+                    ).lstrip()
+                pieces.append(piece.strip())
+            content = "\n\n".join(piece for piece in pieces if piece)
 
         if not isinstance(content, str):
             logger.error(f"Writer returned non-string: {type(content)}")
             return "(Error: Invalid content type from LLM)"
-
-        # ------------------------------------------------------------------
-        # Step 3: Generate image descriptions (cheap model, if enabled)
-        # ------------------------------------------------------------------
-        if enable_images and "[IMAGE_NEEDED:" in content:
-            content = self._illustrator.process(
-                content=content,
-                course_topic=course_topic,
-                section_title=section_title,
-                language=language,
-            )
 
         # ------------------------------------------------------------------
         # Post-processing: deterministic blank line enforcement
@@ -874,6 +881,22 @@ class WriterAgent:
 
         # Length check
         actual_chars = len(content)
+        formula_count = len(re.findall(r'\$\$.*?\$\$|\$[^$\n]+\$', content, flags=re.DOTALL))
+        image_marker_count = content.count("[IMAGE:") + content.count("![")
+        logger.info(
+            "Page-budget telemetry %s: target_pages=%s layout=%s strategy=%s "
+            "fill_bias=%s target_chars=%s-%s actual_chars=%s formulas=%s images=%s",
+            section_num,
+            target_pages,
+            layout_profile,
+            expansion_strategy,
+            page_fill_bias,
+            char_target[0],
+            char_target[1],
+            actual_chars,
+            formula_count,
+            image_marker_count,
+        )
         if actual_chars < char_target[0] * 0.95:
             logger.warning(
                 f"⚠️  Content short: {actual_chars} chars "
@@ -1053,6 +1076,28 @@ def write_section_crag(state: AgentState) -> dict:
             state.get("advanced_config", {}),
             language=language,
         )
+        page_target_min = (
+            getattr(subsection, "target_chars_min", None)
+            if isinstance(subsection, SubSection)
+            else subsection.get("target_chars_min")
+        )
+        page_target_max = (
+            getattr(subsection, "target_chars_max", None)
+            if isinstance(subsection, SubSection)
+            else subsection.get("target_chars_max")
+        )
+        if page_target_min and page_target_max:
+            try:
+                base_min = max(250, int(page_target_min))
+                base_max = max(base_min + 250, int(page_target_max))
+                logger.info(
+                    "Using page-budget char target for %s: %s-%s",
+                    sec_title,
+                    base_min,
+                    base_max,
+                )
+            except (TypeError, ValueError):
+                logger.warning("Invalid page-budget char target; falling back to content level")
         min_chars_floor = state.get("min_chars_per_section", 0)
         effective_min   = max(base_min, min_chars_floor)
         effective_max   = max(base_max, effective_min + 250)
@@ -1098,6 +1143,36 @@ def write_section_crag(state: AgentState) -> dict:
             context = context + "\n\n---\n\n" + supplement
 
         enable_images = state.get("enable_images", True)
+        writer_call_count = (
+            getattr(subsection, "writer_call_count", None)
+            if isinstance(subsection, SubSection)
+            else subsection.get("writer_call_count")
+        )
+        section_target_pages = (
+            getattr(subsection, "target_pages", None)
+            if isinstance(subsection, SubSection)
+            else subsection.get("target_pages")
+        )
+        layout_profile = (
+            getattr(subsection, "layout_profile", None)
+            if isinstance(subsection, SubSection)
+            else subsection.get("layout_profile")
+        )
+        formula_density = (
+            getattr(subsection, "formula_density", None)
+            if isinstance(subsection, SubSection)
+            else subsection.get("formula_density")
+        )
+        expansion_strategy = (
+            getattr(subsection, "expansion_strategy", None)
+            if isinstance(subsection, SubSection)
+            else subsection.get("expansion_strategy")
+        )
+        page_fill_bias = (
+            getattr(subsection, "page_fill_bias", None)
+            if isinstance(subsection, SubSection)
+            else subsection.get("page_fill_bias")
+        )
 
         agent   = WriterAgent()
         content = agent.write_section(
@@ -1120,6 +1195,12 @@ def write_section_crag(state: AgentState) -> dict:
             textbook_mode=textbook_mode,
             formula_policy=formula_policy,
             formula_need=formula_need,
+            writer_call_count=writer_call_count or 1,
+            target_pages=section_target_pages,
+            layout_profile=layout_profile,
+            formula_density=formula_density,
+            expansion_strategy=expansion_strategy,
+            page_fill_bias=page_fill_bias,
         )
 
         # Layer 2 — Suppress spurious level-1 headings

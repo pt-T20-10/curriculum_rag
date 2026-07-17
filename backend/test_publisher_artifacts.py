@@ -41,6 +41,26 @@ def _fake_pandoc(*, fail_pdf: bool, fail_docx: bool):
     return SimpleNamespace(convert_file=convert_file)
 
 
+def _fake_pandoc_asserts_typst_table_left():
+    def convert_file(source, *, to, outputfile, extra_args):
+        if to == "pdf":
+            header_path = None
+            for index, arg in enumerate(extra_args):
+                if arg == "--include-in-header" and index + 1 < len(extra_args):
+                    header_path = Path(extra_args[index + 1])
+                    break
+            assert header_path is not None
+            header = header_path.read_text(encoding="utf-8")
+            assert "show table.cell" in header
+            assert "set align(left)" in header
+            assert "set par(justify: false)" in header
+        payload = b"%PDF-1.7\n" if to == "pdf" else b"PK\x03\x04DOCX"
+        Path(outputfile).write_bytes(payload)
+        return ""
+
+    return SimpleNamespace(convert_file=convert_file)
+
+
 @pytest.mark.parametrize(
     ("fail_pdf", "fail_docx", "has_pdf", "has_docx"),
     [
@@ -103,6 +123,44 @@ def test_publisher_filename_sanitizes_control_whitespace(
     assert "\n" not in markdown_path.name
     assert result["final_pdf_filepath"]
     assert result["final_docx_filepath"]
+
+
+def test_typst_header_left_aligns_table_cells(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    state = _state()
+    state["export_formats"] = ["PDF"]
+    state["final_content"] = (
+        "# CHƯƠNG 1: MỞ ĐẦU\n\n"
+        "| Cột A | Cột B |\n"
+        "| --- | --- |\n"
+        "| Nội dung dài trong bảng | Giá trị |\n"
+    )
+    monkeypatch.setattr(publisher, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(publisher, "image_dir", tmp_path / "outputs" / "images")
+    monkeypatch.setattr(publisher, "pypandoc", _fake_pandoc_asserts_typst_table_left())
+
+    result = publisher.publish_curriculum(state) #type: ignore
+
+    assert result["final_pdf_filepath"]
+
+
+def test_word_table_paragraphs_are_left_aligned_and_not_justified() -> None:
+    docx = pytest.importorskip("docx")
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    doc = docx.Document()
+    table = doc.add_table(rows=1, cols=1)
+    table.cell(0, 0).text = "Nội dung trong bảng cần căn trái"
+
+    table_count = publisher._left_align_word_table_paragraphs(doc)
+    justified_count = publisher._justify_word_body_paragraphs(doc)
+
+    paragraph = table.cell(0, 0).paragraphs[0]
+    assert table_count == 1
+    assert justified_count == 0
+    assert paragraph.alignment == WD_ALIGN_PARAGRAPH.LEFT
 
 
 def test_preview_cli_exports_pdf_and_docx_to_output_dir(
@@ -363,6 +421,17 @@ def test_finalize_word_docx_localizes_toc_fonts_and_footer(tmp_path: Path) -> No
     doc.add_paragraph(publisher._WORD_FIGURE_LIST_MARKER)
     doc.add_heading("Lời nói đầu", level=1)
     doc.add_paragraph("Nội dung lời nói đầu cần được căn đều như bản PDF.")
+    doc.add_paragraph("Bài tập thực hành:")
+    numbered = doc.add_paragraph("Áp dụng các định luật Kirchhoff trong miền phức:")
+    numbered_ppr = numbered._p.get_or_add_pPr()
+    numbered_numpr = OxmlElement("w:numPr")
+    numbered_ilvl = OxmlElement("w:ilvl")
+    numbered_ilvl.set(qn("w:val"), "0")
+    numbered_numid = OxmlElement("w:numId")
+    numbered_numid.set(qn("w:val"), "1")
+    numbered_numpr.append(numbered_ilvl)
+    numbered_numpr.append(numbered_numid)
+    numbered_ppr.append(numbered_numpr)
     doc.add_heading("CHƯƠNG 1: MỞ ĐẦU", level=1)
     doc.add_heading("1.1 Khái niệm", level=2)
     doc.add_heading("1.1.1 Chi tiết", level=3)
@@ -454,6 +523,22 @@ def test_finalize_word_docx_localizes_toc_fonts_and_footer(tmp_path: Path) -> No
     assert body_paragraph
     assert 'w:jc w:val="both"' in body_paragraph.group(0)
 
+    lead_in_paragraph = re.search(
+        r'<w:p\b(?:(?!</w:p>).)*?Bài tập thực hành:(?:(?!</w:p>).)*?</w:p>',
+        document_xml,
+    )
+    assert lead_in_paragraph
+    assert 'w:jc w:val="both"' not in lead_in_paragraph.group(0)
+
+    numbered_paragraph = re.search(
+        r'<w:p\b(?:(?!</w:p>).)*?Áp dụng các định luật Kirchhoff trong miền phức:'
+        r'(?:(?!</w:p>).)*?</w:p>',
+        document_xml,
+    )
+    assert numbered_paragraph
+    assert "w:numPr" in numbered_paragraph.group(0)
+    assert 'w:jc w:val="both"' not in numbered_paragraph.group(0)
+
     heading_paragraph = re.search(
         r'<w:p\b(?:(?!</w:p>).)*?CHƯƠNG 1: MỞ ĐẦU(?:(?!</w:p>).)*?</w:p>',
         document_xml,
@@ -535,6 +620,49 @@ def test_reviewer_em_dash_cleanup_gate_is_vietnamese_only() -> None:
     assert ReviewerAgent._needs_em_dash_cleanup("CPU — bộ xử lý", "vi") is True
     assert ReviewerAgent._needs_em_dash_cleanup("CPU - bộ xử lý", "vi") is False
     assert ReviewerAgent._needs_em_dash_cleanup("CPU — processor", "en") is False
+
+
+def test_reviewer_rejects_math_block_that_contains_list_items() -> None:
+    reviewer = ReviewerAgent.__new__(ReviewerAgent)
+    content = (
+        "## 1.1 Ví dụ\n\n"
+        "1. Bước một:\n"
+        "$$\n"
+        "A = B\n\n"
+        "2. Bước hai:\n"
+        "C = D\n"
+        "$$"
+    )
+
+    needs_revision, feedback = reviewer.should_revise(content, char_min=10)
+
+    assert needs_revision is True
+    assert "contains Markdown list items" in feedback
+
+
+def test_reviewer_approves_math_format_gate_for_valid_display_blocks(monkeypatch) -> None:
+    reviewer = ReviewerAgent.__new__(ReviewerAgent)
+    reviewer.llm = object()
+    reviewer.prompt_logger = type("PromptLogger", (), {"log": lambda *_args, **_kwargs: None})()
+
+    def fake_invoke(*_args, **_kwargs):
+        return type("Response", (), {"content": '{"needs_revision": false, "feedback": ""}'})()
+
+    monkeypatch.setattr("app.services.textbook.reviewer.rate_limited_invoke", fake_invoke)
+
+    content = (
+        "## 1.1 Ví dụ\n\n"
+        "Công thức:\n\n"
+        "$$\n"
+        "P = U \\cdot I\n"
+        "$$\n\n"
+        "Trong đó công thức được đóng đúng."
+    )
+
+    needs_revision, feedback = reviewer.should_revise(content, char_min=10)
+
+    assert needs_revision is False
+    assert feedback == ""
 
 
 def test_remove_markdown_horizontal_rules_preserves_code_examples() -> None:
