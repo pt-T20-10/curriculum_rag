@@ -5,6 +5,7 @@ import { FiEye, FiEyeOff } from 'react-icons/fi'
 import { Navbar } from '../../components/layout/Navbar'
 import { AdminNavigation } from '../../components/layout/AdminNavigation'
 import { SiteInfoSettings } from '../../components/admin/SiteInfoSettings'
+import { DeploymentProfileNotice } from '../../components/admin/DeploymentProfileNotice'
 import { configAPI } from '../../api/config'
 import { translateConfigChoice, translateConfigGroup, translateConfigParam } from '../../utils/configTranslations'
 
@@ -168,18 +169,29 @@ function AdminParamField({
 
   const renderInput = () => {
     if (param.sensitive) {
+      const sensitiveInput = param.multiline ? (
+        <textarea
+          value={effectiveValue}
+          onChange={e => onChange(e.target.value)}
+          placeholder={savedValue === MASKED_VALUE ? t('admin.config.secretPlaceholder') : t('admin.config.valuePlaceholder')}
+          rows={showSensitiveValue ? 5 : 3}
+          className={`${commonCls} min-h-[88px] resize-y pr-10 font-mono`}
+        />
+      ) : (
+        <input type={showSensitiveValue ? 'text' : 'password'} value={effectiveValue}
+          onChange={e => onChange(e.target.value)}
+          placeholder={savedValue === MASKED_VALUE ? t('admin.config.secretPlaceholder') : t('admin.config.valuePlaceholder')}
+          className={`${commonCls} pr-10`} />
+      )
       return (
         <div className="relative">
-          <input type={showSensitiveValue ? 'text' : 'password'} value={effectiveValue}
-            onChange={e => onChange(e.target.value)}
-            placeholder={savedValue === MASKED_VALUE ? t('admin.config.secretPlaceholder') : t('admin.config.valuePlaceholder')}
-            className={`${commonCls} pr-10`} />
+          {sensitiveInput}
           <button
             type="button"
             tabIndex={-1}
             onClick={handleSensitiveVisibilityToggle}
             disabled={isRevealing}
-            className="absolute inset-y-0 right-0 flex items-center px-3 text-gray-400 hover:text-gray-600 transition-colors disabled:cursor-wait disabled:opacity-70"
+            className="absolute right-0 top-0 flex items-center px-3 py-2.5 text-gray-400 hover:text-gray-600 transition-colors disabled:cursor-wait disabled:opacity-70"
             title={isRevealing ? t('admin.config.revealing') : showSensitiveValue ? t('admin.config.hideValue') : t('admin.config.showValue')}
             aria-label={isRevealing ? t('admin.config.revealing') : showSensitiveValue ? t('admin.config.hideValue') : t('admin.config.showValue')}
           >
@@ -350,7 +362,7 @@ function AuditTable({ entries }) {
   )
 }
 
-const GROUP_ORDER = ['api_keys', 'rate_limits', 'rag', 'generation', 'ingestion', 'domain_caps']
+const GROUP_ORDER = ['api_keys', 'deployment', 'rate_limits', 'rag', 'generation', 'ingestion', 'domain_caps']
 
 function SetupChecklistBanner({ setupStatus, registry, onFocusKey }) {
   if (!setupStatus) return null
@@ -681,6 +693,8 @@ export function AdminSystemConfigPage() {
               registry={registry}
               onFocusKey={focusConfigKey}
             />
+
+            <DeploymentProfileNotice profile={setupStatus?.deployment_profile} />
 
             <SiteInfoSettings />
 

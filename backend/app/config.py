@@ -22,10 +22,12 @@ class Settings(BaseSettings):
     
     # ==================== Existing AI API Keys ====================
     OPENAI_API_KEY: str = ""
+    OPENAI_API_KEYS: str = ""
     GROQ_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
     SERPER_API_KEY: str = ""  # Optional
+    SERPER_API_KEYS: str = ""  # Optional key pool
     
     # ==================== Database ====================
     MYSQL_URL: str = ""
@@ -71,7 +73,12 @@ class Settings(BaseSettings):
 
     # Deployment/runtime controls. Development defaults preserve existing local
     # behaviour; the production compose file overrides them explicitly.
+    # CELERY_POOL and CELERY_CONCURRENCY are read when the worker process starts,
+    # so changing them requires a Railway redeploy/restart. Runtime generation
+    # limits below can be shown/overridden by Admin Config, but they cannot add
+    # worker capacity by themselves.
     CORS_ORIGINS: str = ""
+    CELERY_POOL: str = "solo"
     CELERY_CONCURRENCY: int = 1
     ENABLE_PROMPT_LOGS: bool = True
     LOG_TO_FILES: bool = True
@@ -380,6 +387,14 @@ class Settings(BaseSettings):
     CHROMA_PERSIST_DIR: str = "data/chroma_db"
     CHROMA_COLLECTION_NAME: str = "curriculum_knowledge"
     CLEANUP_RAG_COLLECTION_AFTER_EXPORT: bool = True
+    # local_shared: one embedded path, single-worker only.
+    # local_per_job: isolated embedded path per textbook, suitable for Railway
+    # test profile with two users.
+    # http: external Chroma service for medium production concurrency.
+    CHROMA_MODE: str = "local_shared"
+    CHROMA_RUNS_DIR: str = "data/chroma_runs"
+    CHROMA_HTTP_HOST: str = ""
+    CHROMA_HTTP_PORT: int = 8000
 
     # ==================== Shared API Rate Limiting ====================
     OPENAI_RATE_LIMIT_ENABLED: bool = True
@@ -401,6 +416,9 @@ class Settings(BaseSettings):
     WIKIMEDIA_RATE_LIMIT_BACKOFF_BASE_SECONDS: float = 2.0
     WIKIMEDIA_RATE_LIMIT_BACKOFF_MAX_SECONDS: float = 30.0
     WIKIMEDIA_RATE_LIMIT_JITTER_SECONDS: float = 0.5
+    GENERATION_GLOBAL_CONCURRENCY: int = 1
+    GENERATION_PER_USER_CONCURRENCY: int = 1
+    GENERATION_QUEUE_RETRY_SECONDS: int = 30
 
     # ==================== Paths ====================
     @property
@@ -506,8 +524,12 @@ class Settings(BaseSettings):
                 for origin in self.ALLOWED_CORS_ORIGINS
             ):
                 errors.append("CORS_ORIGINS must contain only public HTTPS origins")
-            if self.TEXTBOOK_GENERATION_MODE == "system_credit_billing" and missing(self.OPENAI_API_KEY):
-                errors.append("OPENAI_API_KEY is required when using system credit billing")
+            if (
+                self.TEXTBOOK_GENERATION_MODE == "system_credit_billing"
+                and missing(self.OPENAI_API_KEY)
+                and missing(self.OPENAI_API_KEYS)
+            ):
+                errors.append("OPENAI_API_KEY or OPENAI_API_KEYS is required when using system credit billing")
             if missing(self.GOOGLE_CLIENT_ID) or missing(self.GOOGLE_CLIENT_SECRET):
                 errors.append("Google OAuth credentials are required")
             if missing(self.SMTP_USER) or missing(self.SMTP_PASSWORD) or missing(self.EMAIL_FROM):
@@ -516,8 +538,18 @@ class Settings(BaseSettings):
                 errors.append("SEPAY_ACCOUNT_NUMBER must be configured for the demo payment screen")
             if self.EMBEDDING_PROVIDER != "openai":
                 errors.append("EMBEDDING_PROVIDER must be 'openai' on the low-memory demo server")
-            if self.CELERY_CONCURRENCY != 1:
-                errors.append("CELERY_CONCURRENCY must remain 1 until per-job RAG isolation is implemented")
+            if self.CHROMA_MODE not in {"local_shared", "local_per_job", "http"}:
+                errors.append("CHROMA_MODE must be one of local_shared, local_per_job, or http")
+            if self.CELERY_CONCURRENCY > 1 and self.CHROMA_MODE == "local_shared":
+                errors.append("CELERY_CONCURRENCY > 1 requires CHROMA_MODE=local_per_job or CHROMA_MODE=http")
+            if self.CHROMA_MODE == "local_per_job" and self.CELERY_CONCURRENCY > 2:
+                errors.append("CHROMA_MODE=local_per_job is limited to CELERY_CONCURRENCY <= 2 for Railway test profile")
+            if self.CHROMA_MODE == "http" and missing(self.CHROMA_HTTP_HOST):
+                errors.append("CHROMA_HTTP_HOST is required when CHROMA_MODE=http")
+            if self.GENERATION_PER_USER_CONCURRENCY != 1:
+                errors.append("GENERATION_PER_USER_CONCURRENCY must remain 1")
+            if self.GENERATION_GLOBAL_CONCURRENCY < 1:
+                errors.append("GENERATION_GLOBAL_CONCURRENCY must be at least 1")
             if self.TEXTBOOK_GENERATION_MODE == "user_provided_api_keys" and missing(self.BYOK_ENCRYPTION_KEY):
                 errors.append("BYOK_ENCRYPTION_KEY is required when users provide their own API keys")
             if self.DEFAULT_ADMIN_ENABLED:

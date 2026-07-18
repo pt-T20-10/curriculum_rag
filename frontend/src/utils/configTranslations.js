@@ -22,6 +22,11 @@ export function translateConfigChoice(paramKey, choice, t) {
       user_provided_api_keys: 'Người dùng tự nhập API key',
       system_credit_billing: 'Nạp tiền bằng credit hệ thống',
     },
+    CHROMA_MODE: {
+      local_shared: 'Local shared',
+      local_per_job: 'Local per-job',
+      http: 'Chroma server',
+    },
   }
   return t(`configRegistry.choices.${paramKey}.${choice}`, {
     defaultValue: labels[paramKey]?.[choice] || choice,

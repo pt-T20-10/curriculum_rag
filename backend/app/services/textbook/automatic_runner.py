@@ -10,6 +10,7 @@ from typing import Any, Callable
 from app.config import settings
 from app.schemas.curriculum import AgentState, build_initial_state, count_curriculum_leaf_sections
 from app.services.runtime_config import environment_only_runtime_config
+from app.services.chroma_runtime import cleanup_rag_persist_dir
 
 
 ProgressCallback = Callable[[str, dict[str, Any]], None]
@@ -92,7 +93,11 @@ def _cleanup_rag_after_export(state: dict[str, Any]) -> None:
     try:
         from app.services.textbook.ingester import cleanup_rag_collection
 
-        cleanup_rag_collection(collection_name)
+        try:
+            cleanup_rag_collection(collection_name, rag_persist_dir=state.get("rag_persist_dir"))
+        except TypeError:
+            cleanup_rag_collection(collection_name)
+        cleanup_rag_persist_dir(state.get("rag_persist_dir"))
     except Exception:
         pass
 

@@ -8,6 +8,28 @@ from pydantic import ValidationError
 from app.config import Settings
 
 
+class _FakeRedis:
+    def __init__(self) -> None:
+        self.members = {}
+
+    def eval(self, script, numkeys, key, now, limit, expires_at, token, ttl):
+        self.members = {
+            member: score
+            for member, score in self.members.items()
+            if score > float(now)
+        }
+        if len(self.members) >= int(limit):
+            return 0
+        self.members[token] = float(expires_at)
+        return 1
+
+    def zrem(self, key, token):
+        self.members.pop(token, None)
+
+    def ping(self):
+        return True
+
+
 def _valid_production_settings(**overrides):
     values = {
         "ENVIRONMENT": "production",
@@ -53,6 +75,19 @@ def test_railway_mysql_url_is_normalized_for_sqlalchemy() -> None:
     )
 
 
+def test_railway_two_user_profile_allows_two_workers_with_per_job_chroma() -> None:
+    settings = _valid_production_settings(
+        CELERY_POOL="threads",
+        CELERY_CONCURRENCY=2,
+        CHROMA_MODE="local_per_job",
+        GENERATION_GLOBAL_CONCURRENCY=2,
+        GENERATION_PER_USER_CONCURRENCY=1,
+    )
+
+    assert settings.CELERY_CONCURRENCY == 2
+    assert settings.CHROMA_MODE == "local_per_job"
+
+
 def test_native_railway_mysql_variables_are_supported() -> None:
     settings = _valid_production_settings(
         MYSQL_PASSWORD="",
@@ -72,7 +107,7 @@ def test_native_railway_mysql_variables_are_supported() -> None:
     ("override", "expected"),
     [
         ({"SECRET_KEY": "short"}, "SECRET_KEY"),
-        ({"CELERY_CONCURRENCY": 2}, "CELERY_CONCURRENCY"),
+        ({"CELERY_CONCURRENCY": 2, "CHROMA_MODE": "local_shared"}, "CELERY_CONCURRENCY"),
         ({"FRONTEND_URL": "http://localhost:5173"}, "FRONTEND_URL"),
         ({"CORS_ORIGINS": "http://localhost:5173"}, "CORS_ORIGINS"),
         ({"EMBEDDING_PROVIDER": "local"}, "EMBEDDING_PROVIDER"),
@@ -112,6 +147,17 @@ def test_openai_rate_limit_settings_are_admin_configurable() -> None:
     registry = get_admin_registry()
 
     assert "rate_limits" in PARAMETER_GROUPS
+    assert "deployment" in PARAMETER_GROUPS
+    assert "CHROMA_MODE" in registry
+    assert registry["CHROMA_MODE"]["group"] == "deployment"
+    assert "GENERATION_GLOBAL_CONCURRENCY" in registry
+    assert registry["GENERATION_GLOBAL_CONCURRENCY"]["group"] == "deployment"
+    assert "OPENAI_API_KEYS" in registry
+    assert registry["OPENAI_API_KEYS"]["group"] == "api_keys"
+    assert registry["OPENAI_API_KEYS"]["sensitive"] is True
+    assert registry["OPENAI_API_KEYS"]["multiline"] is True
+    assert "SERPER_API_KEYS" in registry
+    assert registry["SERPER_API_KEYS"]["multiline"] is True
     assert "OPENAI_RATE_LIMIT_ENABLED" in registry
     assert registry["OPENAI_RATE_LIMIT_ENABLED"]["group"] == "rate_limits"
     assert "OPENAI_CHAT_MIN_INTERVAL_SECONDS" in registry
@@ -120,6 +166,31 @@ def test_openai_rate_limit_settings_are_admin_configurable() -> None:
     assert registry["WIKIMEDIA_RATE_LIMIT_ENABLED"]["group"] == "rate_limits"
     assert "WIKIMEDIA_SEARCH_MIN_INTERVAL_SECONDS" in registry
     assert "WIKIMEDIA_DOWNLOAD_MIN_INTERVAL_SECONDS" in registry
+
+
+def test_deployment_profile_detector_classifies_common_profiles(monkeypatch) -> None:
+    from app.services import deployment_profile
+
+    monkeypatch.setattr(deployment_profile.settings, "CELERY_POOL", "solo")
+    monkeypatch.setattr(deployment_profile.settings, "CELERY_CONCURRENCY", 1)
+    monkeypatch.setattr(deployment_profile.settings, "GENERATION_GLOBAL_CONCURRENCY", 1)
+    monkeypatch.setattr(deployment_profile.settings, "GENERATION_PER_USER_CONCURRENCY", 1)
+    monkeypatch.setattr(deployment_profile.settings, "CHROMA_MODE", "local_shared")
+    assert deployment_profile.detect_deployment_profile()["key"] == "small_safe"
+
+    monkeypatch.setattr(deployment_profile.settings, "CELERY_POOL", "threads")
+    monkeypatch.setattr(deployment_profile.settings, "CELERY_CONCURRENCY", 2)
+    monkeypatch.setattr(deployment_profile.settings, "GENERATION_GLOBAL_CONCURRENCY", 2)
+    monkeypatch.setattr(deployment_profile.settings, "CHROMA_MODE", "local_per_job")
+    assert deployment_profile.detect_deployment_profile()["key"] == "railway_test_2"
+
+    monkeypatch.setattr(deployment_profile.settings, "CHROMA_MODE", "local_shared")
+    assert deployment_profile.detect_deployment_profile()["key"] == "misconfigured"
+
+    monkeypatch.setattr(deployment_profile.settings, "CELERY_CONCURRENCY", 5)
+    monkeypatch.setattr(deployment_profile.settings, "GENERATION_GLOBAL_CONCURRENCY", 5)
+    monkeypatch.setattr(deployment_profile.settings, "CHROMA_MODE", "http")
+    assert deployment_profile.detect_deployment_profile()["key"] == "medium_ready"
 
 
 def test_runtime_api_key_override_helper_prefers_explicit_override(monkeypatch) -> None:
@@ -145,6 +216,94 @@ def test_runtime_api_key_override_helper_prefers_explicit_override(monkeypatch) 
         )
         == "admin-openai-key"
     )
+
+
+def test_runtime_api_key_pool_is_used_when_single_key_is_missing(monkeypatch) -> None:
+    from app.services import runtime_config
+
+    values = {
+        "OPENAI_API_KEYS": "openai-a\nopenai-b",
+        "OPENAI_API_KEY": "",
+    }
+
+    monkeypatch.setattr(
+        runtime_config,
+        "get_runtime_config",
+        lambda key, required=False: values.get(key, ""),
+    )
+    monkeypatch.setattr(runtime_config, "_get_pool_redis_client", lambda: None)
+    runtime_config._local_pool_indexes.clear()
+
+    assert runtime_config.get_api_key("OPENAI_API_KEY") == "openai-a"
+    assert runtime_config.get_api_key("OPENAI_API_KEY") == "openai-b"
+
+
+def test_system_credit_mode_accepts_openai_key_pool_without_single_key() -> None:
+    settings = _valid_production_settings(
+        TEXTBOOK_GENERATION_MODE="system_credit_billing",
+        OPENAI_API_KEY="",
+        OPENAI_API_KEYS="openai-a,openai-b",
+    )
+
+    assert settings.OPENAI_API_KEY == ""
+    assert settings.OPENAI_API_KEYS == "openai-a,openai-b"
+
+
+def test_chroma_per_job_cleanup_stays_inside_runs_dir(tmp_path, monkeypatch) -> None:
+    from app.services import chroma_runtime
+
+    runs_dir = tmp_path / "runs"
+    inside = runs_dir / "textbook_1_1"
+    outside = tmp_path / "outside"
+    inside.mkdir(parents=True)
+    outside.mkdir()
+
+    values = {
+        "CHROMA_MODE": "local_per_job",
+        "CHROMA_RUNS_DIR": str(runs_dir),
+    }
+    monkeypatch.setattr(
+        chroma_runtime,
+        "get_runtime_config",
+        lambda key, required=False: values.get(key, ""),
+    )
+
+    assert chroma_runtime.cleanup_rag_persist_dir(str(outside)) is False
+    assert outside.exists()
+    assert chroma_runtime.cleanup_rag_persist_dir(str(inside)) is True
+    assert not inside.exists()
+
+
+@pytest.mark.asyncio
+async def test_generation_limiter_allows_two_global_slots_then_queues(monkeypatch) -> None:
+    from types import SimpleNamespace
+    from app.services import generation_limiter
+
+    fake_redis = _FakeRedis()
+    values = {
+        "GENERATION_GLOBAL_CONCURRENCY": 2,
+        "GENERATION_QUEUE_RETRY_SECONDS": 5,
+    }
+    monkeypatch.setattr(
+        generation_limiter,
+        "get_runtime_config",
+        lambda key, required=False: values.get(key, ""),
+    )
+    monkeypatch.setattr(generation_limiter, "_get_redis_client", lambda: fake_redis)
+
+    async def no_older_active(db, textbook):
+        return False
+
+    monkeypatch.setattr(generation_limiter, "_has_older_active_textbook", no_older_active)
+
+    first = await generation_limiter.acquire_generation_slot(None, SimpleNamespace(id=1))
+    second = await generation_limiter.acquire_generation_slot(None, SimpleNamespace(id=2))
+    with pytest.raises(generation_limiter.GenerationSlotUnavailable):
+        await generation_limiter.acquire_generation_slot(None, SimpleNamespace(id=3))
+
+    first.release()
+    second.release()
+    assert fake_redis.members == {}
 
 
 def test_content_level_word_targets_are_configurable() -> None:

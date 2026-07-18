@@ -482,6 +482,11 @@ class AgentState(TypedDict):
     collection prevents locked/deleted directories or prior runs from leaking
     stale chunks into the current textbook.
     """
+    rag_persist_dir: str
+    """
+    Optional per-job ChromaDB persist directory. Empty means use the default
+    shared persistent directory.
+    """
     rag_source_audit: dict[str, Any]
     """
     Compact source audit summary for UI progress polling. Contains source
@@ -835,6 +840,7 @@ def build_initial_state(
         # ---- RAG ----
         "rag_context":          "",
         "rag_collection_name":  "dynamic_context",
+        "rag_persist_dir":      "",
         "rag_source_audit":     {},
         "rag_best_effort_context": "",
         "rag_best_effort_audit": {},

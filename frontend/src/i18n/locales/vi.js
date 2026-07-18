@@ -779,6 +779,10 @@ export const vi = {
         label: 'API Rate Limit',
         description: 'Điều tiết request OpenAI khi local và host dùng chung API key.',
       },
+      deployment: {
+        label: 'Production Level',
+        description: 'Cấu hình mức deploy, queue generation và khả năng chạy song song.',
+      },
       rag: {
         label: 'RAG & Tìm Kiếm',
         description: 'Kiểm soát cách tài liệu được tìm kiếm và lọc từ cơ sở tri thức.',
@@ -801,6 +805,10 @@ export const vi = {
         label: 'OpenAI API Key',
         description: 'Key dùng cho OpenAI models, embeddings và image generation.',
       },
+      OPENAI_API_KEYS: {
+        label: 'OpenAI API Key Pool',
+        description: 'Dán nhiều OpenAI key, mỗi dòng một key; hệ thống sẽ xoay vòng khi dùng credit hệ thống.',
+      },
       GROQ_API_KEY: {
         label: 'Groq API Key',
         description: 'Key dùng cho ValidatorAgent qua Groq.',
@@ -816,6 +824,10 @@ export const vi = {
       SERPER_API_KEY: {
         label: 'Serper API Key',
         description: 'Key dùng cho Google image search trong IllustratorAgent.',
+      },
+      SERPER_API_KEYS: {
+        label: 'Serper API Key Pool',
+        description: 'Dán nhiều Serper key, mỗi dòng một key; dùng để chia tải image/search khi chạy nhiều job.',
       },
       GOOGLE_CLIENT_ID: {
         label: 'Google OAuth Client ID',
@@ -896,6 +908,34 @@ export const vi = {
       OPENAI_RATE_LIMIT_JITTER_SECONDS: {
         label: 'Jitter Cho Sleep',
         description: 'Số giây jitter ngẫu nhiên cộng thêm để tránh local và host đánh request cùng một nhịp.',
+      },
+      CHROMA_MODE: {
+        label: 'Chroma Mode',
+        description: 'local_shared cho 1 worker, local_per_job cho Railway test 2 user, http cho Chroma server.',
+      },
+      CHROMA_RUNS_DIR: {
+        label: 'Thư Mục Chroma Per-job',
+        description: 'Thư mục chứa Chroma riêng từng job khi CHROMA_MODE=local_per_job.',
+      },
+      CHROMA_HTTP_HOST: {
+        label: 'Chroma HTTP Host',
+        description: 'Host của Chroma server khi CHROMA_MODE=http.',
+      },
+      CHROMA_HTTP_PORT: {
+        label: 'Chroma HTTP Port',
+        description: 'Port của Chroma server khi CHROMA_MODE=http.',
+      },
+      GENERATION_GLOBAL_CONCURRENCY: {
+        label: 'Giới Hạn Job Toàn Hệ Thống',
+        description: 'Số giáo trình được phép chạy generation song song trên toàn hệ thống.',
+      },
+      GENERATION_PER_USER_CONCURRENCY: {
+        label: 'Giới Hạn Job Mỗi User',
+        description: 'Luôn giữ 1 để mỗi user chỉ chạy một giáo trình tại một thời điểm.',
+      },
+      GENERATION_QUEUE_RETRY_SECONDS: {
+        label: 'Thời Gian Chờ Queue',
+        description: 'Số giây Celery task chờ trước khi thử lại khi user/global slot đang bận.',
       },
       RAG_INITIAL_K: {
         label: 'K Lấy Kết Quả Ban Đầu',

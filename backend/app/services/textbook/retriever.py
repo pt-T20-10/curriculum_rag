@@ -42,6 +42,7 @@ from app.services.cost_profile import (
     get_rag_chunk_llm_filter_mode,
 )
 from app.services.runtime_config import get_api_key, get_runtime_config
+from app.services.chroma_runtime import chroma_vector_store_kwargs, effective_chroma_persist_dir
 
 LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
 CHROMA_DB_DIR = settings.CHROMA_DB_DIR
@@ -458,7 +459,7 @@ class Retriever:
     EvaluatorAgent which uses LLM reasoning to decide whether to fetch more context.
     """
 
-    def __init__(self, collection_name: str = "dynamic_context") -> None:
+    def __init__(self, collection_name: str = "dynamic_context", persist_directory: Any = None) -> None:
         """
         Open a ChromaDB connection using the singleton embedding model.
 
@@ -467,8 +468,9 @@ class Retriever:
         ResearcherAgent instances are created.
         """
         self.collection_name = collection_name
+        self.persist_directory = effective_chroma_persist_dir(persist_directory)
         self.vector_db = Chroma(
-            persist_directory=str(CHROMA_DB_DIR),
+            **chroma_vector_store_kwargs(persist_directory),
             embedding_function=_get_rate_limited_embedding_model(),
             collection_name=collection_name,
         )
@@ -1320,7 +1322,7 @@ Reply with ONLY one word: KEEP or DISCARD"""
         return True
 
 
-def _get_retriever(collection_name: str = "dynamic_context") -> Retriever:
+def _get_retriever(collection_name: str = "dynamic_context", persist_directory: Any = None) -> Retriever:
     """
     Return the module-level Retriever singleton.
 
@@ -1330,11 +1332,15 @@ def _get_retriever(collection_name: str = "dynamic_context") -> Retriever:
     """
     runtime_key = (
         collection_name,
+        repr(chroma_vector_store_kwargs(persist_directory)),
         str(get_runtime_config("OPENAI_EMBEDDING_MODEL", required=False) or settings.OPENAI_EMBEDDING_MODEL),
         get_api_key("OPENAI_API_KEY", required=False),
     )
     if runtime_key not in _retriever_instances:
-        _retriever_instances[runtime_key] = Retriever(collection_name=collection_name)
+        _retriever_instances[runtime_key] = Retriever(
+            collection_name=collection_name,
+            persist_directory=persist_directory,
+        )
     return _retriever_instances[runtime_key]
 
 
@@ -1350,6 +1356,7 @@ def retrieve_context_tool(
     query: str,
     content_type: str = "technical",
     collection_name: str = "dynamic_context",
+    persist_directory: str = "",
     chunk_llm_filter_mode: str = "",
 ) -> str:
     """
@@ -1369,7 +1376,7 @@ def retrieve_context_tool(
         f"[TOOL CALL] retrieve_context_tool: '{query[:60]}' "
         f"(type={content_type}, collection={collection_name})"
     )
-    return _get_retriever(collection_name).retrieve_context(
+    return _get_retriever(collection_name, persist_directory).retrieve_context(
         query=query,
         k=RAG_TOOL_K,
         context_label="[TOOL CALL]",
@@ -1414,6 +1421,7 @@ def retriever_node(state: AgentState) -> dict:
     sub_idx      = state["current_subsection_index"]
     content_type = state.get("content_type", "technical")
     collection_name = state.get("rag_collection_name", "dynamic_context")
+    persist_directory = state.get("rag_persist_dir", "")
     advanced_config = state.get("advanced_config", {}) or {}
 
     if not query:
@@ -1431,7 +1439,7 @@ def retriever_node(state: AgentState) -> dict:
     context_label = f"[CRAG] Chapter {display_number}"
 
     try:
-        retriever = _get_retriever(collection_name)
+        retriever = _get_retriever(collection_name, persist_directory)
         retriever.reset_retrieved_ids()
         context = retriever.retrieve_context(
             query         = query,

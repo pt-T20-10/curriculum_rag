@@ -36,6 +36,7 @@ from app.utils.log_config import setup_logger
 from app.config import settings, get_embedding_model
 from app.services.runtime_config import get_runtime_config
 from app.services.api_rate_limiter import rate_limited_call
+from app.services.chroma_runtime import CHROMA_HTTP, chroma_mode, chroma_vector_store_kwargs
 from app.utils import stop_signal
 
 CHROMA_DB_DIR = settings.CHROMA_DB_DIR
@@ -2159,6 +2160,7 @@ def ingest_dynamic_data(
     clean_links: List[Dict[str, str]],
     content_type: str = "technical",
     collection_name: str = "dynamic_context",
+    persist_directory: str | None = None,
     run_id: str = "dynamic_context",
     progress_callback=None,
     runtime_config: dict[str, Any] | None = None,
@@ -2484,11 +2486,13 @@ def ingest_dynamic_data(
         metadatas = [chunk.metadata for chunk in relevant_chunks]
         
         # Initialize ChromaDB collection
-        CHROMA_DB_DIR.mkdir(parents=True, exist_ok=True)
+        if chroma_mode() != CHROMA_HTTP:
+            chroma_dir = Path(persist_directory) if persist_directory else CHROMA_DB_DIR
+            chroma_dir.mkdir(parents=True, exist_ok=True)
         from langchain_chroma import Chroma
         vector_db = Chroma(
             embedding_function=embedding_model,
-            persist_directory=str(CHROMA_DB_DIR),
+            **chroma_vector_store_kwargs(persist_directory),
             collection_name=collection_name,
         )
         

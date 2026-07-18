@@ -34,6 +34,7 @@ from app.database import get_async_db
 from app.models.config import ConfigAuditLog, SystemConfig, UserConfig
 from app.models.user import User, UserRole
 from app.security.jwt import get_current_user_id, require_admin
+from app.services.deployment_profile import detect_deployment_profile
 from app.services.runtime_config import MASKED_VALUE, invalidate_runtime_config_cache
 
 router = APIRouter()
@@ -196,6 +197,7 @@ class ParameterEntry(BaseModel):
     min: Optional[float] = None
     max: Optional[float] = None
     choices: Optional[List[str]] = None
+    multiline: bool = False
 
 
 class RegistryResponse(BaseModel):
@@ -259,6 +261,17 @@ class SetupConfiguredItem(BaseModel):
     masked: bool
 
 
+class DeploymentProfileResponse(BaseModel):
+    key: str
+    severity: str
+    title: str
+    summary: str
+    recommended_action: str
+    max_parallel_jobs: int
+    settings: Dict[str, Any]
+    signature: str
+
+
 class AdminSetupStatusResponse(BaseModel):
     is_ready: bool
     generation_mode: str
@@ -266,6 +279,7 @@ class AdminSetupStatusResponse(BaseModel):
     warnings: List[SetupStatusItem]
     configured_from_env: List[SetupConfiguredItem]
     configured_from_db: List[SetupConfiguredItem]
+    deployment_profile: DeploymentProfileResponse
 
 
 SETUP_ALWAYS_REQUIRED = [
@@ -328,6 +342,45 @@ def _configured_item(
     )
 
 
+def _setup_has_any_key(
+    keys: list[str],
+    system_overrides: Dict[str, Any],
+) -> tuple[bool, list[tuple[str, str]]]:
+    configured: list[tuple[str, str]] = []
+    for key in keys:
+        source, value = _setup_source(key, system_overrides)
+        if not _setup_is_missing(value):
+            configured.append((key, source))
+    return bool(configured), configured
+
+
+def _inspect_any_key(
+    admin_registry: Dict[str, Dict[str, Any]],
+    system_overrides: Dict[str, Any],
+    *,
+    keys: list[str],
+    missing_key: str,
+    severity: str,
+    message: str,
+    tracked_keys: set[str],
+    missing_required: List[SetupStatusItem],
+    warnings: List[SetupStatusItem],
+    configured_from_env: List[SetupConfiguredItem],
+    configured_from_db: List[SetupConfiguredItem],
+) -> None:
+    tracked_keys.update(keys)
+    has_value, configured = _setup_has_any_key(keys, system_overrides)
+    if not has_value:
+        target = missing_required if severity == "required" else warnings
+        target.append(_setup_item(admin_registry, missing_key, severity, "missing", message))
+        return
+    for key, source in configured:
+        if source == "database":
+            configured_from_db.append(_configured_item(admin_registry, key, source))
+        else:
+            configured_from_env.append(_configured_item(admin_registry, key, source))
+
+
 def _build_admin_setup_status(
     admin_registry: Dict[str, Dict[str, Any]],
     system_overrides: Dict[str, Any],
@@ -365,20 +418,36 @@ def _build_admin_setup_status(
         configured_from_env.append(_configured_item(admin_registry, "TEXTBOOK_GENERATION_MODE", "env"))
 
     if generation_mode == "system_credit_billing":
-        inspect_key(
-            "OPENAI_API_KEY",
-            "required",
-            "Chế độ nạp tiền bằng credit hệ thống cần OpenAI API key để tạo giáo trình.",
+        _inspect_any_key(
+            admin_registry,
+            system_overrides,
+            keys=["OPENAI_API_KEYS", "OPENAI_API_KEY"],
+            missing_key="OPENAI_API_KEYS",
+            severity="required",
+            message="Chế độ nạp tiền bằng credit hệ thống cần ít nhất một OpenAI API key để tạo giáo trình.",
+            tracked_keys=tracked_keys,
+            missing_required=missing_required,
+            warnings=warnings,
+            configured_from_env=configured_from_env,
+            configured_from_db=configured_from_db,
         )
         inspect_key(
             "SEPAY_ACCOUNT_NUMBER",
             "required",
             "Cần số tài khoản SePay/tài khoản nhận tiền để màn hình nạp tiền hoạt động đúng.",
         )
-        inspect_key(
-            "SERPER_API_KEY",
-            "warning",
-            "Thiếu Serper API key thì ảnh/search thực tế sẽ giảm chất lượng.",
+        _inspect_any_key(
+            admin_registry,
+            system_overrides,
+            keys=["SERPER_API_KEYS", "SERPER_API_KEY"],
+            missing_key="SERPER_API_KEYS",
+            severity="warning",
+            message="Thiếu Serper API key thì ảnh/search thực tế sẽ giảm chất lượng.",
+            tracked_keys=tracked_keys,
+            missing_required=missing_required,
+            warnings=warnings,
+            configured_from_env=configured_from_env,
+            configured_from_db=configured_from_db,
         )
         inspect_key(
             "SEPAY_API_KEY",
@@ -386,15 +455,31 @@ def _build_admin_setup_status(
             "Thiếu SePay API key thì các thao tác tích hợp SePay tự động có thể không hoạt động.",
         )
     else:
-        inspect_key(
-            "OPENAI_API_KEY",
-            "warning",
-            "Tùy chọn: cần key này nếu Admin muốn tạo giáo trình bằng API key hệ thống.",
+        _inspect_any_key(
+            admin_registry,
+            system_overrides,
+            keys=["OPENAI_API_KEYS", "OPENAI_API_KEY"],
+            missing_key="OPENAI_API_KEYS",
+            severity="warning",
+            message="Tùy chọn: cần key này nếu Admin muốn tạo giáo trình bằng API key hệ thống.",
+            tracked_keys=tracked_keys,
+            missing_required=missing_required,
+            warnings=warnings,
+            configured_from_env=configured_from_env,
+            configured_from_db=configured_from_db,
         )
-        inspect_key(
-            "SERPER_API_KEY",
-            "warning",
-            "Tùy chọn: giúp Admin dùng API key hệ thống có ảnh/search thực tế tốt hơn.",
+        _inspect_any_key(
+            admin_registry,
+            system_overrides,
+            keys=["SERPER_API_KEYS", "SERPER_API_KEY"],
+            missing_key="SERPER_API_KEYS",
+            severity="warning",
+            message="Tùy chọn: giúp Admin dùng API key hệ thống có ảnh/search thực tế tốt hơn.",
+            tracked_keys=tracked_keys,
+            missing_required=missing_required,
+            warnings=warnings,
+            configured_from_env=configured_from_env,
+            configured_from_db=configured_from_db,
         )
 
     google_keys = ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URI"]
@@ -433,6 +518,7 @@ def _build_admin_setup_status(
         warnings=dedupe(warnings),
         configured_from_env=dedupe(configured_from_env),
         configured_from_db=dedupe(configured_from_db),
+        deployment_profile=detect_deployment_profile(system_overrides),
     )
 
 
@@ -466,6 +552,7 @@ async def get_registry(
             min=entry.get("min"),
             max=entry.get("max"),
             choices=entry.get("choices"),
+            multiline=bool(entry.get("multiline")),
         )
 
     return RegistryResponse(parameters=parameters, groups=PARAMETER_GROUPS)

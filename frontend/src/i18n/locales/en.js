@@ -779,6 +779,10 @@ export const en = {
         label: 'API Rate Limit',
         description: 'Throttle OpenAI requests when local and hosted workers share one API key.',
       },
+      deployment: {
+        label: 'Production Level',
+        description: 'Deployment level, generation queue, and concurrency settings.',
+      },
       rag: {
         label: 'RAG & Search',
         description: 'Controls how documents are searched and filtered from the knowledge base.',
@@ -801,6 +805,10 @@ export const en = {
         label: 'OpenAI API Key',
         description: 'Key used for OpenAI models, embeddings, and image generation.',
       },
+      OPENAI_API_KEYS: {
+        label: 'OpenAI API Key Pool',
+        description: 'Paste multiple OpenAI keys, one per line; the system rotates them for system-credit jobs.',
+      },
       GROQ_API_KEY: {
         label: 'Groq API Key',
         description: 'Key used by ValidatorAgent through Groq.',
@@ -816,6 +824,10 @@ export const en = {
       SERPER_API_KEY: {
         label: 'Serper API Key',
         description: 'Key used for Google image search in IllustratorAgent.',
+      },
+      SERPER_API_KEYS: {
+        label: 'Serper API Key Pool',
+        description: 'Paste multiple Serper keys, one per line; used to spread image/search load across jobs.',
       },
       GOOGLE_CLIENT_ID: {
         label: 'Google OAuth Client ID',
@@ -896,6 +908,34 @@ export const en = {
       OPENAI_RATE_LIMIT_JITTER_SECONDS: {
         label: 'Sleep Jitter',
         description: 'Random extra seconds added to sleeps so local and hosted workers do not request in the same rhythm.',
+      },
+      CHROMA_MODE: {
+        label: 'Chroma Mode',
+        description: 'local_shared for 1 worker, local_per_job for Railway 2-user testing, http for Chroma server.',
+      },
+      CHROMA_RUNS_DIR: {
+        label: 'Per-job Chroma Directory',
+        description: 'Directory for isolated per-job Chroma data when CHROMA_MODE=local_per_job.',
+      },
+      CHROMA_HTTP_HOST: {
+        label: 'Chroma HTTP Host',
+        description: 'Chroma server host when CHROMA_MODE=http.',
+      },
+      CHROMA_HTTP_PORT: {
+        label: 'Chroma HTTP Port',
+        description: 'Chroma server port when CHROMA_MODE=http.',
+      },
+      GENERATION_GLOBAL_CONCURRENCY: {
+        label: 'Global Job Limit',
+        description: 'Number of textbook generation jobs allowed to run at the same time system-wide.',
+      },
+      GENERATION_PER_USER_CONCURRENCY: {
+        label: 'Per-user Job Limit',
+        description: 'Keep this at 1 so each user runs only one textbook at a time.',
+      },
+      GENERATION_QUEUE_RETRY_SECONDS: {
+        label: 'Queue Retry Seconds',
+        description: 'Seconds a Celery task waits before retrying when user/global slots are busy.',
       },
       RAG_INITIAL_K: {
         label: 'Initial Retrieval K',

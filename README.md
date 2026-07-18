@@ -109,13 +109,15 @@ Những biến quan trọng cần kiểm tra trước khi deploy:
 | Redis | `REDIS_URL` hoặc `REDIS_HOST`, `REDIS_PORT` |
 | Generation mode | `TEXTBOOK_GENERATION_MODE=user_provided_api_keys` hoặc `system_credit_billing` |
 | BYOK | `BYOK_ENCRYPTION_KEY` bắt buộc khi user tự nhập/lưu API key |
-| Provider keys | `OPENAI_API_KEY` bắt buộc nếu dùng credit hệ thống; `SERPER_API_KEY` tùy chọn |
+| Provider keys | `OPENAI_API_KEY` hoặc `OPENAI_API_KEYS` bắt buộc nếu dùng credit hệ thống; `SERPER_API_KEY` hoặc `SERPER_API_KEYS` tùy chọn |
 | OAuth/email/payment | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`, SMTP/Resend, `SEPAY_ACCOUNT_NUMBER` |
-| Worker profile | `CELERY_CONCURRENCY`, `SEARCH_MAX_WORKERS`, `CRAWL_MAX_WORKERS`, `MAX_CHUNKS_TO_EMBED`, `EMBEDDING_BATCH_SIZE` |
+| Worker profile | `CELERY_POOL`, `CELERY_CONCURRENCY`, `CHROMA_MODE`, `GENERATION_GLOBAL_CONCURRENCY`, `GENERATION_PER_USER_CONCURRENCY`, `SEARCH_MAX_WORKERS`, `CRAWL_MAX_WORKERS`, `MAX_CHUNKS_TO_EMBED`, `EMBEDDING_BATCH_SIZE` |
 
-API keys hệ thống có thể nhập trong Admin System Config sau khi đăng nhập. Nếu
-Admin DB chưa có key thì runtime fallback về `.env`. `BYOK_ENCRYPTION_KEY` là
-secret gốc, không nhập qua Admin UI.
+API keys hệ thống có thể nhập trong Admin System Config sau khi đăng nhập. Field
+`OPENAI_API_KEYS` và `SERPER_API_KEYS` nhận nhiều key, mỗi dòng một key, và
+runtime sẽ xoay vòng qua Redis khi Redis khả dụng. Nếu Admin DB chưa có key thì
+runtime fallback về `.env`. `BYOK_ENCRYPTION_KEY` là secret gốc, không nhập qua
+Admin UI.
 
 ### First Admin Setup
 
@@ -139,7 +141,8 @@ tiền. Checklist tính giá trị theo thứ tự Admin DB rồi tới `.env`.
 | Mode | Trạng thái | Khi nào dùng | Cảnh báo |
 |---|---|---|---|
 | Local persistent path | Đang dùng trong branch hiện tại qua `persist_directory` | Local dev, demo 1 worker | Không tăng Celery concurrency khi nhiều worker cùng mở path này |
-| Chroma server / HTTP | Hướng scale production | 5-10 generation song song trở lên | Cần thêm service Chroma riêng và refactor client sang `HttpClient` |
+| Local per-job path | Railway smoke test 2 user | `CHROMA_MODE=local_per_job`, mỗi textbook có thư mục riêng dưới `CHROMA_RUNS_DIR` | Phù hợp test nhỏ; không dùng cho 5-10 job lâu dài |
+| Chroma server / HTTP | Hướng scale production | 5-10 generation song song trở lên | Cần thêm service Chroma riêng và đặt `CHROMA_HTTP_HOST`/`CHROMA_HTTP_PORT` |
 
 Workflow hiện tại đã tạo collection riêng cho mỗi textbook/run
 (`dynamic_context_<textbook_id>_<timestamp>`) và cleanup best-effort sau export.
@@ -148,31 +151,71 @@ nhiều worker generation thật sự.
 
 ### Scale And Concurrency Notes
 
-Trạng thái branch hiện tại:
+Deployment profile hiện tại được hiển thị trong Admin Dashboard/Admin Config sau
+khi Admin đăng nhập. Popup lần đầu và banner nhỏ sẽ nói rõ hệ thống đang ở
+`small_safe`, `railway_test_2`, `medium_ready` hay `misconfigured`.
+
+#### Biến Nào Cần Redeploy
+
+`CELERY_POOL` và `CELERY_CONCURRENCY` là cấu hình **process-level** của Celery
+worker. Hai biến này phải đặt trong `.env.production`, Railway Variables, hoặc
+biến môi trường của service worker trước khi process khởi động. Sau khi đổi,
+bạn cần restart/redeploy worker thì số job chạy song song mới thật sự thay đổi.
+
+`GENERATION_GLOBAL_CONCURRENCY`, `GENERATION_PER_USER_CONCURRENCY`,
+`GENERATION_QUEUE_RETRY_SECONDS`, `CHROMA_MODE`, `CHROMA_RUNS_DIR` và
+`CHROMA_HTTP_*` là cấu hình runtime mà Admin Config có thể hiển thị/ghi đè trong
+database. Tuy nhiên nếu tăng runtime limit cao hơn số worker Celery đang chạy,
+hệ thống vẫn không chạy nhanh hơn vì Celery chưa có thêm process/thread để xử
+lý job.
+
+Trạng thái mặc định:
 
 - `docker-compose.prod.yml` chạy API `--workers 1`.
-- Worker production chạy `celery --pool=solo --concurrency=1`.
-- `backend/app/config.py` đang validate production và từ chối
-  `CELERY_CONCURRENCY != 1`.
-- README/ops hiện coi đây là demo production nhỏ, không phải multi-worker
-  generation public.
+- Worker production mặc định chạy `celery --pool=solo --concurrency=1`; Railway
+  start script có đọc `CELERY_POOL`/`CELERY_CONCURRENCY`.
+- Production validator cho phép `CELERY_CONCURRENCY=2` khi
+  `CHROMA_MODE=local_per_job`; vẫn từ chối tăng worker nếu còn
+  `CHROMA_MODE=local_shared`.
+- Mỗi user vẫn chỉ chạy 1 giáo trình active tại một thời điểm. Job mới của cùng
+  user sẽ vào hàng đợi và retry bằng Celery.
 
 Profile khuyến nghị:
 
 | Profile | Mục tiêu | Cấu hình phù hợp |
 |---|---|---|
 | Minimum/demo | 1 giáo trình đang generate toàn hệ thống | Compose hiện tại, Chroma local path, Redis/MySQL cùng VPS |
+| Railway test 2 | 2 user khác nhau generate cùng lúc | `CELERY_POOL=threads`, `CELERY_CONCURRENCY=2`, `CHROMA_MODE=local_per_job`, `GENERATION_GLOBAL_CONCURRENCY=2`, `GENERATION_PER_USER_CONCURRENCY=1` |
 | Medium | 5-10 giáo trình song song từ nhiều user | Chroma server, Redis shared limiter, key pool, global generation semaphore, per-user active limit |
 
-Để lên medium profile, cần làm thêm ở code/runtime trước khi tăng worker:
+#### Scale Ladder
 
-- Chặn mỗi user chỉ có 1 textbook active hoặc queue theo chính sách rõ ràng.
-- Tách Chroma thành service/server và dùng HTTP client từ worker.
-- Thêm global concurrency limit bằng Redis để worker không vượt sức máy.
-- Với `system_credit_billing`, dùng nhiều OpenAI key của Admin hoặc key pool,
-  mỗi key có bucket rate limit riêng.
+1. **Small safe**: giữ mặc định `CELERY_CONCURRENCY=1`,
+   `GENERATION_GLOBAL_CONCURRENCY=1`, `CHROMA_MODE=local_shared`. Phù hợp demo,
+   ít tài nguyên, ít rủi ro.
+2. **Railway test 2 tài khoản**: đặt `CELERY_POOL=threads`,
+   `CELERY_CONCURRENCY=2`, `CHROMA_MODE=local_per_job`,
+   `GENERATION_GLOBAL_CONCURRENCY=2`, `GENERATION_PER_USER_CONCURRENCY=1`.
+   Cấu hình này cho 2 user khác nhau chạy cùng lúc, nhưng cùng 1 user vẫn chỉ 1
+   giáo trình active; giáo trình tiếp theo vào hàng đợi.
+3. **Medium production 5-10 user/job**: chuyển sang `CHROMA_MODE=http`, thêm
+   Chroma server riêng, giữ Redis chung cho queue/limiter, rồi tăng
+   `CELERY_CONCURRENCY` và `GENERATION_GLOBAL_CONCURRENCY` theo benchmark thật.
+
+Để lên medium profile:
+
+- Tách Chroma thành service/server và đặt `CHROMA_MODE=http`.
+- Tăng `GENERATION_GLOBAL_CONCURRENCY` sau khi benchmark worker/RAM/quota.
+- Với `system_credit_billing`, nhập nhiều OpenAI/Serper key của Admin bằng
+  `OPENAI_API_KEYS`/`SERPER_API_KEYS`; mỗi dòng một key.
 - Giữ `SEARCH_MAX_WORKERS`, `CRAWL_MAX_WORKERS`, `MAX_CHUNKS_TO_EMBED` thấp lúc
   mới scale, rồi benchmark tăng dần.
+
+Không tăng `CELERY_CONCURRENCY` lên 5-10 nếu vẫn dùng
+`CHROMA_MODE=local_shared`. Khi nhiều worker cùng mở một local Chroma path, rủi
+ro lock/crash/corrupt state cao hơn nhiều so với lợi ích. Với Railway test nhỏ,
+`local_per_job` cô lập dữ liệu theo từng textbook; với production lớn, dùng
+Chroma HTTP server.
 
 ### Backup And Restore
 

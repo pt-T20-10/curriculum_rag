@@ -36,6 +36,7 @@ from app.schemas.curriculum import (
 )
 from app.config import settings
 from app.services.cost_profile import should_reuse_ingestion_query_expansion
+from app.services.chroma_runtime import chroma_vector_store_kwargs, effective_chroma_persist_dir
 
 from app.ingestion.query_expansion import QueryExpansionAgent
 from app.ingestion.search_engine import search_web
@@ -126,7 +127,7 @@ def _domain_queries(
     return pairs
 
 
-def cleanup_rag_collection(collection_name: str) -> bool:
+def cleanup_rag_collection(collection_name: str, rag_persist_dir: Any = None) -> bool:
     """
     Best-effort cleanup for a completed run's Chroma collection.
 
@@ -146,7 +147,7 @@ def cleanup_rag_collection(collection_name: str) -> bool:
 
         release_retriever(collection_name)
         vector_db = Chroma(
-            persist_directory=str(CHROMA_DB_DIR),
+            **chroma_vector_store_kwargs(rag_persist_dir),
             collection_name=collection_name,
         )
         vector_db.delete_collection()
@@ -180,6 +181,7 @@ def recover_rag_for_current_section(state: AgentState) -> dict:
     sub_idx = state["current_subsection_index"]
     content_type = state.get("content_type", "technical")
     collection_name = state.get("rag_collection_name", "dynamic_context")
+    rag_persist_dir = state.get("rag_persist_dir", "")
     runtime_config = state.get("advanced_config", {}) or {}
     source_preferences = normalize_source_preferences(state.get("source_preferences"))
 
@@ -304,6 +306,7 @@ def recover_rag_for_current_section(state: AgentState) -> dict:
         clean_links,
         content_type=content_type,
         collection_name=collection_name,
+        persist_directory=str(effective_chroma_persist_dir(rag_persist_dir)),
         run_id=_run_id_from_collection(collection_name),
         progress_callback=_get_ingestion_callback(),
         runtime_config=runtime_config,
@@ -369,6 +372,7 @@ def perform_ingestion(state: AgentState) -> dict:
     source_preferences = normalize_source_preferences(state.get("source_preferences"))
     source_mode = source_preferences["source_mode"]
     collection_name = state.get("rag_collection_name", "dynamic_context")
+    rag_persist_dir = state.get("rag_persist_dir", "")
     targeted_per_chapter = _config_int(
         runtime_config,
         "TARGETED_CRAWL_QUERIES_PER_CHAPTER",
@@ -429,14 +433,15 @@ def perform_ingestion(state: AgentState) -> dict:
     # ------------------------------------------------------------------
     print(f"[DEBUG INGESTER] Step 1: preparing ChromaDB", flush=True)
     try:
-        CHROMA_DB_DIR.mkdir(parents=True, exist_ok=True)
+        chroma_dir = effective_chroma_persist_dir(rag_persist_dir)
+        chroma_dir.mkdir(parents=True, exist_ok=True)
         logger.info(
             "Prepared ChromaDB directory '%s' for isolated collection '%s'",
-            CHROMA_DB_DIR,
+            chroma_dir,
             collection_name,
         )
     except Exception as e:
-        logger.error("Could not prepare ChromaDB directory '%s': %s", CHROMA_DB_DIR, e)
+        logger.error("Could not prepare ChromaDB directory for '%s': %s", collection_name, e)
         return {"messages": ["✗ Ingestion failed: ChromaDB storage unavailable"]}
 
     if stop_signal.is_stopped():
@@ -703,6 +708,7 @@ def perform_ingestion(state: AgentState) -> dict:
         topic, clean_links,
         content_type=content_type,
         collection_name=collection_name,
+        persist_directory=str(effective_chroma_persist_dir(rag_persist_dir)),
         run_id=_run_id_from_collection(collection_name),
         progress_callback=_get_ingestion_callback(),
         runtime_config=runtime_config,

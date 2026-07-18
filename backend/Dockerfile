@@ -40,7 +40,7 @@ RUN python -m pip install --disable-pip-version-check \
 COPY backend/ /app/
 
 RUN useradd --create-home --uid 10001 appuser \
-    && mkdir -p /app/outputs /app/logs /app/data/chroma_db \
+    && mkdir -p /app/outputs /app/logs /app/data/chroma_db /app/data/chroma_runs \
     && chown -R appuser:appuser /app \
     && chmod +x /app/docker-entrypoint.sh /app/start_railway.sh /app/predeploy_railway.sh
 

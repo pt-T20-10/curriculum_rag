@@ -21,6 +21,7 @@ from app.services.api_rate_limiter import (
 )
 from app.services.textbook.language import get_language_profile, progress_text
 from app.services.textbook.page_budget import allocate_page_budget
+from app.services.chroma_runtime import cleanup_rag_persist_dir, rag_persist_dir_for_textbook
 from app.utils.log_config import setup_logger
 from app.utils.stop_signal import WorkflowStoppedException
 
@@ -38,7 +39,11 @@ def _cleanup_rag_after_export(state: Dict[str, Any]) -> None:
     try:
         from app.services.textbook.ingester import cleanup_rag_collection
 
-        cleanup_rag_collection(collection_name)
+        try:
+            cleanup_rag_collection(collection_name, rag_persist_dir=state.get("rag_persist_dir"))
+        except TypeError:
+            cleanup_rag_collection(collection_name)
+        cleanup_rag_persist_dir(state.get("rag_persist_dir"))
     except Exception as e:
         logger.warning("RAG cleanup after export failed: %s", e)
 
@@ -433,7 +438,9 @@ async def continue_after_curriculum_confirmation(
     structure_depth = str(initial_state.get("structure_depth", "level1"))  # type: ignore[union-attr]
     textbook_mode = str(initial_state.get("textbook_mode", "standard"))  # type: ignore[union-attr]
     target_pages = confirmed_curriculum.get("target_pages") if isinstance(confirmed_curriculum, dict) else None
-    rag_collection_name = f"dynamic_context_{textbook_id}_{int(time.time())}"
+    rag_started_at = int(time.time())
+    rag_collection_name = f"dynamic_context_{textbook_id}_{rag_started_at}"
+    rag_persist_dir = rag_persist_dir_for_textbook(textbook_id, rag_started_at)
     # Content-generation nodes that participate in the CRAG loop.
     _CRAG_NODES = (
                         "query_formulator", "retriever_node",
@@ -454,6 +461,7 @@ async def continue_after_curriculum_confirmation(
         "section_summaries":        [],
         "rag_context":              "",
         "rag_collection_name":      rag_collection_name,
+        "rag_persist_dir":          rag_persist_dir or "",
         "rag_source_audit":         {},
         "rag_best_effort_context":  "",
         "rag_best_effort_audit":    {},

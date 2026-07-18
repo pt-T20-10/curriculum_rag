@@ -200,6 +200,7 @@ class EvaluatorAgent:
         initial_context: str,
         section_summaries: list[str],
         collection_name: str = "dynamic_context",
+        persist_directory: str = "",
         revision_feedback: str = "",
         used_queries: list[str] = [],
     ) -> tuple[str, list[str]]:
@@ -281,6 +282,7 @@ class EvaluatorAgent:
             for tc in tool_calls:
                 tool_args = dict(tc["args"])
                 tool_args["collection_name"] = collection_name
+                tool_args["persist_directory"] = persist_directory
                 tool_args["chunk_llm_filter_mode"] = self._chunk_llm_filter_mode
                 query = tool_args.get("query", "")
                 logger.info(f"[Retrieval] Tool call: '{query[:60]}'")
@@ -353,6 +355,7 @@ def evaluate_context(state: AgentState) -> dict:
     review_feedback   = state.get("review_feedback", "")
     used_queries      = state.get("used_rag_queries", [])
     collection_name   = state.get("rag_collection_name", "dynamic_context")
+    persist_directory = state.get("rag_persist_dir", "")
     prior_source_audit = state.get("rag_source_audit", {}) or {}
     prior_discarded_chunks = (
         prior_source_audit.get("discarded_details", [])
@@ -433,6 +436,7 @@ def evaluate_context(state: AgentState) -> dict:
             initial_context     = initial_context,
             section_summaries   = list(section_summaries),
             collection_name     = collection_name,
+            persist_directory   = persist_directory,
             revision_feedback   = review_feedback or "",
             used_queries        = used_queries,
         )

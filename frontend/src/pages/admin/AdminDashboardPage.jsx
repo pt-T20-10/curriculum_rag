@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { adminAPI } from '../../api/admin'
+import { configAPI } from '../../api/config'
 import { Navbar } from '../../components/layout/Navbar'
 import { AdminNavigation } from '../../components/layout/AdminNavigation'
+import { DeploymentProfileNotice } from '../../components/admin/DeploymentProfileNotice'
 
 // ---------------------------------------------------------------------------
 // Stat card
@@ -191,6 +193,7 @@ export function AdminDashboardPage() {
   const [contentTypes, setContentTypes] = useState([])
   const [topUsersTopup, setTopUsersTopup] = useState([])
   const [topUsersTextbooks, setTopUsersTextbooks] = useState([])
+  const [setupStatus, setSetupStatus] = useState(null)
   const [loading, setLoading] = useState(true)
   const [chartsLoading, setChartsLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -208,6 +211,9 @@ export function AdminDashboardPage() {
       .then(r => setStats(r.data))
       .catch(e => setError(e.response?.data?.detail || t('admin.dashboard.loadError')))
       .finally(() => setLoading(false))
+    configAPI.getSetupStatus()
+      .then(r => setSetupStatus(r.data || null))
+      .catch(() => setSetupStatus(null))
   }, [t])
 
   const loadCharts = useCallback(async () => {
@@ -257,6 +263,8 @@ export function AdminDashboardPage() {
         {error && (
           <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6 text-red-700 text-sm">{error}</div>
         )}
+
+        <DeploymentProfileNotice profile={setupStatus?.deployment_profile} compact={loading} />
 
         {loading ? (
           <div className="flex items-center justify-center h-64">
