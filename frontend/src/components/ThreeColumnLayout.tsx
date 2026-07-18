@@ -65,7 +65,7 @@ const ThreeColumnLayout: React.FC<ThreeColumnLayoutProps> = ({
   }, [resizingPanel]);
 
   return (
-    <div className="flex h-full relative">
+    <div className="relative isolate flex h-full overflow-hidden">
       {/* LEFT SIDEBAR */}
       <div 
         className={`
@@ -93,23 +93,6 @@ const ThreeColumnLayout: React.FC<ThreeColumnLayoutProps> = ({
           />
 
           <div className="h-full flex flex-col" style={{ width: `${leftWidth}px` }}>
-            {/* Sidebar header with toggle - NO BORDER */}
-            <div className="flex items-center justify-end px-2 py-2">
-              <button
-                onClick={onToggleLeft}
-                className="
-                  bg-gray-100 border border-gray-300 rounded
-                  w-7 h-7 flex items-center justify-center
-                  hover:bg-gray-200 shadow-sm
-                "
-                title={t('layout.hideLeft')}
-              >
-                <svg className="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                </svg>
-              </button>
-            </div>
-
             {/* Sidebar content */}
             <div className="flex-1 overflow-hidden">
               {leftSidebar}
@@ -118,6 +101,24 @@ const ThreeColumnLayout: React.FC<ThreeColumnLayoutProps> = ({
           </>
         )}
       </div>
+
+      {!leftCollapsed && (
+        <button
+          onClick={onToggleLeft}
+          className="
+            absolute top-12 z-40 -translate-x-1/2
+            flex h-8 w-8 items-center justify-center rounded-full
+            border border-gray-300 bg-white text-gray-600 shadow-md
+            transition-colors hover:bg-gray-100
+          "
+          style={{ left: `${leftWidth}px` }}
+          title={t('layout.hideLeft')}
+        >
+          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+          </svg>
+        </button>
+      )}
       
       {/* Left expand button */}
       {leftCollapsed && (
@@ -170,23 +171,6 @@ const ThreeColumnLayout: React.FC<ThreeColumnLayoutProps> = ({
             />
 
             <div className="h-full flex flex-col" style={{ width: `${rightWidth}px` }}>
-              {/* Sidebar header with toggle - NO BORDER */}
-              <div className="flex items-center justify-start px-2 py-2">
-                <button
-                  onClick={onToggleRight}
-                  className="
-                    bg-gray-100 border border-gray-300 rounded
-                    w-7 h-7 flex items-center justify-center
-                    hover:bg-gray-200 shadow-sm
-                  "
-                  title={t('layout.hideRight')}
-                >
-                  <svg className="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                  </svg>
-                </button>
-              </div>
-
               {/* Sidebar content */}
               <div className="flex-1 overflow-hidden">
                 {rightSidebar}
@@ -195,6 +179,24 @@ const ThreeColumnLayout: React.FC<ThreeColumnLayoutProps> = ({
           </>
         )}
       </div>
+
+      {!rightCollapsed && (
+        <button
+          onClick={onToggleRight}
+          className="
+            absolute top-12 z-40 translate-x-1/2
+            flex h-8 w-8 items-center justify-center rounded-full
+            border border-gray-300 bg-white text-gray-600 shadow-md
+            transition-colors hover:bg-gray-100
+          "
+          style={{ right: `${rightWidth}px` }}
+          title={t('layout.hideRight')}
+        >
+          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+        </button>
+      )}
       
       {/* Right expand button */}
       {rightCollapsed && (

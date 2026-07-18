@@ -81,6 +81,7 @@ class TextbookCreate(BaseModel):
     num_chapters: int = Field(default=3, ge=1, le=50)
     content_level: str = Field(default="Trung Bình")
     max_subsections_per_chapter: int = Field(default=3, ge=1, le=30)
+    max_child_subsections_per_section: int = Field(default=3, ge=1, le=20)
     target_pages: int = Field(
         ...,
         ge=5,
@@ -92,6 +93,8 @@ class TextbookCreate(BaseModel):
     ui_language: str = Field(default="vi", pattern="^(vi|en)$")
     export_formats: List[str] = Field(default_factory=lambda: ["PDF", "Word"])
     planning_mode: Literal["auto", "structured"] = "auto"
+    structure_depth: Literal["level1", "level2"] = "level1"
+    fill_missing_child_subsections: bool = False
     textbook_mode: Literal["standard", "practice"] = "standard"
     formula_policy: Literal["auto", "include", "exclude"] = "auto"
     formula_confirmed: bool = False
@@ -109,9 +112,11 @@ class TextbookResponse(BaseModel):
     num_chapters: int
     content_level: str
     max_subsections_per_chapter: int
+    max_child_subsections_per_section: int = 3
     enable_images: bool
     language: str = "vi"
     content_type: str
+    structure_depth: str = "level1"
     textbook_mode: str = "standard"
     formula_policy: str = "auto"
     formula_need: str = "none"
@@ -190,3 +195,13 @@ class CurriculumCreditEstimateResponse(BaseModel):
     content_level: str
     is_admin_free: bool
     page_validation: Optional[Dict[str, Any]] = None
+
+
+class StructureFileParseResponse(BaseModel):
+    topic: str = ""
+    target_pages: Optional[int] = None
+    structure_depth: Literal["level1", "level2"] = "level1"
+    curriculum: Dict[str, Any]
+    warnings: List[str] = Field(default_factory=list)
+    unparsed_items: List[str] = Field(default_factory=list)
+    source_format: str

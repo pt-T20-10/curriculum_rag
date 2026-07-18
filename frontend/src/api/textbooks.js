@@ -9,6 +9,12 @@ export const textbooksAPI = {
   
   // Create textbook
   create: (data) => axios.post('/textbooks/', data),
+
+  // Parse an uploaded outline file into the manual structure editor shape
+  parseStructureFile: (formData) =>
+    axios.post('/textbooks/parse-structure-file', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }),
   
   // Delete textbook
   delete: (id) => axios.delete(`/textbooks/${id}`),

@@ -1,4 +1,8 @@
-from app.routers.textbook import _sanitize_confirmed_curriculum
+from app.routers.textbook import (
+    _needs_metadata_refresh,
+    _preserve_unchanged_metadata,
+    _sanitize_confirmed_curriculum,
+)
 from app.services.textbook.page_budget import allocate_page_budget, validate_page_configuration
 from app.services.textbook.writer import write_section_crag, WriterAgent
 
@@ -114,6 +118,94 @@ def test_code_heavy_layout_reduces_word_budget() -> None:
     assert prose["layout_profile"] == "prose"
     assert code["layout_word_scale"] < prose["layout_word_scale"]
     assert code["chapters"][0]["subsections"][0]["target_words"] < prose["chapters"][0]["subsections"][0]["target_words"]
+
+
+def test_networking_concepts_do_not_become_code_heavy_from_weak_terms() -> None:
+    curriculum = {
+        "topic": "Mạng máy tính",
+        "chapters": [
+            {
+                "title": "Tổng quan về Internet, Wi-Fi và API ở mức khái niệm",
+                "subsections": [
+                    {
+                        "title": "Mã hóa dữ liệu và giao thức ứng dụng",
+                        "description": "Giải thích khái niệm API và database ở mức kiến trúc, không yêu cầu lập trình.",
+                        "target_pages": 2,
+                    }
+                ],
+            }
+        ],
+    }
+
+    enriched, _ = allocate_page_budget(
+        curriculum,
+        target_pages=8,
+        enable_images=True,
+        language="vi",
+        textbook_mode="standard",
+    )
+
+    assert enriched["layout_profile"] != "code"
+    assert enriched["chapters"][0]["subsections"][0]["layout_profile"] != "code"
+
+
+def test_level2_page_budget_remains_valid_for_formula_image_combinations() -> None:
+    curriculum = {
+        "topic": "Mạng máy tính",
+        "structure_depth": "level2",
+        "chapters": [
+            {
+                "title": "Tổng quan",
+                "target_pages": 8,
+                "subsections": [
+                    {
+                        "title": "Khái niệm nền tảng",
+                        "target_pages": 4,
+                        "children": [
+                            {"title": "Thiết bị mạng", "target_pages": 2},
+                            {"title": "Giao thức truyền thông", "target_pages": 2},
+                        ],
+                    },
+                    {
+                        "title": "Mô hình truyền dữ liệu",
+                        "target_pages": 4,
+                        "children": [
+                            {"title": "Độ trễ và băng thông", "target_pages": 2},
+                            {"title": "Thông lượng và suy hao", "target_pages": 2},
+                        ],
+                    },
+                ],
+            }
+        ],
+    }
+
+    combinations = [
+        (True, "include"),
+        (False, "include"),
+        (True, "exclude"),
+        (False, "exclude"),
+    ]
+
+    for enable_images, formula_policy in combinations:
+        enriched, validation = allocate_page_budget(
+            curriculum,
+            target_pages=10,
+            enable_images=enable_images,
+            language="vi",
+            textbook_mode="standard",
+            formula_policy=formula_policy,
+        )
+        assert validation["severity"] in {"ok", "warning"}
+        children = [
+            child
+            for chapter in enriched["chapters"]
+            for subsection in chapter["subsections"]
+            for child in subsection["children"]
+        ]
+        assert all(child["target_chars_min"] > 0 for child in children)
+        assert all(child["target_chars_max"] > child["target_chars_min"] for child in children)
+        if formula_policy == "include":
+            assert all(child["formula_density"] in {"contextual", "high"} for child in children)
 
 
 def test_long_target_applies_fill_bias_without_overfitting_topic() -> None:
@@ -282,6 +374,90 @@ def test_page_budget_fills_missing_subsections_inside_existing_chapter_budget() 
     assert subsections[0]["target_pages"] == 10
     assert sum(sub["target_pages"] for sub in subsections) == 30
     assert subsections[1]["target_pages"] > subsections[2]["target_pages"]
+
+
+def test_page_budget_allocates_child_leaf_sections_inside_parent_budget() -> None:
+    curriculum = {
+        "topic": "Python",
+        "structure_depth": "level2",
+        "chapters": [
+            {
+                "title": "Basics",
+                "target_pages": 12,
+                "subsections": [
+                    {
+                        "title": "Control Flow",
+                        "target_pages": 6,
+                        "children": [
+                            {"title": "If statements", "section_type": "light"},
+                            {"title": "Loops", "section_type": "deep"},
+                        ],
+                    },
+                    {
+                        "title": "Functions",
+                        "target_pages": 6,
+                        "children": [
+                            {"title": "Function definitions", "section_type": "medium"},
+                        ],
+                    },
+                ],
+            }
+        ],
+    }
+
+    enriched, validation = allocate_page_budget(
+        curriculum,
+        target_pages=13,
+        enable_images=False,
+        language="en",
+        textbook_mode="standard",
+    )
+
+    assert validation["severity"] == "ok"
+    parent = enriched["chapters"][0]["subsections"][0]
+    assert parent["target_pages"] == 6
+    children = parent["children"]
+    assert sum(child["target_pages"] for child in children) == 6
+    assert children[1]["target_pages"] >= children[0]["target_pages"]
+    assert all(child["target_words"] > 0 for child in children)
+    assert all(child["target_chars_max"] > child["target_chars_min"] for child in children)
+    assert parent["target_words"] == sum(child["target_words"] for child in children)
+    assert parent["target_chars_min"] == sum(child["target_chars_min"] for child in children)
+    assert parent["target_chars_max"] == sum(child["target_chars_max"] for child in children)
+
+
+def test_page_budget_errors_when_child_pages_exceed_parent_budget() -> None:
+    curriculum = {
+        "topic": "Python",
+        "structure_depth": "level2",
+        "chapters": [
+            {
+                "title": "Basics",
+                "target_pages": 10,
+                "subsections": [
+                    {
+                        "title": "Control Flow",
+                        "target_pages": 4,
+                        "children": [
+                            {"title": "If statements", "target_pages": 3},
+                            {"title": "Loops", "target_pages": 2},
+                        ],
+                    },
+                ],
+            }
+        ],
+    }
+
+    _, validation = allocate_page_budget(
+        curriculum,
+        target_pages=11,
+        enable_images=False,
+        language="en",
+        textbook_mode="standard",
+    )
+
+    assert validation["severity"] == "error"
+    assert "child pages" in " ".join(validation["errors"])
 
 
 def test_page_budget_fills_missing_chapters_from_remaining_body_budget() -> None:
@@ -464,6 +640,178 @@ def test_sanitize_confirmed_curriculum_preserves_page_fields() -> None:
     assert sanitized["page_fill_bias"] == 1.12
 
 
+def test_sanitize_confirmed_curriculum_preserves_nested_child_metadata() -> None:
+    curriculum = {
+        "topic": "Python",
+        "structure_depth": "level2",
+        "chapters": [
+            {
+                "title": "Basics",
+                "target_pages": 8,
+                "subsections": [
+                    {
+                        "title": "Control Flow",
+                        "target_pages": 8,
+                        "children": [
+                            {
+                                "title": "Loops",
+                                "description": "Looping constructs",
+                                "search_query": "python loops",
+                                "section_type": "deep",
+                                "target_pages": 4,
+                                "target_chars_min": 2000,
+                                "target_chars_max": 2600,
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+    sanitized, _, total_subsections = _sanitize_confirmed_curriculum(curriculum)
+
+    child = sanitized["chapters"][0]["subsections"][0]["children"][0]
+    assert sanitized["structure_depth"] == "level2"
+    assert total_subsections == 1
+    assert child["title"] == "Loops"
+    assert child["target_pages"] == 4
+    assert child["target_chars_min"] == 2000
+    assert child["target_chars_max"] == 2600
+
+
+def test_metadata_refresh_detects_added_or_renamed_leaf_sections() -> None:
+    original = {
+        "chapters": [
+            {
+                "title": "Basics",
+                "subsections": [
+                    {
+                        "title": "Control Flow",
+                        "children": [
+                            {
+                                "title": "If statements",
+                                "description": "old",
+                                "search_query": "old query",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+    renamed = {
+        "chapters": [
+            {
+                "title": "Basics",
+                "subsections": [
+                    {
+                        "title": "Control Flow",
+                        "children": [
+                            {
+                                "title": "Loops",
+                                "description": "old",
+                                "search_query": "old query",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+    added = {
+        "chapters": [
+            {
+                "title": "Basics",
+                "subsections": [
+                    {
+                        "title": "Control Flow",
+                        "children": [
+                            {
+                                "title": "If statements",
+                                "description": "old",
+                                "search_query": "old query",
+                            },
+                            {
+                                "title": "Loops",
+                                "description": "new",
+                                "search_query": "new query",
+                            },
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+    assert _needs_metadata_refresh(renamed, original)
+    assert _needs_metadata_refresh(added, original)
+
+
+def test_metadata_refresh_preserves_unchanged_leaf_metadata() -> None:
+    original = {
+        "chapters": [
+            {
+                "title": "Basics",
+                "subsections": [
+                    {
+                        "title": "Control Flow",
+                        "children": [
+                            {"title": "If statements", "description": "old desc", "search_query": "old query"},
+                            {"title": "Loops", "description": "loop desc", "search_query": "loop query"},
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+    edited = {
+        "chapters": [
+            {
+                "title": "Basics",
+                "subsections": [
+                    {
+                        "title": "Control Flow",
+                        "children": [
+                            {
+                                "title": "If statements",
+                                "description": "keep desc",
+                                "search_query": "keep query",
+                                "target_chars_min": 111,
+                            },
+                            {"title": "Loop variants", "description": "stale", "search_query": "stale"},
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+    refreshed = {
+        "chapters": [
+            {
+                "title": "Basics",
+                "subsections": [
+                    {
+                        "title": "Control Flow",
+                        "children": [
+                            {"title": "If statements", "description": "new desc", "search_query": "new query"},
+                            {"title": "Loop variants", "description": "fresh desc", "search_query": "fresh query"},
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+    merged = _preserve_unchanged_metadata(refreshed, edited, original)
+    children = merged["chapters"][0]["subsections"][0]["children"]
+    assert children[0]["description"] == "keep desc"
+    assert children[0]["search_query"] == "keep query"
+    assert children[0]["target_chars_min"] == 111
+    assert children[1]["description"] == "fresh desc"
+    assert children[1]["search_query"] == "fresh query"
+
+
 def test_writer_uses_page_budget_char_target(monkeypatch) -> None:
     captured = {}
 
@@ -518,3 +866,62 @@ def test_writer_uses_page_budget_char_target(monkeypatch) -> None:
     assert captured["formula_density"] == "contextual"
     assert captured["expansion_strategy"] == "code_examples_debugging_tasks"
     assert captured["page_fill_bias"] == 1.1
+
+
+def test_writer_level2_emits_parent_once_and_child_heading(monkeypatch) -> None:
+    captured = {}
+
+    def fake_write_section(self, **kwargs):
+        captured.update(kwargs)
+        return "### 1.1.1 If statements\n\nContent"
+
+    monkeypatch.setattr(WriterAgent, "write_section", fake_write_section)
+
+    state = {
+        "curriculum": {
+            "structure_depth": "level2",
+            "chapters": [
+                {
+                    "title": "Basics",
+                    "subsections": [
+                        {
+                            "title": "Control Flow",
+                            "children": [
+                                {
+                                    "title": "If statements",
+                                    "description": "If syntax",
+                                    "search_query": "python if",
+                                    "section_type": "medium",
+                                    "target_chars_min": 2000,
+                                    "target_chars_max": 2600,
+                                    "target_pages": 2,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+        "current_chapter_index": 0,
+        "current_subsection_index": 0,
+        "content_level": "Ngắn",
+        "language": "en",
+        "enable_images": False,
+        "request": "Python",
+        "rag_context": "context",
+        "chapter_header_written": False,
+        "section_summaries": [],
+    }
+
+    result = write_section_crag(state)
+
+    assert "# CHAPTER 1: BASICS" in result["current_content"]
+    assert "## 1.1 Control Flow" in result["current_content"]
+    assert "### 1.1.1 If statements" in result["current_content"]
+    assert captured["section_num"] == "1.1"
+    assert captured["planned_child_sections"] == [{
+        "number": "1.1.1",
+        "title": "If statements",
+        "description": "If syntax",
+        "section_type": "medium",
+    }]

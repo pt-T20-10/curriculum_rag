@@ -22,13 +22,34 @@ export function ChapterItem({
 
   const hasSubsections = chapter.subsections && chapter.subsections.length > 0
 
-  const getSubsectionStatus = (subsectionNum) => {
+  const getLeafStatus = (leafIndex) => {
     if (chapter.number < currentSubsection?.chapter) return 'done'
     if (chapter.number > currentSubsection?.chapter) return 'pending'
     
     // Current chapter
-    if (subsectionNum < currentSubsection?.subsection) return 'done'
-    if (subsectionNum === currentSubsection?.subsection) return 'running'
+    if (leafIndex < currentSubsection?.subsection) return 'done'
+    if (leafIndex === currentSubsection?.subsection) return 'running'
+    return 'pending'
+  }
+
+  const getSubsectionRange = (subsectionIndex) => {
+    const subsections = chapter.subsections || []
+    let firstLeaf = 1
+    for (let idx = 0; idx < subsectionIndex; idx += 1) {
+      firstLeaf += Math.max(1, (subsections[idx]?.children || []).length)
+    }
+    const leafCount = Math.max(1, (subsections[subsectionIndex]?.children || []).length)
+    return { firstLeaf, lastLeaf: firstLeaf + leafCount - 1 }
+  }
+
+  const getParentStatus = (subsectionIndex) => {
+    const { firstLeaf, lastLeaf } = getSubsectionRange(subsectionIndex)
+    if (chapter.number < currentSubsection?.chapter) return 'done'
+    if (chapter.number > currentSubsection?.chapter) return 'pending'
+    if (lastLeaf < currentSubsection?.subsection) return 'done'
+    if (firstLeaf <= currentSubsection?.subsection && currentSubsection?.subsection <= lastLeaf) {
+      return 'running'
+    }
     return 'pending'
   }
 
@@ -68,28 +89,61 @@ export function ChapterItem({
       {/* Subsections (when expanded) */}
       {hasSubsections && isExpanded && (
         <div className="ml-6 mt-1 space-y-1">
-          {chapter.subsections.map((subsection, idx) => {
-            const subStatus = getSubsectionStatus(subsection.number || idx + 1)
-            const isCurrentSub = chapter.number === currentSubsection?.chapter && 
-                                 (subsection.number || idx + 1) === currentSubsection?.subsection
+          {(chapter.subsections || []).map((subsection, idx) => {
+            const children = subsection.children || []
+            const subStatus = getParentStatus(idx)
+            const { firstLeaf, lastLeaf } = getSubsectionRange(idx)
+            const isCurrentSub = chapter.number === currentSubsection?.chapter &&
+                                 firstLeaf <= currentSubsection?.subsection &&
+                                 currentSubsection?.subsection <= lastLeaf
+            const displayNumber = `${chapter.number}.${idx + 1}`
 
             return (
-              <div
-                key={idx}
-                className={`
-                  px-2 py-1.5 rounded text-xs transition-all
-                  ${statusStyles[subStatus]}
-                  ${isCurrentSub ? 'font-medium' : ''}
-                `}
-              >
-                <div className="flex items-center gap-2">
-                  <span className={subStatus === 'running' ? 'animate-pulse' : ''}>
-                    {statusIcons[subStatus]}
-                  </span>
-                  <span className="line-clamp-1">
-                    {chapter.number}.{subsection.number || idx + 1} {subsection.title}
-                  </span>
+              <div key={idx} className="space-y-1">
+                <div
+                  className={`
+                    px-2 py-1.5 rounded text-xs transition-all
+                    ${statusStyles[subStatus]}
+                    ${isCurrentSub ? 'font-medium' : ''}
+                  `}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className={subStatus === 'running' ? 'animate-pulse' : ''}>
+                      {statusIcons[subStatus]}
+                    </span>
+                    <span className="line-clamp-1">
+                      {displayNumber} {subsection.title}
+                    </span>
+                  </div>
                 </div>
+
+                {children.length > 0 && (
+                  <div className="ml-5 space-y-1">
+                    {children.map((child, childIdx) => {
+                      const childStatus = getLeafStatus(firstLeaf + childIdx)
+                      const isCurrentChild = childStatus === 'running'
+                      return (
+                        <div
+                          key={childIdx}
+                          className={`
+                            rounded px-2 py-1.5 text-xs transition-all
+                            ${statusStyles[childStatus]}
+                            ${isCurrentChild ? 'font-medium' : ''}
+                          `}
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className={childStatus === 'running' ? 'animate-pulse' : ''}>
+                              {statusIcons[childStatus]}
+                            </span>
+                            <span className="line-clamp-1">
+                              {displayNumber}.{childIdx + 1} {child.title}
+                            </span>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
             )
           })}

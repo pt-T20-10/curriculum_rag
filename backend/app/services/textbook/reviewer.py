@@ -194,11 +194,120 @@ def _substantial_paragraph_count(text: str) -> int:
     )
 
 
+def _is_code_heavy_context(layout_profile: str | None, expansion_strategy: str | None) -> bool:
+    return (
+        str(layout_profile or "").strip().lower() == "code"
+        or str(expansion_strategy or "").strip().lower() == "code_examples_debugging_tasks"
+    )
+
+
+def _allows_dense_structure(
+    *,
+    section_type: str = "medium",
+    layout_profile: str | None = None,
+    formula_density: str | None = None,
+    expansion_strategy: str | None = None,
+) -> bool:
+    profile = str(layout_profile or "").strip().lower()
+    strategy = str(expansion_strategy or "").strip().lower()
+    return (
+        section_type == "applied"
+        or profile in {"code", "procedure", "formula"}
+        or strategy in {
+            "code_examples_debugging_tasks",
+            "workflow_checklists_practice_steps",
+            "quantitative_formula_examples",
+        }
+        or str(formula_density or "").strip().lower() in {"contextual", "high"}
+    )
+
+
+def _has_checkpoint_marker(content: str) -> bool:
+    return bool(
+        re.search(
+            r"\bcheckpoint\b|checkpoint\s+(?:phản tư|thực hành)|synthesis checkpoint",
+            content or "",
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _has_detached_bullet_label(content: str) -> bool:
+    lines = (content or "").splitlines()
+    for idx, line in enumerate(lines[:-1]):
+        stripped = line.strip()
+        if not re.match(r"^[-*]\s+[^:\n]{1,90}:\s*$", stripped):
+            continue
+        following = ""
+        for next_line in lines[idx + 1:]:
+            if next_line.strip():
+                following = next_line.strip()
+                break
+        if following and not re.match(r"^([-*]|\d+[.)]|\||```|\$\$|>)\s*", following):
+            return True
+    return False
+
+
+def _has_bad_colon_line_break(content: str) -> bool:
+    lines = (content or "").splitlines()
+    for idx, line in enumerate(lines[:-1]):
+        stripped = line.strip()
+        if not stripped.endswith(":"):
+            continue
+        if stripped.startswith(("#", "|", ">", "-", "*")):
+            continue
+        if re.match(r"^(?:Trong đó|Where)\s*:?\s*$", stripped, re.IGNORECASE):
+            continue
+        if len(stripped) > 120:
+            continue
+        following = ""
+        for next_line in lines[idx + 1:]:
+            if next_line.strip():
+                following = next_line.strip()
+                break
+        if following and not re.match(r"^([-*]|\d+[.)]|\||```|\$\$|>)\s*", following):
+            return True
+    return False
+
+
+def _has_excessive_bullet_density(content: str, *, page_budget_mode: str) -> bool:
+    lines = [line.strip() for line in (content or "").splitlines() if line.strip()]
+    body_lines = [
+        line
+        for line in lines
+        if not line.startswith(("#", "|", ">", "```", "$$", "!["))
+    ]
+    if not body_lines:
+        return False
+    bullet_lines = [
+        line
+        for line in body_lines
+        if re.match(r"^(?:[-*]|\d+[.)])\s+", line)
+    ]
+    threshold = 0.22 if page_budget_mode == "compact" else 0.30
+    return len(bullet_lines) >= 5 and (len(bullet_lines) / len(body_lines)) > threshold
+
+
+def _has_unneeded_code_fences(content: str, *, allow_code_heavy: bool) -> bool:
+    if allow_code_heavy:
+        return False
+    for match in re.finditer(r"^```([^\n]*)", content or "", flags=re.MULTILINE):
+        info = match.group(1).strip().lower()
+        if info.startswith("{=typst}") or info.startswith("{=openxml}"):
+            continue
+        return True
+    return False
+
+
 def _has_content_issues(
     content: str,
     char_min: int,
     review_feedback: str = "",
     page_budget_mode: str = "standard",
+    section_type: str = "medium",
+    layout_profile: str | None = None,
+    formula_density: str | None = None,
+    expansion_strategy: str | None = None,
 ) -> bool:
     text = content or ""
     feedback = (review_feedback or "").lower()
@@ -207,6 +316,28 @@ def _has_content_issues(
     if re.search(r"\b(chúng ta hãy|hãy cùng|cùng tìm hiểu|let's|we will now)\b", text, re.IGNORECASE):
         return True
     if len(re.findall(r"\*\*[^*\n]{1,80}\*\*", text)) > 10:
+        return True
+    allow_dense_structure = _allows_dense_structure(
+        section_type=section_type,
+        layout_profile=layout_profile,
+        formula_density=formula_density,
+        expansion_strategy=expansion_strategy,
+    )
+    if _has_checkpoint_marker(text):
+        return True
+    if _has_detached_bullet_label(text):
+        return True
+    if _has_bad_colon_line_break(text):
+        return True
+    if not allow_dense_structure and _has_excessive_bullet_density(
+        text,
+        page_budget_mode=page_budget_mode,
+    ):
+        return True
+    if _has_unneeded_code_fences(
+        text,
+        allow_code_heavy=_is_code_heavy_context(layout_profile, expansion_strategy),
+    ):
         return True
     blocks = _subsection_blocks(text)
     if page_budget_mode == "compact":
@@ -239,13 +370,24 @@ def deterministic_quality_gate_passes(
     section_type: str,
     language: str,
     page_budget_mode: str = "standard",
+    layout_profile: str | None = None,
+    formula_density: str | None = None,
+    expansion_strategy: str | None = None,
 ) -> bool:
     """Conservative no-LLM approval gate for balanced_cost."""
     if len(content or "") < char_min:
         return False
     if _has_format_issues(content, section_num, section_title, language):
         return False
-    if _has_content_issues(content, char_min, page_budget_mode=page_budget_mode):
+    if _has_content_issues(
+        content,
+        char_min,
+        page_budget_mode=page_budget_mode,
+        section_type=section_type,
+        layout_profile=layout_profile,
+        formula_density=formula_density,
+        expansion_strategy=expansion_strategy,
+    ):
         return False
     max_blocks = {
         "light": 2,
@@ -304,14 +446,14 @@ def _structured_expansion_feedback(
             "Mục này có ngân sách trang lớn hoặc ưu tiên công thức/cấu trúc nhưng "
             "đang gần như chỉ là văn xuôi. Hãy bổ sung thành phần học thuật có cấu trúc "
             f"phù hợp với chiến lược '{expansion_strategy or 'general'}': công thức/mô hình, "
-            "bảng tiêu chí, rubric, checklist, timeline, case study, ví dụ tính toán, "
+            "bảng tiêu chí, rubric, timeline, case study, ví dụ tính toán, "
             "bài tập hoặc bảng so sánh. Không kéo dài prose đơn thuần."
         )
     return (
         "This section has a large page budget or formula/structured-tool preference "
         "but is mostly continuous prose. Add domain-appropriate structured learning "
         f"elements for strategy '{expansion_strategy or 'general'}': formula/model, "
-        "criteria table, rubric, checklist, timeline, case study, worked example, "
+        "criteria table, rubric, timeline, case study, worked example, "
         "exercise, or comparison table. Do not merely stretch prose."
     )
 
@@ -427,6 +569,11 @@ class ReviewerAgent:
         language: str = "vi",
         advanced_config: dict | None = None,
         textbook_mode: str = "standard",
+        page_budget_mode: str = "standard",
+        section_type: str = "medium",
+        layout_profile: str | None = None,
+        formula_density: str | None = None,
+        expansion_strategy: str | None = None,
     ) -> tuple[bool, str]:
         """
         Quality gate: decide whether polished content meets minimum standards.
@@ -466,6 +613,48 @@ class ReviewerAgent:
         if math_feedback:
             logger.info("Quality gate: REJECT — deterministic math format gate")
             return True, math_feedback
+        allow_dense_structure = _allows_dense_structure(
+            section_type=section_type,
+            layout_profile=layout_profile,
+            formula_density=formula_density,
+            expansion_strategy=expansion_strategy,
+        )
+        if _has_checkpoint_marker(content):
+            return True, (
+                "Remove visible 'Checkpoint' labels. Rewrite reflection as natural "
+                "academic prose or a normal exercise only when necessary."
+            )
+        if _has_detached_bullet_label(content):
+            return True, (
+                "Fix bullet formatting: do not leave a bullet label ending with ':' "
+                "and move its explanation to the next paragraph. Keep the explanation "
+                "on the same line or rewrite as prose."
+            )
+        if _has_bad_colon_line_break(content):
+            return True, (
+                "Fix colon formatting: keep prose explanations on the same line or "
+                "paragraph after ':'. Only break after ':' before a true list, table, "
+                "formula block, workflow, or 'Trong đó:' variable explanation."
+            )
+        if not allow_dense_structure and _has_excessive_bullet_density(
+            content,
+            page_budget_mode=page_budget_mode,
+        ):
+            return True, (
+                "Reduce excessive bullet/list formatting in this concept section. "
+                "Rewrite most items as cohesive academic prose and keep lists only "
+                "for genuine enumerations, workflows, variables, or comparisons."
+            )
+        if _has_unneeded_code_fences(
+            content,
+            allow_code_heavy=_is_code_heavy_context(layout_profile, expansion_strategy),
+        ):
+            return True, (
+                "Remove fenced code blocks from this concept/basic section. Use prose, "
+                "tables, models, diagrams, or scenario examples unless the section is "
+                "explicitly about programming, commands, configuration, SQL/API usage, "
+                "debugging, or a hands-on lab."
+            )
 
         actual_chars = len(content)
         if not practice_mode and actual_chars >= char_min * 1.2:
@@ -535,6 +724,13 @@ class ReviewerAgent:
 
     Rule 6 — BLANK LINES: Any Markdown heading (`#`, `##`, `###`) is NOT preceded
     by a blank line — i.e., the line immediately before the `#` is non-empty text.
+
+    Rule 7 — STYLE: Visible "Checkpoint" labels, excessive bullet padding,
+    detached bullet labels ending in ":", unnecessary code fences in concept
+    sections, or prose labels split onto a separate line before explanation are
+    unacceptable. Keep prose explanations after ":" in the same paragraph unless
+    the next block is a true list, table, formula block, workflow, or
+    "Trong đó:"/"Where:" variable explanation.
     [/CONSTRAINT]
 
         [FORMAT]
@@ -617,20 +813,21 @@ class ReviewerAgent:
 
         Rules applied:
         - Any #### (or deeper) heading → downgrade to ###
-        - Ensure exactly one ## {section_num} {section_title} exists at the top
+        - Ensure exactly one planned section heading exists at the top
         """
         lines = content.split('\n')
         fixed_lines = []
         section_header_found = False
-        expected_section = f"## {section_num} {section_title}"
+        marker = "###" if section_num.count(".") >= 2 else "##"
+        expected_section = f"{marker} {section_num} {section_title}"
 
         for line in lines:
             # Downgrade #### (and deeper) to ### — sub-sections are always level 3.
             if re.match(r'^#{4,} ', line):
                 line = re.sub(r'^#{4,} ', '### ', line)
 
-            # Detect if the correct ## section header is present.
-            if line.strip().startswith('## ') and section_num in line:
+            # Detect if the correct planned section header is present.
+            if line.strip().startswith(f'{marker} ') and section_num in line:
                 section_header_found = True
 
             fixed_lines.append(line)
@@ -918,9 +1115,11 @@ add those elements while preserving the existing Markdown structure.
 This section has a small page budget. Do not expand merely because it has no
 ### blocks. Approve a direct ## section when the core concept is clear.
 If there is exactly one unnumbered or weak ### label, convert it to a bold
-lead-in. Use concise bullets for definitions, features, and components.
-Remove routine reflection, "students can..." endings, and unnecessary real-world
-application paragraphs unless they add clear value.
+lead-in only when it improves readability. Prefer cohesive prose over note-like
+fragments. Use bullets only for true enumerations, workflows, variables,
+comparisons, or practice tasks. Remove routine reflection, "students can..."
+endings, and unnecessary real-world application paragraphs unless they add
+clear value.
 """
             length_rule = (
                 "Rule 4 — LENGTH: Keep the content within the compact page budget. "
@@ -988,6 +1187,17 @@ Technical terms in English: keep as-is (DataFrame, API, CPU, LaTeX).
 Punctuation: {content_style_rule}
 Inline programming code: preserve Markdown backticks for variables, methods,
 keywords, and code expressions. Never convert programming code into $...$ math.
+Do not add fenced code blocks to concept/basic sections unless the content is
+explicitly about programming, commands, configuration, SQL/API usage, debugging,
+or a hands-on lab.
+Do not write "Checkpoint", "Checkpoint phản tư", "Checkpoint thực hành", or
+"synthesis checkpoint" as visible textbook labels. Rewrite those ideas as
+natural prose or a normal exercise only when pedagogically necessary.
+Colon style: keep prose explanations on the same line/paragraph after ":".
+Only break after ":" when the next block is a true list, table, formula block,
+workflow, or "Trong đó:"/"Where:" variable explanation.
+Do not leave bullets like "- Chia sẻ tài nguyên:" with the explanation in the
+next paragraph; write "- Chia sẻ tài nguyên: ..." or rewrite as prose.
 
 {depth_rule}
 
@@ -1455,7 +1665,10 @@ def review_section(state: AgentState) -> dict:
 
     try:
         # Unified curriculum access — handles Pydantic and dict formats.
-        chapter, subsection = get_chapter_and_subsection(curriculum, chap_idx, sub_idx)
+        from app.schemas.curriculum import get_section_location
+        location = get_section_location(curriculum, chap_idx, sub_idx)
+        chapter = location["chapter"]
+        subsection = location["subsection"]
 
         # Use isinstance for explicit type discrimination (consistent with Writer).
         chap_title = (
@@ -1479,8 +1692,19 @@ def review_section(state: AgentState) -> dict:
         # without falsely stripping mid-sentence colons like "Bài toán tối ưu:".
         sec_title = clean_section_title(sec_title)
 
-        display_chap_num = str(chap_idx + 1)
-        display_sec_num  = f"{display_chap_num}.{sub_idx + 1}"
+        display_chap_num = location["display_chapter"]
+        display_sec_num  = location["display_number"]
+        planned_child_headings = []
+        for child_idx, child in enumerate(location.get("children") or []):
+            child_title = (
+                child.title if isinstance(child, SubSection)
+                else child.get("title", "")
+            )
+            child_title = clean_section_title(str(child_title or ""))
+            if child_title:
+                planned_child_headings.append(
+                    f"### {display_sec_num}.{child_idx + 1} {child_title}"
+                )
 
         # ------------------------------------------------------------------
         # Chapter header directive for the Reviewer.
@@ -1497,7 +1721,7 @@ def review_section(state: AgentState) -> dict:
         chap_cmd_text    = ""
         draft_has_header = draft.lstrip().startswith(f"# {profile.chapter_label}")
 
-        if sub_idx == 0 and state.get("chapter_header_written", False):
+        if location["is_first_in_chapter"] and state.get("chapter_header_written", False):
             if draft_has_header:
                 # First write: draft has header — instruct reviewer to preserve it verbatim.
                 chap_cmd_text = (
@@ -1540,6 +1764,10 @@ def review_section(state: AgentState) -> dict:
         formula_density = (
             subsection.formula_density if isinstance(subsection, SubSection)
             else subsection.get("formula_density")
+        )
+        layout_profile = (
+            subsection.layout_profile if isinstance(subsection, SubSection)
+            else subsection.get("layout_profile")
         )
         expansion_strategy = (
             subsection.expansion_strategy if isinstance(subsection, SubSection)
@@ -1623,7 +1851,7 @@ def review_section(state: AgentState) -> dict:
         # Condition: only sub_idx==0 sections ever carry a # CHƯƠNG heading,
         # and only when chapter_header_written=True (meaning Writer did emit it).
         # ------------------------------------------------------------------
-        if sub_idx == 0 and state.get("chapter_header_written", False):
+        if location["is_first_in_chapter"] and state.get("chapter_header_written", False):
             expected_heading = f"# {profile.chapter_label} {display_chap_num}: {chap_title.upper()}"
             existing = re.search(
                 rf'^# {re.escape(profile.chapter_label)}.*$',
@@ -1653,6 +1881,39 @@ def review_section(state: AgentState) -> dict:
                 )
         if not enable_images:
             polished = strip_image_markers_when_disabled(polished)
+
+        if planned_child_headings:
+            actual_child_headings = [
+                match.group(0).strip()
+                for match in re.finditer(r"^###\s+\d+\.\d+\.\d+\s+.+$", polished or "", flags=re.MULTILINE)
+            ]
+            missing = [
+                heading for heading in planned_child_headings
+                if heading not in actual_child_headings
+            ]
+            extra = [
+                heading for heading in actual_child_headings
+                if heading not in planned_child_headings
+            ]
+            if (missing or extra) and revision_number < (1 if balanced else MAX_REVISIONS):
+                feedback_parts = []
+                if missing:
+                    feedback_parts.append("Missing planned child headings: " + "; ".join(missing))
+                if extra:
+                    feedback_parts.append("Remove unplanned child headings: " + "; ".join(extra))
+                feedback = " ".join(feedback_parts)
+                logger.info("Controlled child heading revision requested: %s", feedback)
+                return {
+                    "current_content": polished,
+                    "review_feedback": feedback,
+                    "revision_number": revision_number + 1,
+                    "rejection_type": "formatting_error",
+                    "messages": [
+                        f"↺ Revision {revision_number + 1}/"
+                        f"{1 if balanced else MAX_REVISIONS} [controlled_headings]: "
+                        f"{feedback[:80]}"
+                    ],
+                }
 
         structured_feedback = _structured_expansion_feedback(
             polished,
@@ -1687,14 +1948,17 @@ def review_section(state: AgentState) -> dict:
             balanced
             and not _is_practice_mode(textbook_mode)
             and deterministic_quality_gate_passes(
-            polished,
-            char_min=char_min,
-            char_max=char_max,
-            section_num=display_sec_num,
-            section_title=sec_title,
-            section_type=sec_type,
-            language=language,
-            page_budget_mode=section_page_budget_mode,
+                polished,
+                char_min=char_min,
+                char_max=char_max,
+                section_num=display_sec_num,
+                section_title=sec_title,
+                section_type=sec_type,
+                language=language,
+                page_budget_mode=section_page_budget_mode,
+                layout_profile=layout_profile,
+                formula_density=formula_density,
+                expansion_strategy=expansion_strategy,
             )
         ):
             logger.info("Balanced deterministic gate: APPROVE — skipped LLM quality gate")
@@ -1717,6 +1981,11 @@ def review_section(state: AgentState) -> dict:
                 language=language,
                 advanced_config=advanced_config,
                 textbook_mode=textbook_mode,
+                page_budget_mode=section_page_budget_mode,
+                section_type=sec_type,
+                layout_profile=layout_profile,
+                formula_density=formula_density,
+                expansion_strategy=expansion_strategy,
             )
 
             if needs_revision:

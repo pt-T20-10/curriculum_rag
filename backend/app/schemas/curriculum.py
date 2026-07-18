@@ -20,6 +20,8 @@ Contents:
                     build_initial_state().
 """
 
+from __future__ import annotations
+
 import operator
 import re
 from typing import Any, List, TypedDict, Annotated, Optional
@@ -103,6 +105,13 @@ class SubSection(BaseModel):
         default=None,
         description="Pedagogical expansion strategy used to reach page budget"
     )
+    children: Optional[List["SubSection"]] = Field(
+        default=None,
+        description=(
+            "Optional second-level controlled leaves under this subsection. "
+            "When present, children are the writer units numbered like 1.1.1."
+        ),
+    )
 
 
 class Chapter(BaseModel):
@@ -137,6 +146,10 @@ class CurriculumOutline(BaseModel):
 
     topic: str = Field(
         description="The main topic of the curriculum"
+    )
+    structure_depth: str = Field(
+        default="level1",
+        description="Structure depth: level1 writes 1.1 leaves; level2 writes 1.1.1 leaves"
     )
     chapters: List[Chapter] = Field(
         description="Ordered list of all chapters in the curriculum"
@@ -420,10 +433,12 @@ class AgentState(TypedDict):
     enable_images: bool
     min_chars_per_section: int
     max_subsections_per_chapter: int
+    max_child_subsections_per_section: int
     language: str
     textbook_mode: str
     formula_policy: str
     formula_need: str
+    structure_depth: str
     advanced_config: dict[str, Any]
     source_preferences: dict[str, Any]
 
@@ -579,12 +594,134 @@ def get_chapter_and_subsection(
         IndexError: If either index is out of bounds.
         KeyError:   If required keys are missing in dict format.
     """
-    if isinstance(curriculum, CurriculumOutline):
-        chapter = curriculum.chapters[chap_idx]
-        return chapter, chapter.subsections[sub_idx]
+    location = get_section_location(curriculum, chap_idx, sub_idx)
+    return location["chapter"], location["subsection"]
 
-    chapter = curriculum['chapters'][chap_idx]
-    return chapter, chapter['subsections'][sub_idx]
+
+def _get_value(item: Any, key: str, default: Any = None) -> Any:
+    if isinstance(item, dict):
+        return item.get(key, default)
+    return getattr(item, key, default)
+
+
+def _children_for(subsection: Any) -> list[Any]:
+    children = _get_value(subsection, "children", None)
+    return children if isinstance(children, list) and children else []
+
+
+def _subsections_for(chapter: Any) -> list[Any]:
+    subsections = _get_value(chapter, "subsections", [])
+    return subsections if isinstance(subsections, list) else []
+
+
+def flatten_chapter_leaf_sections(chapter: Any) -> list[dict[str, Any]]:
+    """
+    Return metadata leaves for a chapter.
+
+    Level-2 curricula keep each child leaf (1.1.1) addressable so metadata
+    refresh, page allocation, and targeted crawl can reason about the exact
+    user-approved child titles.
+    """
+    flattened: list[dict[str, Any]] = []
+    for parent_idx, subsection in enumerate(_subsections_for(chapter)):
+        children = _children_for(subsection)
+        if children:
+            for child_idx, child in enumerate(children):
+                flattened.append({
+                    "subsection": child,
+                    "parent": subsection,
+                    "parent_index": parent_idx,
+                    "child_index": child_idx,
+                    "is_child": True,
+                })
+        else:
+            flattened.append({
+                "subsection": subsection,
+                "parent": None,
+                "parent_index": parent_idx,
+                "child_index": None,
+                "is_child": False,
+            })
+    return flattened
+
+
+def flatten_chapter_sections(chapter: Any) -> list[dict[str, Any]]:
+    """
+    Return writer/reviewer units for a chapter.
+
+    Legacy curricula have one writer unit per ``subsections`` item (1.1).
+    Level-2 curricula also write per parent subsection (1.1), carrying the
+    planned children so one API call can produce the full controlled block.
+    """
+    flattened: list[dict[str, Any]] = []
+    for parent_idx, subsection in enumerate(_subsections_for(chapter)):
+        children = _children_for(subsection)
+        flattened.append({
+            "subsection": subsection,
+            "children": children,
+            "parent": None,
+            "parent_index": parent_idx,
+            "child_index": None,
+            "is_child": False,
+            "is_parent_with_children": bool(children),
+        })
+    return flattened
+
+
+def count_chapter_leaf_sections(chapter: Any) -> int:
+    return len(flatten_chapter_sections(chapter))
+
+
+def curriculum_chapters(curriculum: Any) -> list[Any]:
+    if isinstance(curriculum, CurriculumOutline):
+        return curriculum.chapters
+    chapters = _get_value(curriculum, "chapters", [])
+    return chapters if isinstance(chapters, list) else []
+
+
+def count_curriculum_leaf_sections(curriculum: Any) -> int:
+    return sum(count_chapter_leaf_sections(chapter) for chapter in curriculum_chapters(curriculum))
+
+
+def get_section_location(
+    curriculum: Any,
+    chap_idx: int,
+    sub_idx: int,
+) -> dict[str, Any]:
+    chapters = curriculum_chapters(curriculum)
+    chapter = chapters[chap_idx]
+    flattened = flatten_chapter_sections(chapter)
+    item = flattened[sub_idx]
+    parent_idx = int(item["parent_index"])
+    child_idx = item["child_index"]
+    children = item.get("children") or []
+    display_chap = str(chap_idx + 1)
+    parent_number = f"{display_chap}.{parent_idx + 1}"
+    display_number = (
+        f"{parent_number}.{int(child_idx) + 1}"
+        if child_idx is not None
+        else parent_number
+    )
+    is_first_in_parent = (
+        child_idx is None
+        or int(child_idx) == 0
+    )
+    return {
+        "chapter": chapter,
+        "subsection": item["subsection"],
+        "children": children,
+        "parent": item["parent"],
+        "parent_index": parent_idx,
+        "child_index": child_idx,
+        "is_child": item["is_child"],
+        "is_parent_with_children": bool(children),
+        "display_chapter": display_chap,
+        "parent_number": parent_number,
+        "display_number": display_number,
+        "is_first_in_parent": is_first_in_parent,
+        "is_first_in_chapter": sub_idx == 0,
+        "chapter_leaf_count": len(flattened),
+    }
 
 
 def clean_section_title(title: str) -> str:
@@ -616,6 +753,7 @@ def build_initial_state(
     enable_images: bool = True,
     min_chars_per_section: int = 0,
     max_subsections_per_chapter: int = 5,
+    max_child_subsections_per_section: int = 3,
     content_level: str = "Trung Bình",
     content_type: str = "technical",
     textbook_mode: str = "standard",
@@ -628,6 +766,7 @@ def build_initial_state(
     advanced_config: dict[str, Any] | None = None,
     initial_curriculum_structure: dict[str, Any] | None = None,
     planning_mode: str = "auto",
+    structure_depth: str = "level1",
     section_summaries: list = None, #type: ignore
     export_formats: list | None = None,
 ) -> dict:
@@ -665,10 +804,12 @@ def build_initial_state(
         "enable_images":               enable_images,
         "min_chars_per_section":       min_chars_per_section,
         "max_subsections_per_chapter": max_subsections_per_chapter,
+        "max_child_subsections_per_section": max_child_subsections_per_section,
         "content_type":                content_type,
         "textbook_mode":               textbook_mode,
         "formula_policy":              formula_policy,
         "formula_need":                formula_need,
+        "structure_depth":             structure_depth,
         "language":                    language,
         "advanced_config":             advanced_config or {},
         "source_preferences":          source_preferences or {},

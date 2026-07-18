@@ -13,13 +13,11 @@ export function StatsSection({ progressData }) {
   
   // Calculate totals from curriculum if not provided
   const actualTotalChapters = total_chapters || curriculum_data?.chapters?.length || 0
-  const actualTotalSubsections = total_subsections || 
-    curriculum_data?.chapters?.reduce((sum, ch) => sum + (ch.subsections?.length || 0), 0) || 0
-  const { completedSubsections } = getSubsectionProgress({
+  const { completedSubsections, totalSubsections } = getSubsectionProgress({
     curriculumData: curriculum_data,
     currentChapter: current_chapter,
     currentSubsection: current_subsection,
-    totalSubsections: actualTotalSubsections,
+    totalSubsections: total_subsections,
   })
 
   return (
@@ -36,7 +34,7 @@ export function StatsSection({ progressData }) {
         <div className="bg-gray-50 rounded-lg p-3 text-center">
           <div className="text-xs text-gray-500 mb-1">{t('textbook.contentSidebar.subsections')}</div>
           <div className="text-lg font-bold text-gray-800">
-            {completedSubsections} / {actualTotalSubsections}
+            {completedSubsections} / {totalSubsections}
           </div>
         </div>
       </div>

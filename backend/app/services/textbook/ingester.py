@@ -32,6 +32,7 @@ from app.schemas.curriculum import (
     SubSection,
     clean_section_title,
     get_chapter_and_subsection,
+    flatten_chapter_leaf_sections,
 )
 from app.config import settings
 from app.services.cost_profile import should_reuse_ingestion_query_expansion
@@ -760,11 +761,7 @@ def _extract_curriculum_queries(
     )
 
     for chapter in chapters:
-        subsections = (
-            chapter.subsections
-            if hasattr(chapter, "subsections")
-            else chapter.get("subsections", [])
-        )
+        subsections = [item["subsection"] for item in flatten_chapter_leaf_sections(chapter)]
         count = 0
         for sub in subsections:
             if count >= max_per_chapter:

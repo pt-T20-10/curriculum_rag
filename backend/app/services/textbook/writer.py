@@ -36,6 +36,7 @@ from app.schemas.curriculum import (
     Chapter,
     SubSection,
     get_chapter_and_subsection,
+    get_section_location,
     get_char_target,
     clean_section_title,
 )
@@ -97,9 +98,10 @@ def _get_hk_hint(section_type: str, page_budget_mode: str = "standard") -> str:
     if page_budget_mode == "compact":
         return (
             "Pedagogy (COMPACT): Connect briefly, organise only the core ideas, "
-            "and avoid padding. A short example or bullet list is enough when it "
-            "clarifies the concept; do not add reflection or real-world transfer "
-            "unless it is clearly valuable for this exact section."
+            "and avoid padding. Prefer compact academic prose; use a short list "
+            "only for a genuine enumeration, workflow, formula explanation, or "
+            "comparison. Do not add reflection or real-world transfer unless it "
+            "is clearly valuable for this exact section."
         )
 
     hints: dict[str, str] = {
@@ -112,7 +114,7 @@ def _get_hk_hint(section_type: str, page_budget_mode: str = "standard") -> str:
             "Pedagogy (CORE cycle): "
             "CONNECT → open with prior-knowledge hook or analogy. "
             "ORGANISE → build new concepts incrementally on established ones. "
-            "REFLECT → embed one reflective checkpoint (key takeaway or compare/contrast). "
+            "REFLECT → weave a key takeaway or compare/contrast insight into prose when useful. "
             "EXTEND → close by transferring knowledge to a real-world context. "
             "Define every new term in context on first use — never in isolation."
         ),
@@ -207,8 +209,8 @@ def _build_length_rule(
             f"Calibration for this compact section ({section_type} / {content_level}):\n"
             f"- Write directly under the ## section heading when possible.\n"
             f"- Do not create a lone ### block. Use no ### by default.\n"
-            f"- Use bullets, a compact table, or bold lead-ins for short labels.\n"
-            f"- Concepts, basic features, and component lists may be concise.\n\n"
+            f"- Prefer cohesive prose over note-like fragments.\n"
+            f"- Use bullets/tables only for true enumerations, workflows, variables, comparisons, or practice tasks.\n\n"
             f"If short: add one precise explanation or short example that improves learning.\n"
             f"If long: remove repeated framing, routine summaries, unnecessary real-world "
             f"applications, and reflective commentary before adding more content."
@@ -278,7 +280,7 @@ def _build_expansion_rule(
 
     strategy_rules = {
         "quantitative_formula_examples": "Add formulas, symbol explanations, worked examples, and short interpretation paragraphs where appropriate.",
-        "code_examples_debugging_tasks": "Use compact code examples, expected output, common mistakes, debugging notes, and short practice tasks.",
+        "code_examples_debugging_tasks": "Use compact code examples, expected output, common mistakes, debugging notes, and short practice tasks only when this section is genuinely about programming, commands, configuration, APIs, SQL, or debugging.",
         "workflow_checklists_practice_steps": "Use workflow steps, checklists, decision points, quality gates, and practice tasks.",
         "case_studies_rubrics_metrics": "Use case studies, rubrics, metrics/KPIs, scoring criteria, and small decision tables.",
         "comparison_tables_timelines_frameworks": "Use comparison tables, timelines, classification criteria, cause-effect frameworks, and synthesis prompts.",
@@ -287,7 +289,7 @@ def _build_expansion_rule(
         "analytical_examples_structured_synthesis": (
             "Use analytical examples, structured synthesis, and comparison points."
             if page_budget_mode == "compact"
-            else "Use analytical examples, structured synthesis, comparison points, and reflection prompts."
+            else "Use analytical examples, structured synthesis, and comparison points."
         ),
     }
     selected_rule = strategy_rules.get(strategy, strategy_rules["analytical_examples_structured_synthesis"])
@@ -299,6 +301,32 @@ def _build_expansion_rule(
     if language == "vi":
         lines.append("Write all labels, tables, examples, and explanations in Vietnamese.")
     return "\n".join(lines)
+
+
+def _is_code_heavy_context(layout_profile: str | None, expansion_strategy: str | None) -> bool:
+    return (
+        str(layout_profile or "").strip().lower() == "code"
+        or str(expansion_strategy or "").strip().lower() == "code_examples_debugging_tasks"
+    )
+
+
+def _build_code_style_rule(
+    layout_profile: str | None,
+    expansion_strategy: str | None,
+) -> str:
+    if _is_code_heavy_context(layout_profile, expansion_strategy):
+        return (
+            "- Code blocks are allowed when they directly teach programming, SQL/API usage, "
+            "configuration, command-line work, debugging, or lab implementation. Every code "
+            "block must include a language identifier such as ```python, ```bash, or ```sql."
+        )
+    return (
+        "- Do NOT use fenced code blocks in concept/basic sections. For networking, operating "
+        "systems, computer architecture, and other conceptual technical topics, prefer prose, "
+        "comparison tables, conceptual models, diagrams/images, or scenario examples. Use a "
+        "code/config/command block only when the section title or description explicitly asks "
+        "for programming, commands, configuration, SQL/API usage, debugging, or a hands-on lab."
+    )
 
 
 def _build_prior_summary_block(
@@ -379,6 +407,7 @@ class ContentWriter:
         formula_density: str | None = None,
         expansion_strategy: str | None = None,
         page_fill_bias: float | None = None,
+        planned_child_sections: list[dict] | None = None,
     ) -> str:
         """
         Generate academic content for a single textbook section.
@@ -421,6 +450,7 @@ class ContentWriter:
             page_budget_mode=page_budget_mode,
             language=language,
         )
+        code_style_rule = _build_code_style_rule(layout_profile, expansion_strategy)
         prior_block   = _build_prior_summary_block(section_summaries)
         hk_hint       = _get_hk_hint(section_type, page_budget_mode)
         back_reference = (
@@ -430,10 +460,20 @@ class ContentWriter:
             else 'When writing in English, reference prior concepts with a natural '
             'phrase such as "as discussed in Section X.Y" when relevant.'
         )
+        planned_child_sections = planned_child_sections or []
+        planned_child_heading_lines = [
+            f"### {child.get('number')} {child.get('title')}"
+            for child in planned_child_sections
+            if child.get("number") and child.get("title")
+        ]
+        planned_child_block = "\n".join(planned_child_heading_lines)
+        is_controlled_level2_parent = bool(planned_child_heading_lines)
+        is_planned_level2_leaf = section_num.count(".") >= 2
+        section_heading_marker = "###" if is_planned_level2_leaf else "##"
         double_number_example = (
-            "NEVER double-number: ❌ ## 1.1. Mục 1.1 → ✅ ## 1.1 Tiêu đề"
+            f"NEVER double-number: ❌ {section_heading_marker} {section_num}. Mục {section_num} → ✅ {section_heading_marker} {section_num} Tiêu đề"
             if language == "vi"
-            else "NEVER double-number: ❌ ## 1.1. Section 1.1 → ✅ ## 1.1 Title"
+            else f"NEVER double-number: ❌ {section_heading_marker} {section_num}. Section {section_num} → ✅ {section_heading_marker} {section_num} Title"
         )
         style_rule = (
             "English punctuation: do NOT use em dash or en dash characters "
@@ -447,11 +487,55 @@ class ContentWriter:
                 "\"đây là\", \"là\", \"điều này cho thấy\", a comma, or a separate sentence."
             )
         )
-        if page_budget_mode == "compact":
+        if is_controlled_level2_parent:
+            subsection_depth_rule = (
+                "Controlled level-2 parent discipline:\n"
+                f"- This writer unit is the full parent section ## {section_num} {section_title}.\n"
+                "- You MUST write exactly the planned ### child headings below, in order:\n"
+                f"{planned_child_block}\n"
+                "- Do NOT create any extra ### headings. Do NOT omit, rename, renumber, or reorder planned child headings.\n"
+                "- Inside each planned child, prefer cohesive prose. Use bullets, tables, code, or math only when they genuinely fit the content."
+            )
+            subsection_count_rule = (
+                "Rule 5 — CONTROLLED LEVEL-2 STRUCTURE:\n"
+                "- The only ### headings allowed are the planned child headings listed above.\n"
+                "- Missing planned child heading = failure. Extra unplanned ### heading = failure."
+            )
             paragraph_flow_rule = (
-                "Paragraph rhythm: concise academic prose is acceptable. Use bullets "
-                "for definitions, features, or components when that keeps the section clear. "
-                "Avoid reflective wrap-ups and repeated application framing."
+                "Paragraph rhythm: write cohesive prose in the target language under each "
+                "planned child; use lists/tables only when they improve scanning."
+            )
+            pedagogy_line = (
+                "Apply the planned level-2 outline precisely; deepen each approved child "
+                "rather than inventing additional heading levels."
+            )
+            example_rule = "Use concrete, domain-relevant examples when they improve understanding."
+        elif is_planned_level2_leaf:
+            subsection_depth_rule = (
+                "Controlled level-2 leaf discipline:\n"
+                f"- This writer unit is already a planned ### section: {section_num}.\n"
+                "- Do NOT create any additional ### headings inside it.\n"
+                "- Organise internal parts with cohesive paragraphs first; use lists/tables/steps only for true enumerations, workflows, or comparisons."
+            )
+            subsection_count_rule = (
+                "Rule 5 — CONTROLLED LEVEL-2 STRUCTURE:\n"
+                "- Output exactly one planned ### heading for this section.\n"
+                "- Do not create extra ### headings. Use inline lead-ins sparingly and keep the explanation in the same paragraph."
+            )
+            paragraph_flow_rule = (
+                "Paragraph rhythm: write cohesive prose in the target language and use "
+                "lists/tables only when they improve scanning."
+            )
+            pedagogy_line = (
+                "Apply the planned level-2 scope precisely; deepen the approved leaf "
+                "rather than creating more heading levels."
+            )
+            example_rule = "Use concrete, domain-relevant examples when they improve understanding."
+        elif page_budget_mode == "compact":
+            paragraph_flow_rule = (
+                "Paragraph rhythm: prefer concise academic prose over note-like fragments. "
+                "Use bullets only for true enumerations, workflows, variables, comparisons, "
+                "or practice tasks. Avoid reflective wrap-ups and repeated application framing."
             )
             pedagogy_line = (
                 "Use a compact teaching pattern: connect briefly, organise the core "
@@ -468,7 +552,7 @@ class ContentWriter:
                 "- Create ### only for real second-level subsections such as "
                 f"### {section_num}.1 and only if there are at least two genuinely "
                 "distinct child groups.\n"
-                "- Never create one lone ### block; use bold lead-ins, bullets, or a table instead."
+                "- Never create one lone ### block; continue with prose, a compact table, or a true list instead."
             )
             subsection_count_rule = (
                 "Rule 5 — SUB-SECTION COUNT FOR COMPACT MODE:\n"
@@ -487,7 +571,7 @@ class ContentWriter:
             )
             pedagogy_line = (
                 "Apply the CORE model per section: Connect to prior knowledge → Organise new "
-                "content incrementally → Reflect via a synthesis checkpoint when useful → "
+                "content incrementally → weave synthesis or comparison into prose when useful → "
                 "Extend to a real-world context only when it adds clear value."
             )
             example_rule = "Use concrete, domain-relevant examples when they improve understanding."
@@ -591,7 +675,7 @@ Content standards:
 - Adapt tone: precise for IT/Engineering, narrative for History/Arts.
 - Bold (**term**) ONLY for the primary concept defined for the first time.
 - {example_rule}
-- Code blocks must include language identifier: ```python, ```bash, etc.
+{code_style_rule}
 - Inline code rule: programming identifiers, keywords, function names, method
   names, operators, and code expressions MUST use backticks, not $...$ math.
   Correct: `student_scores["Alice"]`, `keys()`, `if`, `for`, `str()`.
@@ -607,6 +691,15 @@ Content standards:
 - In numbered/bulleted calculation steps, each step label must stay outside
   math. Put only that step's formula inside its own $$...$$ block. Never open
   one $$ block that spans multiple numbered/bulleted steps or prose labels.
+- Colon rule: keep prose explanations on the same line/paragraph after ":".
+  Correct: "Ví dụ thực tiễn: ..." and "Điểm khác biệt là: ...".
+  Start a new list after ":" only for a true list, table, formula explanation,
+  workflow, or "Trong đó:" variable block.
+- Do not create empty label bullets such as "- Chia sẻ tài nguyên:" followed by
+  the explanation in the next paragraph. Write "- Chia sẻ tài nguyên: ..." or
+  use a normal prose sentence instead.
+- Do not write labels named "Checkpoint", "Checkpoint phản tư",
+  "Checkpoint thực hành", "synthesis checkpoint", or similar checkpoint markers.
 - {style_rule}
 
 {hk_hint}
@@ -618,15 +711,15 @@ Rule 1 — CHAPTER HEADER (non-negotiable):
 {chapter_instruction}
 
 Rule 2 — DOCUMENT STRUCTURE:
-- Section header: ## {section_num} {section_title}
-- Sub-section: ### {section_num}.N Title (N starts at 1)
-- ### is only for real second-level subsections such as {section_num}.1.
+- Section header: {section_heading_marker} {section_num} {section_title}
+- Sub-section: {"use exactly the planned child headings listed in the criterion above" if is_controlled_level2_parent else f"### {section_num}.N Title (N starts at 1) only when this writer unit is a ## section."}
+- ### is only for real planned/necessary second-level subsections such as {section_num}.1.
 - NEVER use unnumbered ### headers such as "### Đặc điểm kỹ thuật",
   "### Ví dụ thực tiễn", "### Bảng so sánh nhanh", or "### Quy trình thực hiện".
-  Use bold lead-ins instead, for example **Đặc điểm chính:** or **Ví dụ ngắn:**.
+  Use a normal prose sentence or a short inline lead-in instead.
 - NEVER use # unless Rule 1 explicitly instructs it
 - {double_number_example}
-- NEVER use colon after number: ❌ ## 1.1: → ✅ ## 1.1
+- NEVER use colon after number: ❌ {section_heading_marker} {section_num}: → ✅ {section_heading_marker} {section_num}
 
 Rule 3 — BLANK LINES (PDF will break if violated):
 Blank line BEFORE and AFTER: every heading, every paragraph, every list,
@@ -735,6 +828,7 @@ class WriterAgent:
         formula_density: str | None = None,
         expansion_strategy: str | None = None,
         page_fill_bias: float | None = None,
+        planned_child_sections: list[dict] | None = None,
         
     ) -> str:
         """
@@ -807,6 +901,7 @@ class WriterAgent:
                 formula_density=formula_density,
                 expansion_strategy=expansion_strategy,
                 page_fill_bias=page_fill_bias,
+                planned_child_sections=planned_child_sections,
             )
         else:
             logger.info(
@@ -823,9 +918,9 @@ class WriterAgent:
                     chapter_instruction
                     if is_first_part
                     else (
-                        f"Continue the same section ## {section_num} {section_title}. "
-                        "Do NOT output any # or ## heading. Continue with body prose "
-                        "and numbered ### blocks only when they add real structure."
+                        f"Continue the same section {section_num} {section_title}. "
+                        "Do NOT output any #, ##, or ### heading. Continue with body prose, "
+                        "lists, tables, and examples only when they genuinely improve learning."
                     )
                 )
                 part_description = (
@@ -858,11 +953,18 @@ class WriterAgent:
                     formula_density=formula_density,
                     expansion_strategy=expansion_strategy,
                     page_fill_bias=page_fill_bias,
+                    planned_child_sections=planned_child_sections if is_first_part else [],
                 )
                 if not is_first_part:
                     piece = re.sub(r'^# [^\n]*\n?', '', piece, flags=re.MULTILINE).lstrip()
                     piece = re.sub(
                         rf'^##\s+{re.escape(section_num)}\s+{re.escape(section_title)}\s*\n?',
+                        '',
+                        piece,
+                        flags=re.MULTILINE,
+                    ).lstrip()
+                    piece = re.sub(
+                        rf'^###\s+{re.escape(section_num)}\s+{re.escape(section_title)}\s*\n?',
                         '',
                         piece,
                         flags=re.MULTILINE,
@@ -1050,7 +1152,11 @@ def write_section_crag(state: AgentState) -> dict:
         logger.info(f"Revision requested: '{review_feedback[:80]}...'")
 
     try:
-        chapter, subsection = get_chapter_and_subsection(curriculum, chap_idx, sub_idx)
+        location = get_section_location(curriculum, chap_idx, sub_idx)
+        chapter = location["chapter"]
+        subsection = location["subsection"]
+        parent_section = location["parent"]
+        child_sections = location.get("children") or []
 
         chap_title = (
             chapter.title if isinstance(chapter, Chapter)
@@ -1105,27 +1211,95 @@ def write_section_crag(state: AgentState) -> dict:
         used_queries    = state.get("used_rag_queries", [])
 
         sec_title    = clean_section_title(sec_title)
-        display_chap = str(chap_idx + 1)
-        display_sec  = f"{display_chap}.{sub_idx + 1}"
+        display_chap = location["display_chapter"]
+        display_sec  = location["display_number"]
+        parent_number = location["parent_number"]
+        is_child_leaf = bool(location["is_child"])
+        planned_child_sections: list[dict] = []
+        for child_idx, child in enumerate(child_sections):
+            child_title = (
+                child.title if isinstance(child, SubSection)
+                else child.get("title", "")
+            )
+            child_desc = (
+                child.description if isinstance(child, SubSection)
+                else child.get("description", "")
+            )
+            child_type = (
+                child.section_type if isinstance(child, SubSection)
+                else child.get("section_type", "medium")
+            )
+            child_title = clean_section_title(str(child_title or ""))
+            if not child_title:
+                continue
+            planned_child_sections.append({
+                "number": f"{display_sec}.{child_idx + 1}",
+                "title": child_title,
+                "description": str(child_desc or ""),
+                "section_type": str(child_type or "medium"),
+            })
+        if planned_child_sections:
+            child_scope = "\n".join(
+                f"- {child['number']} {child['title']}: {child.get('description') or 'Cover this planned child subsection.'}"
+                for child in planned_child_sections
+            )
+            sec_desc = (
+                f"{sec_desc}\n\nControlled level-2 child subsections to cover exactly:\n"
+                f"{child_scope}"
+            ).strip()
+        parent_title = ""
+        if parent_section is not None:
+            parent_title = (
+                parent_section.title if isinstance(parent_section, SubSection)
+                else parent_section.get("title", "")
+            )
+            parent_title = clean_section_title(parent_title)
 
-        is_chapter_open        = (sub_idx == 0)
+        is_chapter_open        = bool(location["is_first_in_chapter"])
+        is_parent_open         = bool(location["is_first_in_parent"])
         header_already_written = state.get("chapter_header_written", False)
 
         if is_chapter_open and not header_already_written:
             expected_heading = f"# {profile.chapter_label} {display_chap}: {chap_title.upper()}"
+            section_heading = (
+                f"## {display_sec} {sec_title}\n\n" + "\n\n".join(
+                    f"### {child['number']} {child['title']}"
+                    for child in planned_child_sections
+                )
+                if planned_child_sections
+                else
+                f"## {parent_number} {parent_title}\n\n### {display_sec} {sec_title}"
+                if is_child_leaf and is_parent_open
+                else f"### {display_sec} {sec_title}" if is_child_leaf
+                else f"## {display_sec} {sec_title}"
+            )
             chapter_instruction_text = (
                 f"This is the opening section of Chapter {display_chap}.\n"
                 f"Output EXACTLY this line as the very first line "
                 f"(before the ## section header):\n"
                 f"{expected_heading}\n\n"
-                f"Then on the next line write: ## {display_sec} {sec_title}"
+                f"Then write exactly this planned section heading block:\n"
+                f"{section_heading}"
             )
             emit_header = True
         else:
+            section_heading = (
+                f"## {display_sec} {sec_title}\n\n" + "\n\n".join(
+                    f"### {child['number']} {child['title']}"
+                    for child in planned_child_sections
+                )
+                if planned_child_sections
+                else
+                f"## {parent_number} {parent_title}\n\n### {display_sec} {sec_title}"
+                if is_child_leaf and is_parent_open
+                else f"### {display_sec} {sec_title}" if is_child_leaf
+                else f"## {display_sec} {sec_title}"
+            )
             chapter_instruction_text = (
                 f"This section is NOT the start of a new chapter.\n"
                 f"DO NOT output any # (level-1) heading under ANY circumstances.\n"
-                f"Your very first line MUST be: ## {display_sec} {sec_title}"
+                f"Your very first line(s) MUST be exactly this planned heading block:\n"
+                f"{section_heading}"
             )
             emit_header = False
 
@@ -1201,6 +1375,7 @@ def write_section_crag(state: AgentState) -> dict:
             formula_density=formula_density,
             expansion_strategy=expansion_strategy,
             page_fill_bias=page_fill_bias,
+            planned_child_sections=planned_child_sections,
         )
 
         # Layer 2 — Suppress spurious level-1 headings
@@ -1229,6 +1404,62 @@ def write_section_crag(state: AgentState) -> dict:
                 flags=re.MULTILINE,
                 count=1,
             )
+
+        def _has_heading(markdown: str, heading: str) -> bool:
+            return bool(re.search(rf'^{re.escape(heading)}\s*$', markdown, flags=re.MULTILINE))
+
+        def _prepend_after_chapter_or_start(markdown: str, heading_block: str) -> str:
+            if emit_header:
+                chapter_line = rf'^(# {re.escape(profile.chapter_label)} {display_chap}: .+)$'
+                if re.search(chapter_line, markdown, flags=re.MULTILINE):
+                    return re.sub(
+                        chapter_line,
+                        lambda m: f"{m.group(1)}\n\n{heading_block}",
+                        markdown,
+                        flags=re.MULTILINE,
+                        count=1,
+                    )
+            return f"{heading_block}\n\n{markdown.lstrip()}"
+
+        # Layer 2d — Enforce planned section headings after LLM output.
+        if planned_child_sections:
+            parent_heading = f"## {display_sec} {sec_title}"
+            if not _has_heading(content, parent_heading):
+                content = _prepend_after_chapter_or_start(
+                    content,
+                    parent_heading,
+                )
+        elif is_child_leaf:
+            parent_heading = f"## {parent_number} {parent_title}"
+            child_heading = f"### {display_sec} {sec_title}"
+            has_parent = _has_heading(content, parent_heading)
+            has_child = _has_heading(content, child_heading)
+            if is_parent_open and not has_parent and has_child:
+                content = re.sub(
+                    rf'^{re.escape(child_heading)}\s*$',
+                    f"{parent_heading}\n\n{child_heading}",
+                    content,
+                    flags=re.MULTILINE,
+                    count=1,
+                )
+                has_parent = True
+            if is_parent_open and (not has_parent or not has_child):
+                heading_block = "\n\n".join(
+                    heading
+                    for heading, present in (
+                        (parent_heading, has_parent),
+                        (child_heading, has_child),
+                    )
+                    if not present
+                )
+                if heading_block:
+                    content = _prepend_after_chapter_or_start(content, heading_block)
+            elif not has_child:
+                content = _prepend_after_chapter_or_start(content, child_heading)
+        else:
+            expected_section_heading = f"## {display_sec} {sec_title}"
+            if not _has_heading(content, expected_section_heading):
+                content = _prepend_after_chapter_or_start(content, expected_section_heading)
 
         result: dict = {"current_content": content}
         if emit_header:

@@ -13,11 +13,12 @@ Pipeline:
 """
 
 import json
+from copy import deepcopy
 from typing import Any, List, Dict, Optional
 
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
-from app.schemas.curriculum import AgentState, CurriculumOutline
+from app.schemas.curriculum import AgentState, CurriculumOutline, count_curriculum_leaf_sections
 from app.config import settings
 from app.services.api_rate_limiter import rate_limited_invoke
 from app.services.runtime_config import get_api_key
@@ -697,8 +698,10 @@ Each object must have:
         user_requirements: str,  
         num_chapters: int = 3,
         max_subsections: int = 5,
+        max_child_subsections: int = 3,
         language: str = "vi",
         textbook_mode: str = "standard",
+        structure_depth: str = "level1",
     ) -> Optional[Dict[str, Any]]:
         """
         Build full curriculum from topic name only.
@@ -741,6 +744,16 @@ Each object must have:
             )
 
             if subsections:
+                if structure_depth == "level2":
+                    subsections = self._attach_child_subsections(
+                        core_topic=core_topic,
+                        user_requirements=user_requirements,
+                        chapter_title=title,
+                        subsections=subsections,
+                        max_child_subsections=max_child_subsections,
+                        language=language,
+                        textbook_mode=textbook_mode,
+                    )
                 chapters.append({"title": title, "subsections": subsections})
             else:
                 failed_chapters += 1
@@ -758,40 +771,263 @@ Each object must have:
                             "then solve a similar exercise and a slightly advanced challenge."
                         )
                     )
-                    chapters.append({
-                        "title": title,
-                        "subsections": [{
-                            "title": fallback_title,
-                            "description": fallback_description,
-                            "search_query": (
-                                f"{core_topic} {title} lab hands-on tutorial "
-                                "exercise worked example practice"
-                            ),
-                            "section_type": "applied",
-                        }],
-                    })
+                    fallback_section = {
+                        "title": fallback_title,
+                        "description": fallback_description,
+                        "search_query": (
+                            f"{core_topic} {title} lab hands-on tutorial "
+                            "exercise worked example practice"
+                        ),
+                        "section_type": "applied",
+                    }
                 else:
-                    chapters.append({
-                        "title": title,
-                        "subsections": [{
-                            "title":        f"Giới thiệu về {title}" if language == "vi" else f"Introduction to {title}",
-                            "description":  f"Tổng quan về {title}" if language == "vi" else f"Overview of {title}",
-                            "search_query": f"{core_topic} {title} introduction",
-                            "section_type": "light",
-                        }],
-                    })
+                    fallback_section = {
+                        "title":        f"Giới thiệu về {title}" if language == "vi" else f"Introduction to {title}",
+                        "description":  f"Tổng quan về {title}" if language == "vi" else f"Overview of {title}",
+                        "search_query": f"{core_topic} {title} introduction",
+                        "section_type": "light",
+                    }
+                if structure_depth == "level2":
+                    fallback_section = {
+                        **fallback_section,
+                        "children": [dict(fallback_section)],
+                    }
+                chapters.append({
+                    "title": title,
+                    "subsections": [fallback_section],
+                })
 
         if failed_chapters == num_chapters:
             logger.error("All chapters failed to generate subsections")
             return None
 
-        total_subsections = sum(len(c["subsections"]) for c in chapters)
+        total_subsections = sum(
+            sum(len(s.get("children") or [s]) for s in c["subsections"])
+            for c in chapters
+        )
         logger.info(
             f"✓ Curriculum built: {len(chapters)} chapters, "
             f"{total_subsections} subsections "
             f"({failed_chapters} chapters used fallback)"
         )
-        return {"topic": core_topic, "chapters": chapters}
+        return {"topic": core_topic, "chapters": chapters, "structure_depth": structure_depth}
+
+    def _attach_child_subsections(
+        self,
+        *,
+        core_topic: str,
+        user_requirements: str,
+        chapter_title: str,
+        subsections: List[Dict[str, Any]],
+        max_child_subsections: int,
+        language: str,
+        textbook_mode: str,
+    ) -> List[Dict[str, Any]]:
+        enriched: List[Dict[str, Any]] = []
+        for subsection in subsections:
+            title = str(subsection.get("title") or "").strip()
+            if not title:
+                enriched.append(subsection)
+                continue
+            children = self._generate_child_subsections(
+                core_topic=core_topic,
+                user_requirements=user_requirements,
+                chapter_title=chapter_title,
+                parent_title=title,
+                parent_description=str(subsection.get("description") or ""),
+                max_children=max_child_subsections,
+                language=language,
+                textbook_mode=textbook_mode,
+            )
+            if not children:
+                fallback = self._fallback_structured_metadata(
+                    core_topic,
+                    user_requirements,
+                    chapter_title,
+                    title,
+                    language,
+                    textbook_mode=textbook_mode,
+                )
+                children = [{
+                    "title": title,
+                    "description": fallback["description"],
+                    "search_query": fallback["search_query"],
+                    "section_type": fallback["section_type"],
+                }]
+            enriched.append({**subsection, "children": children})
+        return enriched
+
+    def fill_missing_child_subsections(
+        self,
+        *,
+        initial_structure: Dict[str, Any],
+        core_topic: str,
+        user_requirements: str,
+        max_child_subsections: int = 3,
+        language: str = "vi",
+        textbook_mode: str = "standard",
+    ) -> Dict[str, Any]:
+        """Fill only parent sections that are missing level-2 children."""
+        structure = deepcopy(initial_structure or {})
+        for chapter in structure.get("chapters") or []:
+            if not isinstance(chapter, dict):
+                continue
+            chapter_title = str(chapter.get("title") or "").strip()
+            for subsection in chapter.get("subsections") or []:
+                if not isinstance(subsection, dict):
+                    continue
+                existing_children = subsection.get("children")
+                if isinstance(existing_children, list) and existing_children:
+                    continue
+                parent_title = str(subsection.get("title") or "").strip()
+                if not parent_title:
+                    continue
+                children = self._generate_child_subsections(
+                    core_topic=core_topic,
+                    user_requirements=user_requirements,
+                    chapter_title=chapter_title,
+                    parent_title=parent_title,
+                    parent_description=str(subsection.get("description") or ""),
+                    max_children=max_child_subsections,
+                    language=language,
+                    textbook_mode=textbook_mode,
+                )
+                if not children:
+                    fallback = self._fallback_structured_metadata(
+                        core_topic,
+                        user_requirements,
+                        chapter_title,
+                        parent_title,
+                        language,
+                        textbook_mode=textbook_mode,
+                    )
+                    children = [{
+                        "title": parent_title,
+                        "description": fallback["description"],
+                        "search_query": fallback["search_query"],
+                        "section_type": fallback["section_type"],
+                    }]
+                subsection["children"] = children
+        structure["structure_depth"] = "level2"
+        return structure
+
+    def _generate_child_subsections(
+        self,
+        *,
+        core_topic: str,
+        user_requirements: str,
+        chapter_title: str,
+        parent_title: str,
+        parent_description: str,
+        max_children: int,
+        language: str,
+        textbook_mode: str,
+    ) -> Optional[List[Dict[str, Any]]]:
+        profile = get_language_profile(language)
+        practice_mode = _is_practice_mode(textbook_mode)
+        valid_types = {"light", "medium", "deep", "applied"}
+        max_children = max(1, int(max_children or 1))
+        system_prompt = f"""
+[CONTEXT]
+You are a curriculum planner expanding an approved level-1 section into
+controlled level-2 writing leaves for a {profile.prompt_name} textbook.
+[/CONTEXT]
+
+[TASK]
+Generate 1 to {max_children} child subsections under the given parent section.
+Each child will be written as an exact planned ### heading, so do not create
+generic labels.
+[/TASK]
+
+[CRITERION]
+Each child must have:
+- title: specific title in {profile.prompt_name}
+- description: 1-2 sentences in {profile.prompt_name}, aligned to the title
+- search_query: English retrieval keywords
+- section_type: {"exactly applied" if practice_mode else "one of light, medium, deep, applied"}
+[/CRITERION]
+
+[CONSTRAINT]
+Preserve the parent scope. Do not repeat sibling children. Return only JSON.
+[/CONSTRAINT]
+
+[FORMAT]
+Output ONLY a JSON array with objects containing title, description,
+search_query, section_type.
+[/FORMAT]"""
+        user_prompt = (
+            f"Textbook topic: {core_topic}\n"
+            f"User requirements: {user_requirements or 'None'}\n"
+            f"Chapter: {chapter_title}\n"
+            f"Parent section: {parent_title}\n"
+            f"Parent description: {parent_description or 'None'}\n"
+            f"Generate controlled child subsections."
+        )
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", system_prompt),
+            ("human", user_prompt),
+        ])
+        for attempt in range(1, 4):
+            if attempt == 1:
+                self.prompt_logger.log(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    context_label=f"Level2 children | {chapter_title[:30]} / {parent_title[:30]}",
+                )
+            try:
+                response = rate_limited_invoke(
+                    prompt | self.llm,
+                    {},
+                    bucket="chat",
+                    metadata={
+                        "agent": "Planner",
+                        "node": "planner_level2_children",
+                        "model": LLM_MODEL_PREMIUM,
+                    },
+                )
+                raw = str(response.content).strip()  # type: ignore
+                start = raw.find("[")
+                end = raw.rfind("]")
+                if start == -1 or end == -1:
+                    raise ValueError("No JSON array in child subsection response")
+                parsed = json.loads(raw[start:end + 1])
+                if not isinstance(parsed, list) or not parsed:
+                    raise ValueError("Empty child subsection response")
+                parsed = parsed[:max_children]
+                normalized: List[Dict[str, Any]] = []
+                for item in parsed:
+                    if not isinstance(item, dict):
+                        continue
+                    child_title = str(item.get("title") or "").strip()
+                    if not child_title:
+                        continue
+                    section_type = str(item.get("section_type") or "").strip().lower()
+                    if practice_mode:
+                        section_type = "applied"
+                    elif section_type not in valid_types:
+                        section_type = self._fallback_section_type(child_title, user_requirements)
+                    query = str(item.get("search_query") or f"{core_topic} {chapter_title} {parent_title} {child_title}").strip()
+                    if practice_mode:
+                        query = f"{query} lab hands-on tutorial exercise worked example practice"
+                    normalized.append({
+                        "title": child_title,
+                        "description": str(item.get("description") or "").strip() or (
+                            self._fallback_structured_metadata(
+                                core_topic,
+                                user_requirements,
+                                chapter_title,
+                                child_title,
+                                language,
+                                textbook_mode=textbook_mode,
+                            )["description"]
+                        ),
+                        "search_query": query,
+                        "section_type": section_type,
+                    })
+                return normalized or None
+            except Exception as e:
+                logger.warning("Level2 child generation failed attempt %s/3: %s", attempt, e)
+        return None
 
     def _fallback_section_type(self, title: str, user_requirements: str) -> str:
         text = f"{title} {user_requirements}".lower()
@@ -860,22 +1096,45 @@ Each object must have:
         skeleton: Dict[str, Any],
         language: str = "vi",
         textbook_mode: str = "standard",
+        structure_depth: str = "level1",
     ) -> List[Dict[str, str]]:
         profile = get_language_profile(language)
         practice_mode = _is_practice_mode(textbook_mode)
         valid_types = {"light", "medium", "deep", "applied"}
         chapters = skeleton.get("chapters") or []
         chapter = chapters[chapter_index]
-        subsection_titles = [
-            str(sub.get("title") or "").strip()
-            for sub in chapter.get("subsections", [])
-        ]
+        def _leaf_titles(ch: Dict[str, Any]) -> list[str]:
+            titles: list[str] = []
+            for sub in ch.get("subsections", []):
+                if not isinstance(sub, dict):
+                    continue
+                children = sub.get("children") if structure_depth == "level2" else None
+                if isinstance(children, list) and children:
+                    titles.extend(
+                        str(child.get("title") or "").strip()
+                        for child in children
+                        if isinstance(child, dict) and str(child.get("title") or "").strip()
+                    )
+                else:
+                    title = str(sub.get("title") or "").strip()
+                    if title:
+                        titles.append(title)
+            return titles
+
+        subsection_titles = _leaf_titles(chapter)
         full_outline = "\n".join(
             "\n".join(
                 [f"Chapter {idx + 1}: {ch.get('title', '')}"]
                 + [
                     f"  - {idx + 1}.{sub_idx + 1} {sub.get('title', '')}"
                     for sub_idx, sub in enumerate(ch.get("subsections", []))
+                ]
+                + [
+                    f"    - {idx + 1}.{sub_idx + 1}.{child_idx + 1} {child.get('title', '')}"
+                    for sub_idx, sub in enumerate(ch.get("subsections", []))
+                    if isinstance(sub, dict)
+                    for child_idx, child in enumerate(sub.get("children") or [])
+                    if isinstance(child, dict)
                 ]
             )
             for idx, ch in enumerate(chapters)
@@ -1043,6 +1302,7 @@ Each object must have "description", "search_query", and "section_type".
                 title,
                 language,
                 textbook_mode=textbook_mode,
+                structure_depth=structure_depth,
             )
             for title in subsection_titles
         ]
@@ -1054,6 +1314,7 @@ Each object must have "description", "search_query", and "section_type".
         initial_structure: Dict[str, Any],
         language: str = "vi",
         textbook_mode: str = "standard",
+        structure_depth: str = "level1",
     ) -> Optional[CurriculumOutline]:
         chapters = initial_structure.get("chapters") if isinstance(initial_structure, dict) else None
         if not isinstance(chapters, list) or not chapters:
@@ -1064,9 +1325,15 @@ Each object must have "description", "search_query", and "section_type".
         for chapter_index, chapter in enumerate(chapters):
             chapter_title = str(chapter.get("title") or "").strip()
             subsection_titles = [
-                str(sub.get("title") or "").strip()
+                str(child.get("title") or "").strip()
                 for sub in chapter.get("subsections", [])
-                if str(sub.get("title") or "").strip()
+                if isinstance(sub, dict)
+                for child in (
+                    sub.get("children")
+                    if structure_depth == "level2" and isinstance(sub.get("children"), list) and sub.get("children")
+                    else [sub]
+                )
+                if isinstance(child, dict) and str(child.get("title") or "").strip()
             ]
             if not chapter_title or not subsection_titles:
                 logger.error("Structured planner received a malformed chapter")
@@ -1080,24 +1347,58 @@ Each object must have "description", "search_query", and "section_type".
                 skeleton=initial_structure,
                 language=language,
                 textbook_mode=textbook_mode,
+                structure_depth=structure_depth,
             )
             original_subsections = [
                 sub for sub in chapter.get("subsections", [])
                 if isinstance(sub, dict) and str(sub.get("title") or "").strip()
             ]
             enriched_subsections: List[Dict[str, Any]] = []
-            for idx, title in enumerate(subsection_titles):
-                enriched_subsection: Dict[str, Any] = {
-                    "title": title,
-                    "description": metadata[idx]["description"],
-                    "search_query": metadata[idx]["search_query"],
-                    "section_type": metadata[idx]["section_type"],
-                }
-                if idx < len(original_subsections):
-                    target_pages = original_subsections[idx].get("target_pages")
-                    if target_pages is not None:
-                        enriched_subsection["target_pages"] = target_pages
-                enriched_subsections.append(enriched_subsection)
+            meta_idx = 0
+            for original in original_subsections:
+                parent_title = str(original.get("title") or "").strip()
+                if structure_depth == "level2" and isinstance(original.get("children"), list) and original.get("children"):
+                    enriched_children: List[Dict[str, Any]] = []
+                    for child in original.get("children") or []:
+                        if not isinstance(child, dict):
+                            continue
+                        child_title = str(child.get("title") or "").strip()
+                        if not child_title:
+                            continue
+                        child_meta = metadata[meta_idx]
+                        meta_idx += 1
+                        enriched_child: Dict[str, Any] = {
+                            "title": child_title,
+                            "description": child_meta["description"],
+                            "search_query": child_meta["search_query"],
+                            "section_type": child_meta["section_type"],
+                        }
+                        if child.get("target_pages") is not None:
+                            enriched_child["target_pages"] = child.get("target_pages")
+                        enriched_children.append(enriched_child)
+                    enriched_parent: Dict[str, Any] = {
+                        "title": parent_title,
+                        "description": original.get("description") or "",
+                        "search_query": original.get("search_query") or parent_title,
+                        "section_type": original.get("section_type") or "medium",
+                        "children": enriched_children,
+                    }
+                    if original.get("target_pages") is not None:
+                        enriched_parent["target_pages"] = original.get("target_pages")
+                    enriched_subsections.append(enriched_parent)
+                else:
+                    title = parent_title
+                    child_meta = metadata[meta_idx]
+                    meta_idx += 1
+                    enriched_subsection: Dict[str, Any] = {
+                        "title": title,
+                        "description": child_meta["description"],
+                        "search_query": child_meta["search_query"],
+                        "section_type": child_meta["section_type"],
+                    }
+                    if original.get("target_pages") is not None:
+                        enriched_subsection["target_pages"] = original.get("target_pages")
+                    enriched_subsections.append(enriched_subsection)
 
             enriched_chapter: Dict[str, Any] = {
                 "title": chapter_title,
@@ -1108,7 +1409,11 @@ Each object must have "description", "search_query", and "section_type".
             enriched_chapters.append(enriched_chapter)
 
         try:
-            return CurriculumOutline(topic=core_topic, chapters=enriched_chapters)
+            return CurriculumOutline(
+                topic=core_topic,
+                chapters=enriched_chapters,
+                structure_depth=structure_depth,
+            )
         except Exception as e:
             logger.error(f"Failed to parse enriched structured curriculum: {e}")
             return None
@@ -1119,8 +1424,10 @@ Each object must have "description", "search_query", and "section_type".
         user_requirements: str,
         num_chapters: int = 3,
         max_subsections: int = 5,
+        max_child_subsections: int = 3,
         language: str = "vi",
         textbook_mode: str = "standard",
+        structure_depth: str = "level1",
     ) -> Optional[CurriculumOutline]:
         """
         Main entry point: generate curriculum directly from topic.
@@ -1142,8 +1449,10 @@ Each object must have "description", "search_query", and "section_type".
             user_requirements,
             num_chapters=num_chapters,  
             max_subsections=max_subsections,
+            max_child_subsections=max_child_subsections,
             language=language,
             textbook_mode=textbook_mode,
+            structure_depth=structure_depth,
         )
 
         if not plan_dict:
@@ -1200,8 +1509,10 @@ def plan_curriculum(state: AgentState) -> dict:
     user_requirements = state.get("user_requirements", "")
     num_chapters = state.get("num_chapters", 3)
     max_subsections = state.get("max_subsections_per_chapter", 5)
+    max_child_subsections = state.get("max_child_subsections_per_section", 3)
     language = state.get("language", "vi")
     planning_mode = state.get("planning_mode", "auto")
+    structure_depth = state.get("structure_depth", "level1")
     textbook_mode = state.get("textbook_mode", "standard")
     formula_policy = state.get("formula_policy", "auto")
     formula_need = state.get("formula_need", "none")
@@ -1222,8 +1533,10 @@ def plan_curriculum(state: AgentState) -> dict:
     logger.info(f"User requirements  : {user_requirements or '(none)'}")
     logger.info(f"Num chapters       : {num_chapters}")
     logger.info(f"Max subsections/ch : {max_subsections}")
+    logger.info(f"Max child sections : {max_child_subsections}")
     logger.info(f"Language           : {language}")
     logger.info(f"Planning mode      : {planning_mode}")
+    logger.info(f"Structure depth    : {structure_depth}")
     logger.info(f"Textbook mode      : {textbook_mode}")
 
     planner = HybridPlanner()
@@ -1234,6 +1547,7 @@ def plan_curriculum(state: AgentState) -> dict:
             initial_structure,
             language=language,
             textbook_mode=textbook_mode,
+            structure_depth=structure_depth,
         )
     else:
         curriculum = planner.create_curriculum(
@@ -1241,14 +1555,16 @@ def plan_curriculum(state: AgentState) -> dict:
             planner_requirements,
             num_chapters=num_chapters,
             max_subsections=max_subsections,
+            max_child_subsections=max_child_subsections,
             language=language,
             textbook_mode=textbook_mode,
+            structure_depth=structure_depth,
         )
 
     if not curriculum:
         raise ValueError("Planner failed: Could not generate curriculum")
 
-    total_subsections = sum(len(ch.subsections) for ch in curriculum.chapters)
+    total_subsections = count_curriculum_leaf_sections(curriculum)
 
 
     return {

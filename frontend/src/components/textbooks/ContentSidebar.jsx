@@ -4,6 +4,7 @@ import { StatsSection } from './StatsSection'
 import { ChapterList } from './ChapterList'
 import { SourceAuditSection } from './SourceAuditSection'
 import { RunningIndicator } from '../common/RunningIndicator'
+import { getSubsectionProgress } from '../../utils/progressMetrics'
 
 /**
  * Transform flat chapter_titles array into hierarchical structure
@@ -73,6 +74,12 @@ export function ContentSidebar({ progressData }) {
     current_chapter = 0,
     current_subsection = 0,
   } = progressData || {}
+  const { displaySubsectionLocalNumber } = getSubsectionProgress({
+    curriculumData: progressData?.curriculum_data,
+    currentChapter: current_chapter,
+    currentSubsection: current_subsection,
+    totalSubsections: progressData?.total_subsections,
+  })
 
   // Don't render if no data or not in generating phase
   if (!progressData || progressData.phase !== 'generating') {
@@ -134,7 +141,10 @@ export function ContentSidebar({ progressData }) {
           size="sm"
           label={
             current_chapter > 0 && current_subsection > 0
-              ? t('textbook.contentSidebar.writing', { chapter: current_chapter, subsection: current_subsection })
+              ? t('textbook.contentSidebar.writing', {
+                  chapter: current_chapter,
+                  subsection: displaySubsectionLocalNumber || current_subsection,
+                })
               : t('textbook.contentSidebar.initializing')
           }
         />

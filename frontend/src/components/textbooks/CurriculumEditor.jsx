@@ -23,6 +23,7 @@ function numericPage(value, fallback) {
 export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, confirming = false }) {
   const { t } = useTranslation()
   const [editedCurriculum, setEditedCurriculum] = useState(curriculum)
+  const structureDepth = editedCurriculum?.structure_depth || curriculum?.structure_depth || 'level1'
   const [deletedSubs, setDeletedSubs] = useState(new Set())
   const [deletedChapters, setDeletedChapters] = useState(new Set()) // ⭐ NEW
   const [newSubs, setNewSubs] = useState({}) // { chapterIdx: [titles...] }
@@ -58,23 +59,71 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
     setEditedCurriculum(updated)
   }
 
+  const handleChildChange = (chapterIdx, subIdx, childIdx, newTitle) => {
+    const updated = { ...editedCurriculum }
+    updated.chapters[chapterIdx].subsections[subIdx].children[childIdx].title = newTitle
+    setEditedCurriculum(updated)
+  }
+
+  const handleChildPagesChange = (chapterIdx, subIdx, childIdx, value) => {
+    const updated = { ...editedCurriculum }
+    updated.chapters[chapterIdx].subsections[subIdx].children[childIdx].target_pages = value
+    setEditedCurriculum(updated)
+  }
+
+  const handleAddChild = (chapterIdx, subIdx) => {
+    const updated = { ...editedCurriculum }
+    const subsection = updated.chapters[chapterIdx].subsections[subIdx]
+    const nextNumber = (subsection.children || []).length + 1
+    subsection.children = [
+      ...(subsection.children || []),
+      {
+        title: t('textbook.structure.defaultChildSubsection', {
+          chapter: chapterIdx + 1,
+          section: subIdx + 1,
+          number: nextNumber,
+        }),
+        target_pages: '',
+      },
+    ]
+    setEditedCurriculum(updated)
+  }
+
+  const handleDeleteChild = (chapterIdx, subIdx, childIdx) => {
+    const updated = { ...editedCurriculum }
+    const subsection = updated.chapters[chapterIdx].subsections[subIdx]
+    subsection.children = (subsection.children || []).filter((_, idx) => idx !== childIdx)
+    setEditedCurriculum(updated)
+  }
+
   const handleAddChapter = () => {
     const chapterNumber = editedCurriculum.chapters.length + 1
     const chapterTitle = t('textbook.curriculum.newChapterTitle', { number: chapterNumber })
     const subsectionTitle = t('textbook.curriculum.newChapterSubsection', { number: chapterNumber })
+    const subsection = {
+      title: subsectionTitle,
+      description: `Content about ${subsectionTitle}`,
+      search_query: subsectionTitle,
+      section_type: 'medium',
+      target_pages: '',
+    }
+    if (structureDepth === 'level2') {
+      subsection.children = [{
+        title: t('textbook.structure.defaultChildSubsection', {
+          chapter: chapterNumber,
+          section: 1,
+          number: 1,
+        }),
+        target_pages: '',
+      }]
+    }
     setEditedCurriculum({
       ...editedCurriculum,
       chapters: [
         ...editedCurriculum.chapters,
         {
           title: chapterTitle,
-          subsections: [{
-            title: subsectionTitle,
-            description: `Content about ${subsectionTitle}`,
-            search_query: subsectionTitle,
-            section_type: 'medium',
-            target_pages: '',
-          }],
+          subsections: [subsection],
         },
       ],
     })
@@ -113,10 +162,80 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
     }
     const currentCount = editedCurriculum.chapters[chapterIdx].subsections.length
     const newCount = updated[chapterIdx].length
-    updated[chapterIdx].push({
+    const subsection = {
       title: `${t('textbook.contentSidebar.subsections')} ${chapterIdx + 1}.${currentCount + newCount + 1}`,
       target_pages: '',
-    })
+    }
+    if (structureDepth === 'level2') {
+      subsection.children = [{
+        title: t('textbook.structure.defaultChildSubsection', {
+          chapter: chapterIdx + 1,
+          section: currentCount + newCount + 1,
+          number: 1,
+        }),
+        target_pages: '',
+      }]
+    }
+    updated[chapterIdx].push(subsection)
+    setNewSubs(updated)
+  }
+
+  const handleNewSubChange = (chapterIdx, newSubIdx, patch) => {
+    const updated = { ...newSubs }
+    const current = typeof updated[chapterIdx][newSubIdx] === 'string'
+      ? { title: updated[chapterIdx][newSubIdx], target_pages: '' }
+      : updated[chapterIdx][newSubIdx]
+    updated[chapterIdx][newSubIdx] = { ...current, ...patch }
+    setNewSubs(updated)
+  }
+
+  const handleAddNewChild = (chapterIdx, newSubIdx) => {
+    const updated = { ...newSubs }
+    const current = typeof updated[chapterIdx][newSubIdx] === 'string'
+      ? { title: updated[chapterIdx][newSubIdx], target_pages: '', children: [] }
+      : updated[chapterIdx][newSubIdx]
+    const childCount = (current.children || []).length
+    const sectionNumber = editedCurriculum.chapters[chapterIdx].subsections.length + newSubIdx + 1
+    updated[chapterIdx][newSubIdx] = {
+      ...current,
+      children: [
+        ...(current.children || []),
+        {
+          title: t('textbook.structure.defaultChildSubsection', {
+            chapter: chapterIdx + 1,
+            section: sectionNumber,
+            number: childCount + 1,
+          }),
+          target_pages: '',
+        },
+      ],
+    }
+    setNewSubs(updated)
+  }
+
+  const handleNewChildChange = (chapterIdx, newSubIdx, childIdx, patch) => {
+    const updated = { ...newSubs }
+    const current = typeof updated[chapterIdx][newSubIdx] === 'string'
+      ? { title: updated[chapterIdx][newSubIdx], target_pages: '', children: [] }
+      : updated[chapterIdx][newSubIdx]
+    updated[chapterIdx][newSubIdx] = {
+      ...current,
+      children: (current.children || []).map((child, idx) => (
+        idx === childIdx ? { ...child, ...patch } : child
+      )),
+    }
+    setNewSubs(updated)
+  }
+
+  const handleDeleteNewChild = (chapterIdx, newSubIdx, childIdx) => {
+    const updated = { ...newSubs }
+    const current = typeof updated[chapterIdx][newSubIdx] === 'string'
+      ? { title: updated[chapterIdx][newSubIdx], target_pages: '', children: [] }
+      : updated[chapterIdx][newSubIdx]
+    updated[chapterIdx][newSubIdx] = {
+      ...current,
+      children: (current.children || []).filter((_, idx) => idx !== childIdx),
+    }
     setNewSubs(updated)
   }
 
@@ -136,24 +255,40 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
             if (deletedSubs.has(`${chIdx}-${subIdx}`)) return null
             const title = sub.title.trim()
             if (!title) return { invalid: true }
-            return {
+            const section = {
               title,
               description: sub.description?.trim() || `Content about ${title}`,
               search_query: sub.search_query?.trim() || title,
               section_type: sub.section_type || 'medium',
               target_pages: pageValueForSubmit(sub.target_pages, sub.estimated_pages),
             }
+            if (structureDepth === 'level2') {
+              section.children = (sub.children || []).map(child => {
+                const childTitle = String(child.title || '').trim()
+                if (!childTitle) return { invalid: true }
+                return {
+                  title: childTitle,
+                  description: child.description?.trim() || `Content about ${childTitle}`,
+                  search_query: child.search_query?.trim() || childTitle,
+                  section_type: child.section_type || sub.section_type || 'medium',
+                  target_pages: pageValueForSubmit(child.target_pages, child.estimated_pages),
+                }
+              })
+              if (!section.children.length) return { invalid: true, missingChild: true }
+            }
+            return section
           })
           .filter(Boolean)
 
-        if (activeSubs.some(sub => sub.invalid)) return { invalid: true }
+        if (activeSubs.some(sub => sub.missingChild)) return { invalid: true, missingChild: true }
+        if (activeSubs.some(sub => sub.invalid || (sub.children || []).some(child => child.invalid))) return { invalid: true }
 
         // Add new subsections
         const newSubsForChapter = newSubs[chIdx] || []
         const newSubObjects = newSubsForChapter.map(item => {
           const cleanTitle = String(typeof item === 'string' ? item : item.title || '').trim()
           if (!cleanTitle) return { invalid: true }
-          return {
+          const newSubObject = {
             title: cleanTitle,
             description: `Content about ${cleanTitle}`,
             search_query: cleanTitle,
@@ -162,8 +297,30 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
               ? undefined
               : pageValueForSubmit(item.target_pages),
           }
+          if (structureDepth === 'level2') {
+            const children = typeof item === 'string' ? [] : (item.children || [])
+            newSubObject.children = children.map(child => {
+              const childTitle = String(child.title || '').trim()
+              if (!childTitle) return { invalid: true }
+              return {
+                title: childTitle,
+                description: `Content about ${childTitle}`,
+                search_query: childTitle,
+                section_type: 'medium',
+                target_pages: pageValueForSubmit(child.target_pages),
+              }
+            })
+            if (!newSubObject.children.length) {
+              return { invalid: true, missingChild: true }
+            }
+            if (newSubObject.children.some(child => child.invalid)) {
+              return { invalid: true }
+            }
+          }
+          return newSubObject
         })
 
+        if (newSubObjects.some(sub => sub.missingChild)) return { invalid: true, missingChild: true }
         if (newSubObjects.some(sub => sub.invalid)) return { invalid: true }
 
         return {
@@ -174,6 +331,9 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
       })
       .filter(Boolean) // Remove nulls (deleted chapters and empty chapters)
 
+    if (finalChapters.some(ch => ch.missingChild)) {
+      return { invalid: true, missingChild: true }
+    }
     if (finalChapters.some(ch => ch.invalid)) {
       return { invalid: true }
     }
@@ -187,12 +347,13 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
 
     return {
       topic: editedCurriculum.topic,
+      structure_depth: structureDepth,
       target_pages: editedCurriculum.target_pages === '' || editedCurriculum.target_pages === undefined
         ? undefined
         : parseInt(editedCurriculum.target_pages, 10),
       chapters: compactChapters,
     }
-  }, [deletedChapters, deletedSubs, editedCurriculum, newSubs])
+  }, [deletedChapters, deletedSubs, editedCurriculum, newSubs, structureDepth])
 
   const chapterPageBudgetIssues = useMemo(() => {
     if (finalCurriculum.invalid) return []
@@ -242,6 +403,8 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
       setValidationError(
         finalCurriculum.empty
           ? t('textbook.curriculum.emptyCurriculumError')
+          : finalCurriculum.missingChild
+            ? t('textbook.curriculum.level2MissingChildrenError')
           : t('textbook.curriculum.blankTitleError')
       )
       return
@@ -522,34 +685,94 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
                   .filter((_, idx) => !deletedSubs.has(`${chIdx}-${idx}`))
                   .length + 1
 
+                const subsectionPages = numericPage(sub.target_pages, sub.estimated_pages)
+                const childAllocated = (sub.children || []).reduce((sum, child) => (
+                  sum + (numericPage(child.target_pages, child.estimated_pages) || 0)
+                ), 0)
+                const childOverBudget = subsectionPages && childAllocated > subsectionPages
+
                 return (
-                  <div key={subIdx} className="flex gap-2 items-center">
-                    <div className="w-12 text-right text-sm text-blue-400">
-                      {chIdx + 1}.{displayIdx}
+                  <div key={subIdx} className="space-y-2">
+                    <div className="flex gap-2 items-center">
+                      <div className="w-12 text-right text-sm text-blue-400">
+                        {chIdx + 1}.{displayIdx}
+                      </div>
+                      <input
+                        type="text"
+                        value={sub.title}
+                        onChange={(e) => handleSubChange(chIdx, subIdx, e.target.value)}
+                        className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                      />
+                      <input
+                        type="number"
+                        min="1"
+                        max={chapterPages || undefined}
+                        step="1"
+                        value={sub.target_pages ?? (Math.round(sub.estimated_pages || 0) || '')}
+                        onChange={(e) => handleSubPagesChange(chIdx, subIdx, e.target.value)}
+                        className="w-24 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                        title={t('textbook.curriculum.pages')}
+                      />
+                      <button
+                        onClick={() => handleDeleteSub(chIdx, subIdx)}
+                        className="px-3 py-2 text-red-600 hover:bg-red-50 rounded-lg"
+                        title={t('textbook.curriculum.deleteSubsectionTitle')}
+                      >
+                        🗑️
+                      </button>
                     </div>
-                    <input
-                      type="text"
-                      value={sub.title}
-                      onChange={(e) => handleSubChange(chIdx, subIdx, e.target.value)}
-                      className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
-                    />
-                    <input
-                      type="number"
-                      min="1"
-                      max={chapterPages || undefined}
-                      step="1"
-                      value={sub.target_pages ?? (Math.round(sub.estimated_pages || 0) || '')}
-                      onChange={(e) => handleSubPagesChange(chIdx, subIdx, e.target.value)}
-                      className="w-24 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
-                      title={t('textbook.curriculum.pages')}
-                    />
-                    <button
-                      onClick={() => handleDeleteSub(chIdx, subIdx)}
-                      className="px-3 py-2 text-red-600 hover:bg-red-50 rounded-lg"
-                      title={t('textbook.curriculum.deleteSubsectionTitle')}
-                    >
-                      🗑️
-                    </button>
+
+                    {structureDepth === 'level2' && (
+                      <div className={`ml-12 space-y-2 rounded-md border p-2 ${
+                        childOverBudget ? 'border-red-200 bg-red-50' : 'border-gray-100 bg-gray-50'
+                      }`}>
+                        {subsectionPages && (
+                          <p className={`text-xs ${childOverBudget ? 'text-red-700' : 'text-gray-500'}`}>
+                            {t('textbook.structure.childPageAllocationStatus', {
+                              allocated: childAllocated,
+                              target: subsectionPages,
+                            })}
+                          </p>
+                        )}
+                        {(sub.children || []).map((child, childIdx) => (
+                          <div key={childIdx} className="flex items-center gap-2">
+                            <div className="w-16 text-right text-xs font-medium text-blue-500">
+                              {chIdx + 1}.{displayIdx}.{childIdx + 1}
+                            </div>
+                            <input
+                              type="text"
+                              value={child.title}
+                              onChange={(e) => handleChildChange(chIdx, subIdx, childIdx, e.target.value)}
+                              className="min-w-0 flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                            />
+                            <input
+                              type="number"
+                              min="1"
+                              max={subsectionPages || undefined}
+                              step="1"
+                              value={child.target_pages ?? (Math.round(child.estimated_pages || 0) || '')}
+                              onChange={(e) => handleChildPagesChange(chIdx, subIdx, childIdx, e.target.value)}
+                              className="w-20 rounded-md border border-gray-300 px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                              title={t('textbook.structure.childSubsectionPages')}
+                            />
+                            <button
+                              onClick={() => handleDeleteChild(chIdx, subIdx, childIdx)}
+                              className="rounded-md px-2 py-2 text-sm text-red-600 hover:bg-red-50"
+                              title={t('textbook.structure.deleteChildSubsection')}
+                            >
+                              🗑️
+                            </button>
+                          </div>
+                        ))}
+                        <button
+                          type="button"
+                          onClick={() => handleAddChild(chIdx, subIdx)}
+                          className="ml-16 rounded-md border border-blue-200 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-50"
+                        >
+                          + {t('textbook.structure.addChildSubsection')}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )
               })}
@@ -559,54 +782,96 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
                 const displayIdx = activeSubs.length + newIdx + 1
                 const title = typeof item === 'string' ? item : item.title
                 const pages = typeof item === 'string' ? '' : item.target_pages
+                const children = typeof item === 'string' ? [] : (item.children || [])
+                const subsectionPages = numericPage(pages)
+                const childAllocated = children.reduce((sum, child) => (
+                  sum + (numericPage(child.target_pages) || 0)
+                ), 0)
+                const childOverBudget = subsectionPages && childAllocated > subsectionPages
                 
                 return (
-                  <div key={`new-${newIdx}`} className="flex gap-2 items-center">
-                    <div className="w-12 text-right text-sm text-blue-600 font-semibold">
-                      {chIdx + 1}.{displayIdx} ✦
+                  <div key={`new-${newIdx}`} className="space-y-2">
+                    <div className="flex gap-2 items-center">
+                      <div className="w-12 text-right text-sm text-blue-600 font-semibold">
+                        {chIdx + 1}.{displayIdx} ✦
+                      </div>
+                      <input
+                        type="text"
+                        value={title}
+                        onChange={(e) => handleNewSubChange(chIdx, newIdx, { title: e.target.value })}
+                        className="flex-1 px-3 py-2 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary bg-blue-50"
+                        placeholder={t('textbook.curriculum.newSubsectionPlaceholder')}
+                      />
+                      <input
+                        type="number"
+                        min="1"
+                        max={chapterPages || undefined}
+                        step="1"
+                        value={pages ?? ''}
+                        onChange={(e) => handleNewSubChange(chIdx, newIdx, { target_pages: e.target.value })}
+                        className="w-24 px-3 py-2 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary bg-blue-50"
+                        title={t('textbook.curriculum.pages')}
+                      />
+                      <button
+                        onClick={() => handleDeleteNewSub(chIdx, newIdx)}
+                        className="px-3 py-2 text-red-600 hover:bg-red-50 rounded-lg"
+                        title={t('textbook.curriculum.deleteNewSubsectionTitle')}
+                      >
+                        🗑️
+                      </button>
                     </div>
-                    <input
-                      type="text"
-                      value={title}
-                      onChange={(e) => {
-                        const updated = { ...newSubs }
-                        updated[chIdx][newIdx] = {
-                          ...(typeof updated[chIdx][newIdx] === 'string'
-                            ? { title: updated[chIdx][newIdx], target_pages: '' }
-                            : updated[chIdx][newIdx]),
-                          title: e.target.value,
-                        }
-                        setNewSubs(updated)
-                      }}
-                      className="flex-1 px-3 py-2 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary bg-blue-50"
-                      placeholder={t('textbook.curriculum.newSubsectionPlaceholder')}
-                    />
-                    <input
-                      type="number"
-                      min="1"
-                      max={chapterPages || undefined}
-                      step="1"
-                      value={pages ?? ''}
-                      onChange={(e) => {
-                        const updated = { ...newSubs }
-                        updated[chIdx][newIdx] = {
-                          ...(typeof updated[chIdx][newIdx] === 'string'
-                            ? { title: updated[chIdx][newIdx], target_pages: '' }
-                            : updated[chIdx][newIdx]),
-                          target_pages: e.target.value,
-                        }
-                        setNewSubs(updated)
-                      }}
-                      className="w-24 px-3 py-2 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary bg-blue-50"
-                      title={t('textbook.curriculum.pages')}
-                    />
-                    <button
-                      onClick={() => handleDeleteNewSub(chIdx, newIdx)}
-                      className="px-3 py-2 text-red-600 hover:bg-red-50 rounded-lg"
-                      title={t('textbook.curriculum.deleteNewSubsectionTitle')}
-                    >
-                      🗑️
-                    </button>
+
+                    {structureDepth === 'level2' && (
+                      <div className={`ml-12 space-y-2 rounded-md border p-2 ${
+                        childOverBudget ? 'border-red-200 bg-red-50' : 'border-blue-100 bg-blue-50'
+                      }`}>
+                        {subsectionPages && (
+                          <p className={`text-xs ${childOverBudget ? 'text-red-700' : 'text-blue-700'}`}>
+                            {t('textbook.structure.childPageAllocationStatus', {
+                              allocated: childAllocated,
+                              target: subsectionPages,
+                            })}
+                          </p>
+                        )}
+                        {children.map((child, childIdx) => (
+                          <div key={childIdx} className="flex items-center gap-2">
+                            <div className="w-16 text-right text-xs font-medium text-blue-600">
+                              {chIdx + 1}.{displayIdx}.{childIdx + 1}
+                            </div>
+                            <input
+                              type="text"
+                              value={child.title}
+                              onChange={(e) => handleNewChildChange(chIdx, newIdx, childIdx, { title: e.target.value })}
+                              className="min-w-0 flex-1 rounded-md border border-blue-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                            />
+                            <input
+                              type="number"
+                              min="1"
+                              max={subsectionPages || undefined}
+                              step="1"
+                              value={child.target_pages ?? ''}
+                              onChange={(e) => handleNewChildChange(chIdx, newIdx, childIdx, { target_pages: e.target.value })}
+                              className="w-20 rounded-md border border-blue-300 bg-white px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                              title={t('textbook.structure.childSubsectionPages')}
+                            />
+                            <button
+                              onClick={() => handleDeleteNewChild(chIdx, newIdx, childIdx)}
+                              className="rounded-md px-2 py-2 text-sm text-red-600 hover:bg-red-50"
+                              title={t('textbook.structure.deleteChildSubsection')}
+                            >
+                              🗑️
+                            </button>
+                          </div>
+                        ))}
+                        <button
+                          type="button"
+                          onClick={() => handleAddNewChild(chIdx, newIdx)}
+                          className="ml-16 rounded-md border border-blue-200 bg-white px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-50"
+                        >
+                          + {t('textbook.structure.addChildSubsection')}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )
               })}

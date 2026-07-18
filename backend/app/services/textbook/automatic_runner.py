@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.config import settings
-from app.schemas.curriculum import AgentState, build_initial_state
+from app.schemas.curriculum import AgentState, build_initial_state, count_curriculum_leaf_sections
 from app.services.runtime_config import environment_only_runtime_config
 
 
@@ -32,15 +32,7 @@ def _curriculum_counts(curriculum: Any) -> tuple[int, int]:
         if hasattr(curriculum, "chapters")
         else curriculum.get("chapters", [])
     )
-    subsection_count = 0
-    for chapter in chapters:
-        subsections = (
-            chapter.subsections
-            if hasattr(chapter, "subsections")
-            else chapter.get("subsections", [])
-        )
-        subsection_count += len(subsections)
-    return len(chapters), subsection_count
+    return len(chapters), count_curriculum_leaf_sections(curriculum)
 
 
 def _find_artifacts(state: dict[str, Any]) -> dict[str, str]:

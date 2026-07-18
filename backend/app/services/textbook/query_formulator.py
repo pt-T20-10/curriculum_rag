@@ -11,6 +11,7 @@ Positioned as the first node in the CRAG loop:
 from app.schemas.curriculum import (
     AgentState, Chapter, SubSection,
     get_chapter_and_subsection,
+    get_section_location,
 )
 from app.utils.log_config import setup_logger
 
@@ -77,12 +78,22 @@ def formulate_query(state: AgentState) -> dict:
     formula_need      = state.get("formula_need", "none")
 
     try:
-        chapter, subsection = get_chapter_and_subsection(curriculum, chap_idx, sub_idx)
+        location = get_section_location(curriculum, chap_idx, sub_idx)
+        chapter = location["chapter"]
+        subsection = location["subsection"]
 
         chap_title = _section_value(chapter, "title", "Unknown")
         sec_title = _section_value(subsection, "title", "Unknown")
         sec_desc = _section_value(subsection, "description", "")
         sec_type = _section_value(subsection, "section_type", "medium")
+        children = location.get("children") or []
+        child_terms = []
+        for child in children:
+            child_terms.extend([
+                _section_value(child, "title", ""),
+                _section_value(child, "description", ""),
+                _section_value(child, "search_query", ""),
+            ])
         target_pages = _target_pages_value(subsection)
         base_query = (
             subsection.search_query if isinstance(subsection, SubSection)
@@ -96,7 +107,8 @@ def formulate_query(state: AgentState) -> dict:
         )
         compact_section = target_pages is not None and target_pages <= 2
 
-        logger.info(f"Target: Chapter {chap_idx + 1}.{sub_idx + 1} — {sec_title}")
+        display_number = location["display_number"]
+        logger.info(f"Target: Chapter {display_number} — {sec_title}")
         logger.info(f"Base query: {base_query}")
 
         # ----------------------------------------------------------------
@@ -108,6 +120,7 @@ def formulate_query(state: AgentState) -> dict:
                 base_query,
                 sec_title,
                 sec_desc,
+                " ".join(term for term in child_terms if term),
                 chap_title,
                 course_topic,
                 f"{sec_type} section",
@@ -191,7 +204,7 @@ def formulate_query(state: AgentState) -> dict:
         return {
             "retrieval_query": enhanced_query,
             "messages": [
-                f"✓ Query formulated for Chapter {chap_idx + 1}.{sub_idx + 1}: "
+                f"✓ Query formulated for Chapter {display_number}: "
                 f"'{enhanced_query[:60]}...'"
             ],
         }

@@ -12,6 +12,7 @@ export function SubStageCard({
   const {
     chapterNumber,
     subsectionNumber,
+    displaySubsectionLocalNumber,
     currentChapterTotal,
   } = getSubsectionProgress({
     curriculumData,
@@ -55,7 +56,7 @@ export function SubStageCard({
             {t('textbook.workflow.chapterSubsectionProgress', {
               chapter: chapterNumber,
               total: totalChapters,
-              subsection: subsectionNumber,
+              subsection: displaySubsectionLocalNumber || subsectionNumber,
               subsectionTotal: currentChapterTotal,
             })}
           </span>

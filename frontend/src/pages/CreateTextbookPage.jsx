@@ -42,6 +42,30 @@ export function CreateTextbookPage() {
   const [pagePlanConfirmation, setPagePlanConfirmation] = useState(null)
   const pollingRef = useRef(null)
 
+  useEffect(() => {
+    const previousHtmlOverflow = document.documentElement.style.overflow
+    const previousBodyOverflow = document.body.style.overflow
+    const previousBodyHeight = document.body.style.height
+    const previousRootHeight = document.getElementById('root')?.style.height || ''
+    const root = document.getElementById('root')
+
+    document.documentElement.style.overflow = 'hidden'
+    document.body.style.overflow = 'hidden'
+    document.body.style.height = '100%'
+    if (root) {
+      root.style.height = '100%'
+    }
+
+    return () => {
+      document.documentElement.style.overflow = previousHtmlOverflow
+      document.body.style.overflow = previousBodyOverflow
+      document.body.style.height = previousBodyHeight
+      if (root) {
+        root.style.height = previousRootHeight
+      }
+    }
+  }, [])
+
   const clearDraftState = () => {
     setPhase('idle')
     setTextbookId(null)
@@ -90,9 +114,11 @@ export function CreateTextbookPage() {
               num_chapters: data.num_chapters || 3,
               content_level: data.content_level || CONTENT_LEVEL.MEDIUM,
               max_subsections_per_chapter: data.max_subsections_per_chapter || 5,
+              max_child_subsections_per_section: data.max_child_subsections_per_section || 3,
               enable_images: data.enable_images !== undefined ? data.enable_images : true,
               language: data.language || 'vi',
               planning_mode: data.planning_mode || 'auto',
+              structure_depth: data.structure_depth || 'level1',
               textbook_mode: data.textbook_mode || 'standard',
               formula_policy: data.formula_policy || 'auto',
               formula_need: data.formula_need || 'none',
@@ -183,6 +209,8 @@ export function CreateTextbookPage() {
         ...formData,
         language: textbook.language || uiLanguage,
         planning_mode: formData.planning_mode || 'auto',
+        structure_depth: formData.structure_depth || 'level1',
+        max_child_subsections_per_section: formData.max_child_subsections_per_section || 3,
         textbook_mode: formData.textbook_mode || 'standard',
         formula_policy: textbook.formula_policy || formData.formula_policy || 'auto',
         formula_need: textbook.formula_need || 'none',
@@ -353,10 +381,21 @@ export function CreateTextbookPage() {
   }, [textbookTitle, progressData])
 
   return (
-    <div className="h-screen overflow-hidden bg-gray-50 flex flex-col">
-      <Navbar />
+    <div
+      className="fixed inset-0 overflow-hidden bg-gray-50"
+      style={{
+        height: '100vh',
+        minHeight: '100svh',
+        maxHeight: '100dvh',
+      }}
+    >
+      <div className="absolute inset-x-0 top-0 z-50 h-16">
+        <Navbar />
+      </div>
 
-      <div className="flex-1 overflow-hidden min-h-0">
+      <div
+        className="absolute inset-x-0 bottom-0 top-16 z-0 overflow-hidden"
+      >
         <ThreeColumnLayout
           leftSidebar={
             showLeftSidebar ? (

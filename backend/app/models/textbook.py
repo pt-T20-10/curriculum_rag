@@ -26,6 +26,8 @@ class Textbook(Base):
     num_chapters = Column(Integer, default=3, nullable=False)
     content_level = Column(String(50), default="Trung Bình", nullable=False)
     max_subsections_per_chapter = Column(Integer, default=3, nullable=False)
+    max_child_subsections_per_section = Column(Integer, default=3, nullable=False)
+    structure_depth = Column(String(20), default="level1", nullable=False, index=True)
     language = Column(String(10), default="vi", nullable=False, index=True)
     curriculum_json = Column(JSON, nullable=True)
     total_chapters = Column(Integer, default=0)

@@ -14,6 +14,8 @@ from app.schemas.curriculum import (
     AgentState,
     SubSection,
     get_chapter_and_subsection,
+    get_section_location,
+    count_chapter_leaf_sections,
     clean_section_title,
 )
 # CRAG pipeline nodes (Target 1)
@@ -226,7 +228,9 @@ def append_and_update_subsection(state: AgentState) -> dict:
     display_sec       = f"{current_chapter + 1}.{current_subsection + 1}"
     try:
         curriculum  = state["curriculum"]
-        _, subsection = get_chapter_and_subsection(curriculum, current_chapter, current_subsection)
+        location = get_section_location(curriculum, current_chapter, current_subsection)
+        subsection = location["subsection"]
+        display_sec = location["display_number"]
         sec_title   = subsection.title if isinstance(subsection, SubSection) else subsection.get("title", "")
         sec_title   = clean_section_title(sec_title)
         new_summary = extract_section_summary(
@@ -261,7 +265,7 @@ def append_and_update_subsection(state: AgentState) -> dict:
         "rejection_type":           None,
         "messages": [
             f"✓ Completed: Chapter {current_chapter + 1}, "
-            f"Subsection {current_subsection + 1}"
+            f"Subsection {display_sec}"
         ],
     }
 
@@ -284,7 +288,9 @@ def append_and_update_chapter(state: AgentState) -> dict:
     display_sec        = f"{current_chapter + 1}.{current_subsection + 1}"
     try:
         curriculum = state["curriculum"]
-        _, subsection = get_chapter_and_subsection(curriculum, current_chapter, current_subsection)
+        location = get_section_location(curriculum, current_chapter, current_subsection)
+        subsection = location["subsection"]
+        display_sec = location["display_number"]
         sec_title  = subsection.title if isinstance(subsection, SubSection) else subsection.get("title", "")
         sec_title  = clean_section_title(sec_title)
         new_summary = extract_section_summary(
@@ -353,7 +359,8 @@ def check_next_step(state: AgentState) -> str:
             subsections = chapters[chap_idx]["subsections"]
 
         total_chapters    = len(chapters)
-        total_subsections = len(subsections)
+        chapter = chapters[chap_idx]
+        total_subsections = count_chapter_leaf_sections(chapter)
 
         if sub_idx < total_subsections - 1:
             logger.info(f"Decision: Continue subsection ({sub_idx + 1}/{total_subsections})")

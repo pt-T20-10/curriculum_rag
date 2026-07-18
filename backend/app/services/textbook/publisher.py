@@ -655,6 +655,7 @@ def _ensure_word_front_matter_page_breaks(
     children = list(body)
     changed = 0
     last_toc = None
+    first_figure_list_entry = None
     last_figure_list_entry = None
     body_start = None
 
@@ -676,12 +677,27 @@ def _ensure_word_front_matter_page_breaks(
         elif _is_figure_list_paragraph_xml(child) or "PAGEREF fig_" in "".join(
             instr.text or "" for instr in child.iter(qn("w:instrText"))
         ):
+            if first_figure_list_entry is None:
+                first_figure_list_entry = child
             last_figure_list_entry = child
         elif page_start_heading and _is_body_start_paragraph_xml(child, page_start_heading):
             body_start = child
 
-    if last_toc is not None:
+    if last_toc is not None and first_figure_list_entry is not None:
+        changed += _ensure_single_page_break_between_body_children(
+            body,
+            last_toc,
+            first_figure_list_entry,
+        )
+    elif last_toc is not None and body_start is not None:
+        changed += _ensure_single_page_break_between_body_children(
+            body,
+            last_toc,
+            body_start,
+        )
+    elif last_toc is not None:
         changed += int(_ensure_page_break_after_body_child(body, last_toc))
+
     if last_figure_list_entry is not None and body_start is not None:
         changed += _ensure_single_page_break_between_body_children(
             body,
@@ -691,7 +707,7 @@ def _ensure_word_front_matter_page_breaks(
     elif last_figure_list_entry is not None:
         changed += int(_ensure_page_break_after_body_child(body, last_figure_list_entry))
 
-    if page_start_heading and last_figure_list_entry is None:
+    if page_start_heading and last_toc is None and last_figure_list_entry is None:
         children = list(body)
         for child in children:
             if _is_body_start_paragraph_xml(child, page_start_heading):
@@ -1757,39 +1773,101 @@ def normalize_lead_in_labels(content: str) -> str:
 
 
 def normalize_list_lead_in_labels(content: str) -> str:
-    """Split list-item lead-in labels from their continuation paragraph."""
+    """Keep short colon lead-ins with their immediate prose explanation."""
 
-    item_re = re.compile(
-        r"^(?P<indent>\s*)(?P<marker>(?:[-+*]|\d+[.)])\s+)(?P<label>(?:\*\*)?[^:\n]{2,90}:(?:\*\*)?)\s+(?P<body>\S.*)$"
+    list_label_only_re = re.compile(
+        r"^(?P<indent>\s*)(?P<marker>(?:[-+*]|\d+[.)])\s+)(?P<label>(?:\*\*)?[^:\n]{1,90}:(?:\*\*)?)\s*$"
     )
 
     def label_text(value: str) -> str:
         return re.sub(r"[*_`]+", "", value).strip()
 
+    def is_protected_continuation(stripped: str) -> bool:
+        return (
+            not stripped
+            or stripped.startswith(("#", "-", "+", "* ", ">", "|", "```", "$$", "!["))
+            or stripped == "$$"
+            or bool(re.fullmatch(r"[-*_]{3,}", stripped))
+        )
+
+    def is_list_item_line(value: str) -> bool:
+        return bool(re.match(r"^\s*(?:[-+*]|\d+[.)])\s+\S", value or ""))
+
+    def merge_candidate(line: str) -> tuple[str, str] | None:
+        stripped = line.strip()
+        if re.match(r"^(?:Trong đó|Where)\s*:?\s*$", stripped, re.IGNORECASE):
+            return None
+
+        list_match = list_label_only_re.match(line)
+        if list_match and _is_lead_in_label_text(label_text(list_match.group("label"))):
+            prefix = (
+                f'{list_match.group("indent")}'
+                f'{list_match.group("marker")}'
+                f'{list_match.group("label").rstrip()}'
+            )
+            return prefix, "list"
+
+        if (
+            _is_lead_in_label_text(stripped)
+            and not stripped.startswith(("#", "-", "+", "* ", ">", "|"))
+        ):
+            return line.rstrip(), "paragraph"
+        return None
+
     def transform(text: str) -> str:
         lines = text.split("\n")
         out: list[str] = []
         in_math = False
+        index = 0
 
-        for line in lines:
+        while index < len(lines):
+            line = lines[index]
             stripped = line.strip()
             if stripped == "$$":
                 in_math = not in_math
                 out.append(line)
+                index += 1
                 continue
             if in_math:
                 out.append(line)
+                index += 1
                 continue
+            if not stripped:
+                next_index = index + 1
+                while next_index < len(lines) and not lines[next_index].strip():
+                    next_index += 1
+                if (
+                    out
+                    and next_index < len(lines)
+                    and is_list_item_line(out[-1])
+                    and is_list_item_line(lines[next_index])
+                ):
+                    index += 1
+                    continue
 
-            match = item_re.match(line)
-            if not match or not _is_lead_in_label_text(label_text(match.group("label"))):
+            candidate = merge_candidate(line)
+            if not candidate:
                 out.append(line)
+                index += 1
                 continue
 
-            continuation_indent = match.group("indent") + (" " * len(match.group("marker")))
-            out.append(f'{match.group("indent")}{match.group("marker")}{match.group("label")}')
-            out.append("")
-            out.append(f'{continuation_indent}{match.group("body").strip()}')
+            next_index = index + 1
+            while next_index < len(lines) and not lines[next_index].strip():
+                next_index += 1
+            if next_index >= len(lines):
+                out.append(line)
+                index += 1
+                continue
+
+            next_stripped = lines[next_index].strip()
+            if is_protected_continuation(next_stripped):
+                out.append(line)
+                index += 1
+                continue
+
+            prefix, _kind = candidate
+            out.append(f"{prefix} {next_stripped}")
+            index = next_index + 1
 
         return "\n".join(out)
 

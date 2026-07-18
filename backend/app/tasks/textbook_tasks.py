@@ -12,6 +12,7 @@ from app.database import AsyncSessionLocal
 from app.models.credit_history import CreditHistory
 from app.models.textbook import Textbook, TextbookStatus
 from app.models.user import User
+from app.schemas.curriculum import count_curriculum_leaf_sections
 from app.services.config_service import load_effective_config
 from app.services.textbook.language import progress_text
 from app.utils.log_config import setup_logger
@@ -62,6 +63,7 @@ async def _prepare_structured_content_generation(
         _insufficient_credits_detail,
         _is_free_admin,
         _merge_page_validations,
+        _refresh_curriculum_metadata_if_needed,
         _sanitize_confirmed_curriculum,
         estimate_textbook_credits,
     )
@@ -75,7 +77,15 @@ async def _prepare_structured_content_generation(
 
     is_admin_free = _is_free_admin(user)
     confirmed_curriculum, chapter_titles, total_subsections = _sanitize_confirmed_curriculum(
-        curriculum
+        _refresh_curriculum_metadata_if_needed(
+            curriculum=curriculum,
+            original_curriculum=textbook.curriculum_json,  # type: ignore[arg-type]
+            core_topic=textbook.core_topic or textbook.topic,  # type: ignore[arg-type]
+            user_requirements=textbook.user_requirements or "",  # type: ignore[arg-type]
+            language=textbook.language,  # type: ignore[arg-type]
+            textbook_mode=textbook.textbook_mode or "standard",  # type: ignore[attr-defined]
+            structure_depth=getattr(textbook, "structure_depth", "level1") or "level1",  # type: ignore[arg-type]
+        )
     )
     progress_data = dict(textbook.progress_data or {})  # type: ignore
     target_pages = (
@@ -219,6 +229,7 @@ async def _run_content_generation_for_textbook(
         enable_images=textbook.enable_images,  # type: ignore[arg-type]
         content_level=textbook.content_level,  # type: ignore[arg-type]
         max_subsections_per_chapter=textbook.max_subsections_per_chapter,  # type: ignore[arg-type]
+        max_child_subsections_per_section=getattr(textbook, "max_child_subsections_per_section", 3),  # type: ignore[arg-type]
         content_type=textbook.content_type,  # type: ignore[arg-type]
         textbook_mode=textbook.textbook_mode or "standard",  # type: ignore[attr-defined]
         formula_policy=textbook.formula_policy or "auto",  # type: ignore[attr-defined]
@@ -229,6 +240,7 @@ async def _run_content_generation_for_textbook(
         advanced_config=advanced_config,
         source_preferences=textbook.source_preferences or {},  # type: ignore[arg-type]
         planning_mode=planning_mode,
+        structure_depth=getattr(textbook, "structure_depth", "level1") or "level1",  # type: ignore[arg-type]
         export_formats=["PDF", "Word"],
     )
     initial_state["textbook_title"] = textbook.title or textbook.topic  # type: ignore
@@ -367,6 +379,7 @@ def generate_textbook_task(self, textbook_id: int):
                     max_subsections_per_chapter=textbook.max_subsections_per_chapter, #type: ignore
                     enable_images=textbook.enable_images, #type: ignore
                     export_formats=["PDF", "Word"],
+                    max_child_subsections_per_section=getattr(textbook, "max_child_subsections_per_section", 3), # type: ignore[arg-type]
                     language=textbook.language, # type: ignore
                     advanced_config=advanced_config,
                     db=db,
@@ -380,10 +393,7 @@ def generate_textbook_task(self, textbook_id: int):
                             db, textbook_id,
                             curriculum_json=curriculum,
                             total_chapters=len(curriculum.get("chapters", [])),
-                            total_subsections=sum(
-                                len(ch.get("subsections", [])) 
-                                for ch in curriculum.get("chapters", [])
-                            )
+                            total_subsections=count_curriculum_leaf_sections(curriculum),
                         )
 
                     logger.info(f"[TASK] Planning complete for textbook {textbook_id}")
@@ -473,6 +483,7 @@ def continue_textbook_generation_task(self, textbook_id: int, confirmed_curricul
                     enable_images        = textbook.enable_images, # type: ignore
                     content_level        = textbook.content_level, # type: ignore
                     max_subsections_per_chapter = textbook.max_subsections_per_chapter, # type: ignore
+                    max_child_subsections_per_section=getattr(textbook, "max_child_subsections_per_section", 3), # type: ignore[arg-type]
                     content_type         = textbook.content_type,  # type: ignore
                     textbook_mode        = textbook.textbook_mode or "standard",  # type: ignore
                     formula_policy       = textbook.formula_policy or "auto",  # type: ignore
@@ -482,6 +493,7 @@ def continue_textbook_generation_task(self, textbook_id: int, confirmed_curricul
                     language             = textbook.language,      # type: ignore
                     advanced_config       = advanced_config,
                     source_preferences    = textbook.source_preferences or {},  # type: ignore[arg-type]
+                    structure_depth       = getattr(textbook, "structure_depth", "level1") or "level1",  # type: ignore[arg-type]
                     export_formats       = ["PDF", "Word"],
                 )
                 # Preserve planner-generated title from Phase 1

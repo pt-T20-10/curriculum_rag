@@ -54,7 +54,7 @@ _TRUSTED_DOMAIN_QUOTA:      int = settings.RAG_TRUSTED_DOMAIN_QUOTA
 _DEFAULT_DOMAIN_QUOTA:      int = settings.RAG_DEFAULT_DOMAIN_QUOTA
 _SEMANTIC_DEDUP_THRESHOLD: float = settings.RAG_SEMANTIC_DEDUP_THRESHOLD
 from langchain_chroma import Chroma
-from app.schemas.curriculum import AgentState
+from app.schemas.curriculum import AgentState, get_section_location
 from app.utils.log_config import setup_logger
 
 logger = setup_logger(name="Retriever", logfile="logs/agents.log")
@@ -1406,7 +1406,15 @@ def retriever_node(state: AgentState) -> dict:
         logger.warning("retrieval_query is empty — RetrieverNode skipped")
         return {"messages": ["⚠️ RetrieverNode: empty retrieval_query — skipped"]}
 
-    context_label = f"[CRAG] Chapter {chap_idx + 1}.{sub_idx + 1}"
+    try:
+        display_number = get_section_location(
+            state["curriculum"],
+            chap_idx,
+            sub_idx,
+        )["display_number"]
+    except Exception:
+        display_number = f"{chap_idx + 1}.{sub_idx + 1}"
+    context_label = f"[CRAG] Chapter {display_number}"
 
     try:
         retriever = _get_retriever(collection_name)
@@ -1456,8 +1464,8 @@ def retriever_node(state: AgentState) -> dict:
                     [],
                 ),
             ),
-            "messages": [
-                f"✓ RetrieverNode: retrieved context for Chapter {chap_idx + 1}.{sub_idx + 1} "
+                "messages": [
+                f"✓ RetrieverNode: retrieved context for Chapter {display_number} "
                 f"(query: '{query[:50]}...') — see logs/rag_context.log"
             ],
         }

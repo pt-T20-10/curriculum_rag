@@ -211,12 +211,45 @@ def test_lint_math_export_risks_repairs_double_equals_in_formula():
     assert "= =" not in linted
 
 
-def test_normalize_list_lead_in_labels_splits_numbered_bold_label():
+def test_normalize_list_lead_in_labels_keeps_numbered_bold_label_inline():
     content = "3. **Áp dụng các định luật Kirchhoff trong miền phức:** Các định luật được áp dụng trực tiếp."
 
     normalized = normalize_list_lead_in_labels(content)
 
-    assert normalized == (
-        "3. **Áp dụng các định luật Kirchhoff trong miền phức:**\n\n"
-        "   Các định luật được áp dụng trực tiếp."
+    assert normalized == content
+
+
+def test_normalize_list_lead_in_labels_merges_detached_formula_items():
+    content = (
+        "Trong đó:\n\n"
+        "- $A$:\n\n"
+        "  ma trận biểu diễn ảnh gốc\n\n"
+        "- $G_x$, $G_y$:\n\n"
+        "  ảnh gradient theo phương ngang và dọc"
     )
+
+    normalized = normalize_list_lead_in_labels(content)
+
+    assert normalized == (
+        "Trong đó:\n\n"
+        "- $A$: ma trận biểu diễn ảnh gốc\n"
+        "- $G_x$, $G_y$: ảnh gradient theo phương ngang và dọc"
+    )
+
+
+def test_normalize_list_lead_in_labels_merges_detached_prose_labels():
+    content = (
+        "Ví dụ minh họa:\n\n"
+        "Tại vị trí $(x, y)$, giá trị điểm ảnh được tính theo công thức trên.\n\n"
+        "Một số hệ màu phổ biến:\n\n"
+        "- **RGB (Red, Green, Blue):**\n\n"
+        "  Hệ màu gốc cho hầu hết các thiết bị hiển thị.\n"
+        "- **HSV (Hue, Saturation, Value):** hệ màu dựa trên cảm nhận thị giác."
+    )
+
+    normalized = normalize_list_lead_in_labels(content)
+
+    assert "Ví dụ minh họa: Tại vị trí $(x, y)$" in normalized
+    assert "Một số hệ màu phổ biến:\n\n- **RGB" in normalized
+    assert "- **RGB (Red, Green, Blue):** Hệ màu gốc" in normalized
+    assert "- **HSV (Hue, Saturation, Value):** hệ màu dựa" in normalized

@@ -13,7 +13,7 @@ from sqlalchemy import select
 
 from app.models.textbook import Textbook
 from app.config import settings
-from app.schemas.curriculum import AgentState, build_initial_state
+from app.schemas.curriculum import AgentState, build_initial_state, count_curriculum_leaf_sections
 from app.services.api_rate_limiter import (
     api_usage_context,
     get_api_usage_summary,
@@ -160,6 +160,7 @@ async def run_textbook_workflow(
     max_subsections_per_chapter: int,
     enable_images: bool,
     export_formats: list,
+    max_child_subsections_per_section: int = 3,
     language: str = "vi",
     advanced_config: dict[str, Any] | None = None,
     db: Optional[AsyncSession] = None,
@@ -190,6 +191,17 @@ async def run_textbook_workflow(
             progress_data_val.get("planning_mode")
             or ("structured" if textbook_record and textbook_record.curriculum_json else "auto")
         )
+        structure_depth_val = str(
+            progress_data_val.get("structure_depth")
+            or getattr(textbook_record, "structure_depth", None)
+            or "level1"
+        )
+        max_child_val = int(
+            progress_data_val.get("max_child_subsections_per_section")
+            or getattr(textbook_record, "max_child_subsections_per_section", None)
+            or max_child_subsections_per_section
+            or 3
+        )
         initial_structure_val = (
             textbook_record.curriculum_json
             if textbook_record and planning_mode_val == "structured"
@@ -206,6 +218,8 @@ async def run_textbook_workflow(
         source_preferences_val = {}
         target_pages_val = None
         planning_mode_val = "auto"
+        structure_depth_val = "level1"
+        max_child_val = max_child_subsections_per_section
         initial_structure_val = None
     # Build initial state
     initial_state: AgentState = build_initial_state( # type: ignore
@@ -214,6 +228,7 @@ async def run_textbook_workflow(
         enable_images=enable_images,
         content_level=content_level,
         max_subsections_per_chapter=max_subsections_per_chapter,
+        max_child_subsections_per_section=max_child_val,
         content_type=content_type_val, #type: ignore
         textbook_mode=textbook_mode_val, #type: ignore
         formula_policy=formula_policy_val, #type: ignore
@@ -225,6 +240,7 @@ async def run_textbook_workflow(
         source_preferences=source_preferences_val, #type: ignore[arg-type]
         initial_curriculum_structure=initial_structure_val, #type: ignore
         planning_mode=planning_mode_val,
+        structure_depth=structure_depth_val,
         export_formats=export_formats,
     )
 
@@ -248,6 +264,8 @@ async def run_textbook_workflow(
                 "topic": topic,
                 "language": language_val,
                 "planning_mode": planning_mode_val,
+                "structure_depth": structure_depth_val,
+                "max_child_subsections_per_section": max_child_val,
                 "textbook_mode": textbook_mode_val,
                 "source_preferences": source_preferences_val,
             })
@@ -280,6 +298,8 @@ async def run_textbook_workflow(
                                 curriculum_data = curriculum.dict()
                             else:
                                 curriculum_data = dict(curriculum)
+                            if isinstance(curriculum_data, dict):
+                                curriculum_data["structure_depth"] = structure_depth_val
 
                             chapters = curriculum.chapters if hasattr(curriculum, 'chapters') else curriculum.get('chapters', [])
                             chapter_titles = [
@@ -319,9 +339,12 @@ async def run_textbook_workflow(
                             "curriculum_data": curriculum_data,
                             "chapter_titles": chapter_titles,
                             "total_chapters": len(chapter_titles),
+                            "total_subsections": count_curriculum_leaf_sections(curriculum_data or {}),
                             "topic": topic,
                             "language": language_val,
                             "planning_mode": planning_mode_val,
+                            "structure_depth": structure_depth_val,
+                            "max_child_subsections_per_section": max_child_val,
                             "textbook_mode": textbook_mode_val,
                             "target_pages": target_pages_val,
                             "page_validation": page_validation,
@@ -335,6 +358,7 @@ async def run_textbook_workflow(
                             "success": True,
                             "phase": review_phase,
                             "planning_mode": planning_mode_val,
+                            "structure_depth": structure_depth_val,
                             "curriculum": curriculum_data,
                             "api_usage_summary": api_usage,
                             "message": "Planning complete. Awaiting curriculum confirmation."
@@ -406,6 +430,7 @@ async def continue_after_curriculum_confirmation(
     core_topic = initial_state.get("core_topic", topic)  # type: ignore[union-attr]
     user_requirements = initial_state.get("user_requirements", "")  # type: ignore[union-attr]
     planning_mode = str(initial_state.get("planning_mode", "auto"))  # type: ignore[union-attr]
+    structure_depth = str(initial_state.get("structure_depth", "level1"))  # type: ignore[union-attr]
     textbook_mode = str(initial_state.get("textbook_mode", "standard"))  # type: ignore[union-attr]
     target_pages = confirmed_curriculum.get("target_pages") if isinstance(confirmed_curriculum, dict) else None
     rag_collection_name = f"dynamic_context_{textbook_id}_{int(time.time())}"
@@ -480,10 +505,11 @@ async def continue_after_curriculum_confirmation(
                 "current_chapter": 0,
                 "current_subsection": 0,
                 "total_chapters": len(curriculum.chapters),
-                "total_subsections": sum(len(ch.subsections) for ch in curriculum.chapters),
+                "total_subsections": count_curriculum_leaf_sections(confirmed_curriculum),
                 "topic": topic,
                 "language": initial_state.get("language", "vi"),
                 "planning_mode": planning_mode,
+                "structure_depth": structure_depth,
                 "textbook_mode": textbook_mode,
                 "target_pages": target_pages,
             })
@@ -540,6 +566,7 @@ async def continue_after_curriculum_confirmation(
                             "topic":          topic,
                             "language":       initial_state.get("language", "vi"),
                             "planning_mode":  planning_mode,
+                            "structure_depth": structure_depth,
                             "textbook_mode":  textbook_mode,
                             "target_pages": target_pages,
                         })
@@ -557,12 +584,11 @@ async def continue_after_curriculum_confirmation(
                             "current_chapter":    0,
                             "current_subsection": 0,
                             "total_chapters":     len(curriculum.chapters),
-                            "total_subsections":  sum(
-                                len(ch.subsections) for ch in curriculum.chapters
-                            ),
+                            "total_subsections":  count_curriculum_leaf_sections(confirmed_curriculum),
                             "topic": topic,
                             "language": initial_state.get("language", "vi"),
                             "planning_mode": planning_mode,
+                            "structure_depth": structure_depth,
                             "textbook_mode": textbook_mode,
                             "target_pages": target_pages,
                         })
@@ -591,6 +617,7 @@ async def continue_after_curriculum_confirmation(
                         "topic": topic,
                         "language": initial_state.get("language", "vi"),
                         "planning_mode": planning_mode,
+                        "structure_depth": structure_depth,
                         "textbook_mode": textbook_mode,
                         "target_pages": target_pages,
                         "sub_stages": {

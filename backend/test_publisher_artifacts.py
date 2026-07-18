@@ -401,6 +401,48 @@ def test_typst_title_block_uses_a_string_literal(title: str) -> None:
     assert publisher._typst_string_literal(title) in block
 
 
+def test_word_front_matter_keeps_single_break_between_toc_and_preface_without_figures() -> None:
+    docx = pytest.importorskip("docx")
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    doc = docx.Document()
+    doc.add_paragraph("Giáo trình kiểm thử").style = doc.styles["Title"]
+    toc = doc.add_paragraph("Mục lục")
+    pstyle = OxmlElement("w:pStyle")
+    pstyle.set(qn("w:val"), "TOCHeading")
+    toc._p.get_or_add_pPr().append(pstyle)
+    doc.add_paragraph("")
+    doc.element.body.insert(len(doc.element.body) - 1, publisher._new_word_page_break_paragraph())
+    doc.add_paragraph("")
+    doc.element.body.insert(len(doc.element.body) - 1, publisher._new_word_page_break_paragraph())
+    doc.add_paragraph("")
+    preface = doc.add_heading("Lời nói đầu", level=1)
+
+    publisher._ensure_word_front_matter_page_breaks(
+        doc,
+        page_start_heading="Lời nói đầu",
+    )
+
+    children = list(doc.element.body)
+    start = children.index(toc._p)
+    end = children.index(preface._p)
+    middle = children[start + 1:end]
+    page_breaks = [
+        element
+        for element in middle
+        if element.tag == qn("w:p") and publisher._word_paragraph_has_page_break_xml(element)
+    ]
+
+    assert len(page_breaks) == 1
+    assert children[start + 1] is page_breaks[0]
+    assert all(
+        not publisher._is_blank_word_paragraph_xml(element)
+        for element in middle
+        if element is not page_breaks[0]
+    )
+
+
 def test_finalize_word_docx_localizes_toc_fonts_and_footer(tmp_path: Path) -> None:
     docx = pytest.importorskip("docx")
     from docx.oxml import OxmlElement

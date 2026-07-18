@@ -1,9 +1,13 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { textbooksAPI } from '../../api/textbooks'
 import { CONTENT_LEVEL } from '../../constants/textbookOptions'
 import {
   createDefaultStructure,
+  countLeafSubsections,
+  getMissingChildSections,
   getChapterPageBudgetIssues,
+  inferStructureDepth,
   normalizeStructureForApi,
   serializeStructureToMarkdown,
   validateStructure,
@@ -49,12 +53,21 @@ const SOURCE_MODE_OPTIONS = [
 const RECOMMENDED_CONFIG = {
   num_chapters: { min: 2, max: 12 },
   max_subsections_per_chapter: { min: 2, max: 8 },
+  max_child_subsections_per_section: { min: 1, max: 5 },
 }
 
 const ABSOLUTE_CONFIG_LIMITS = {
   num_chapters: { min: 1, max: 50 },
   max_subsections_per_chapter: { min: 1, max: 30 },
+  max_child_subsections_per_section: { min: 1, max: 20 },
 }
+
+const ADVANCED_ERROR_KEYS = new Set([
+  'num_chapters',
+  'max_subsections_per_chapter',
+  'max_child_subsections_per_section',
+  'source_preferences',
+])
 
 const MIN_PAGES_PER_SUBSECTION = 1
 const IMAGE_PAGE_OVERHEAD_PER_SUBSECTION = 0.25
@@ -110,7 +123,10 @@ function isMissingPageValue(value) {
 function hasMissingStructurePageTargets(structure) {
   return (structure?.chapters || []).some(chapter => (
     isMissingPageValue(chapter.target_pages) ||
-    (chapter.subsections || []).some(subsection => isMissingPageValue(subsection.target_pages))
+    (chapter.subsections || []).some(subsection => (
+      isMissingPageValue(subsection.target_pages) ||
+      (subsection.children || []).some(child => isMissingPageValue(child.target_pages))
+    ))
   ))
 }
 
@@ -127,11 +143,15 @@ function getPageCompatibility(data) {
     ? chapters.length
     : data.num_chapters
   const subsectionCounts = Array.isArray(chapters)
-    ? chapters.map(chapter => chapter.subsections?.length || 0)
+    ? chapters.map(chapter => countLeafSubsections([chapter]))
     : []
   const subsectionCount = subsectionCounts.length > 0
     ? subsectionCounts.reduce((sum, count) => sum + count, 0)
-    : chapterCount * data.max_subsections_per_chapter
+    : chapterCount * data.max_subsections_per_chapter * (
+      data.structure_depth === 'level2'
+        ? data.max_child_subsections_per_section
+        : 1
+    )
   const safeChapterCount = Math.max(1, chapterCount || 1)
   const safeSubsectionCount = Math.max(1, subsectionCount || 1)
   const contentIntroPages = estimateContentIntroPages(data.textbook_mode)
@@ -242,18 +262,84 @@ export function ConfigForm({
     num_chapters: 3,
     content_level: CONTENT_LEVEL.MEDIUM,
     max_subsections_per_chapter: 5,
+    max_child_subsections_per_section: 3,
+    structure_depth: 'level1',
     target_pages: '',
     page_plan_confirmed: false,
     enable_images: true,
     formula_policy: 'auto'
   })
-  const [initialStructure, setInitialStructure] = useState(() => createDefaultStructure(t))
+  const [initialStructure, setInitialStructure] = useState(() => createDefaultStructure(t, 'level1'))
   const [sourceInput, setSourceInput] = useState('')
   const [fieldErrors, setFieldErrors] = useState({})
   const [confirmWarnings, setConfirmWarnings] = useState([])
   const [pendingSubmitData, setPendingSubmitData] = useState(null)
   const [pendingStructuredPageData, setPendingStructuredPageData] = useState(null)
+  const [pendingMissingChildData, setPendingMissingChildData] = useState(null)
+  const [missingChildSections, setMissingChildSections] = useState([])
+  const [structureUpload, setStructureUpload] = useState({
+    loading: false,
+    fileName: '',
+    warnings: [],
+    unparsedItems: [],
+    error: '',
+  })
+  const [highlightedErrorKey, setHighlightedErrorKey] = useState('')
+  const formRef = useRef(null)
+  const lastErrorSignatureRef = useRef('')
   const isAdmin = user?.role === 'admin'
+
+  const errorFields = useMemo(() => Object.keys(fieldErrors), [fieldErrors])
+  const firstErrorKey = errorFields[0] || (error ? 'api_error' : '')
+
+  useEffect(() => {
+    const timers = []
+    if (!firstErrorKey) {
+      lastErrorSignatureRef.current = ''
+      timers.push(window.setTimeout(() => setHighlightedErrorKey(''), 0))
+      return () => timers.forEach(timer => window.clearTimeout(timer))
+    }
+
+    const signature = JSON.stringify({
+      fields: errorFields,
+      message: error?.message || '',
+    })
+    if (signature === lastErrorSignatureRef.current) return
+    lastErrorSignatureRef.current = signature
+
+    if (!configExpanded && errorFields.some(key => ADVANCED_ERROR_KEYS.has(key))) {
+      onToggleConfig?.()
+    }
+
+    timers.push(window.setTimeout(() => setHighlightedErrorKey(firstErrorKey), 0))
+    timers.push(window.setTimeout(() => {
+      const target = formRef.current?.querySelector('[data-error-active="true"]')
+      target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 80))
+    timers.push(window.setTimeout(() => {
+      setHighlightedErrorKey('')
+    }, 2600))
+    return () => timers.forEach(timer => window.clearTimeout(timer))
+  }, [firstErrorKey, errorFields, error?.message, configExpanded, onToggleConfig])
+
+  const errorScrollAttrs = (key) => ({
+    'data-error-key': key,
+    'data-error-active': (fieldErrors[key] || (key === 'api_error' && error)) ? 'true' : undefined,
+  })
+
+  const errorHighlightClass = (key) => (
+    `scroll-mt-24 rounded-lg transition-shadow ${
+      highlightedErrorKey === key ? 'ring-2 ring-red-300 ring-offset-2' : ''
+    }`
+  )
+
+  const inputClassName = (key, baseClassName) => (
+    `${baseClassName} ${
+      fieldErrors[key]
+        ? 'border-red-300 bg-red-50 focus:border-red-500 focus:ring-red-100'
+        : ''
+    }`
+  )
 
   const getConfigIssues = (data) => {
     const errors = {}
@@ -273,6 +359,13 @@ export function ConfigForm({
         maxKey: 'textbook.form.subsectionTooHigh',
         warnLowKey: 'textbook.form.subsectionLowWarning',
         warnHighKey: 'textbook.form.subsectionHighWarning',
+      },
+      {
+        name: 'max_child_subsections_per_section',
+        minKey: 'textbook.form.childSubsectionTooLow',
+        maxKey: 'textbook.form.childSubsectionTooHigh',
+        warnLowKey: 'textbook.form.childSubsectionLowWarning',
+        warnHighKey: 'textbook.form.childSubsectionHighWarning',
       },
     ]
 
@@ -341,6 +434,14 @@ export function ConfigForm({
     return []
   }
 
+  const queueSubmitConfirmation = (data, warnings = []) => {
+    setConfirmWarnings([
+      t('textbook.form.reviewGateNotice'),
+      ...(warnings || []),
+    ])
+    setPendingSubmitData(data)
+  }
+
   const handleSubmit = (e) => {
     e.preventDefault()
     if (!formData.topic.trim()) {
@@ -352,9 +453,12 @@ export function ConfigForm({
       topic: formData.topic.trim(),
       num_chapters: parseIntegerInput(formData.num_chapters),
       max_subsections_per_chapter: parseIntegerInput(formData.max_subsections_per_chapter),
+      max_child_subsections_per_section: parseIntegerInput(formData.max_child_subsections_per_section),
       target_pages: parseIntegerInput(formData.target_pages),
       page_plan_confirmed: Boolean(formData.page_plan_confirmed),
+      fill_missing_child_subsections: false,
     }
+    let structuredMissingChildren = []
     const shouldUseCustomSources = (formData.source_preferences?.source_mode || 'system_default') !== 'system_default'
     const parsedSources = shouldUseCustomSources
       ? parseSourceLines(sourceInput, t)
@@ -385,7 +489,13 @@ export function ConfigForm({
     }
 
     if (submitData.planning_mode === 'structured') {
-      const structureError = validateStructure(initialStructure, t)
+      const inferredDepth = inferStructureDepth(initialStructure)
+      structuredMissingChildren = getMissingChildSections(initialStructure)
+      const structureForValidation = {
+        ...initialStructure,
+        structure_depth: structuredMissingChildren.length > 0 ? 'level1' : inferredDepth,
+      }
+      const structureError = validateStructure(structureForValidation, t)
       if (structureError) {
         setFieldErrors({ initial_structure: structureError })
         return
@@ -399,13 +509,21 @@ export function ConfigForm({
       const maxSubsectionCount = Math.max(
         ...initialStructure.chapters.map(chapter => chapter.subsections.length)
       )
+      const maxChildCount = Math.max(
+        1,
+        ...initialStructure.chapters.flatMap(chapter => (
+          (chapter.subsections || []).map(subsection => (subsection.children || []).length || 1)
+        ))
+      )
       submitData.initial_structure_markdown = serializeStructureToMarkdown(initialStructure)
+      submitData.structure_depth = inferredDepth
       submitData.initial_structure = normalizeStructureForApi(
-        initialStructure,
+        { ...initialStructure, structure_depth: inferredDepth },
         submitData.target_pages,
       )
       submitData.num_chapters = chapterCount
       submitData.max_subsections_per_chapter = maxSubsectionCount
+      submitData.max_child_subsections_per_section = maxChildCount
     }
 
     const { errors, warnings } = getConfigIssues(submitData)
@@ -427,6 +545,18 @@ export function ConfigForm({
 
     if (
       submitData.planning_mode === 'structured' &&
+      structuredMissingChildren.length > 0
+    ) {
+      setMissingChildSections(structuredMissingChildren)
+      setPendingMissingChildData({
+        submitData,
+        warnings: combinedWarnings,
+      })
+      return
+    }
+
+    if (
+      submitData.planning_mode === 'structured' &&
       hasMissingStructurePageTargets(initialStructure)
     ) {
       setPendingStructuredPageData({
@@ -436,13 +566,7 @@ export function ConfigForm({
       return
     }
 
-    if (combinedWarnings.length > 0) {
-      setConfirmWarnings(combinedWarnings)
-      setPendingSubmitData(submitData)
-      return
-    }
-
-    onSubmit(submitData)
+    queueSubmitConfirmation(submitData, combinedWarnings)
   }
 
   const handleChange = (e) => {
@@ -469,6 +593,116 @@ export function ConfigForm({
         source_mode: mode,
       },
     }))
+  }
+
+  const setStructureDepth = (depth) => {
+    setFormData(prev => ({
+      ...prev,
+      structure_depth: depth,
+    }))
+    setInitialStructure(createDefaultStructure(t, depth))
+    if (fieldErrors.initial_structure) {
+      setFieldErrors(prev => {
+        const next = { ...prev }
+        delete next.initial_structure
+        return next
+      })
+    }
+  }
+
+  const clearInitialStructure = () => {
+    setInitialStructure({
+      structure_depth: formData.structure_depth || 'level1',
+      chapters: [],
+    })
+    setMissingChildSections([])
+    setStructureUpload(prev => ({
+      ...prev,
+      loading: false,
+      fileName: '',
+      warnings: [],
+      unparsedItems: [],
+      error: '',
+    }))
+    setFieldErrors(prev => {
+      const next = { ...prev }
+      delete next.initial_structure
+      return next
+    })
+  }
+
+  const handleStructureFileUpload = async (event) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+
+    const allowed = ['.docx', '.pdf']
+    const lowerName = file.name.toLowerCase()
+    if (!allowed.some(ext => lowerName.endsWith(ext))) {
+      setStructureUpload({
+        loading: false,
+        fileName: file.name,
+        warnings: [],
+        unparsedItems: [],
+        error: t('textbook.form.structureUploadUnsupported'),
+      })
+      return
+    }
+
+    const payload = new FormData()
+    payload.append('file', file)
+    setStructureUpload({
+      loading: true,
+      fileName: file.name,
+      warnings: [],
+      unparsedItems: [],
+      error: '',
+    })
+
+    try {
+      const response = await textbooksAPI.parseStructureFile(payload)
+      const parsed = response.data || {}
+      const curriculum = parsed.curriculum || {}
+      const nextStructure = {
+        ...curriculum,
+        structure_depth: parsed.structure_depth || inferStructureDepth(curriculum),
+      }
+      setInitialStructure(nextStructure)
+      setMissingChildSections([])
+      setFormData(prev => ({
+        ...prev,
+        planning_mode: 'structured',
+        structure_depth: nextStructure.structure_depth || 'level1',
+        target_pages: parsed.target_pages ? String(parsed.target_pages) : prev.target_pages,
+        topic: !prev.topic.trim() && parsed.topic ? parsed.topic : prev.topic,
+      }))
+      setFieldErrors(prev => {
+        const next = { ...prev }
+        delete next.initial_structure
+        if (parsed.target_pages) {
+          delete next.target_pages
+        }
+        return next
+      })
+      setStructureUpload({
+        loading: false,
+        fileName: file.name,
+        warnings: parsed.warnings || [],
+        unparsedItems: parsed.unparsed_items || [],
+        error: '',
+      })
+    } catch (err) {
+      const detail = err.response?.data?.detail
+      setStructureUpload({
+        loading: false,
+        fileName: file.name,
+        warnings: [],
+        unparsedItems: [],
+        error: typeof detail === 'string'
+          ? detail
+          : t('textbook.form.structureUploadError'),
+      })
+    }
   }
 
   const toggleSourceId = (sourceId) => {
@@ -621,7 +855,7 @@ export function ConfigForm({
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+    <form ref={formRef} onSubmit={handleSubmit} className="space-y-4" noValidate>
       {/* Topic Input */}
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -738,7 +972,43 @@ export function ConfigForm({
         </p>
       </div>
 
+      {formData.planning_mode === 'auto' && (
       <div>
+        <label className="block text-sm font-medium text-gray-700 mb-2">
+          {t('textbook.form.structureDepth')}
+        </label>
+        <div className="grid grid-cols-2 gap-2 rounded-lg border border-gray-200 bg-gray-50 p-1">
+          {[
+            ['level1', 'textbook.form.structureDepthLevel1'],
+            ['level2', 'textbook.form.structureDepthLevel2'],
+          ].map(([value, labelKey]) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setStructureDepth(value)}
+              disabled={loading}
+              className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                formData.structure_depth === value
+                  ? 'bg-white text-blue-700 shadow-sm ring-1 ring-blue-200'
+                  : 'text-gray-600 hover:bg-white/70'
+              }`}
+            >
+              {t(labelKey)}
+            </button>
+          ))}
+        </div>
+        <p className="mt-1 text-xs text-gray-500">
+          {formData.structure_depth === 'level2'
+            ? t('textbook.form.structureDepthLevel2Hint')
+            : t('textbook.form.structureDepthLevel1Hint')}
+        </p>
+      </div>
+      )}
+
+      <div
+        {...errorScrollAttrs('target_pages')}
+        className={errorHighlightClass('target_pages')}
+      >
         <label className="block text-sm font-medium text-gray-700 mb-2">
           {t('textbook.form.targetPages')} <span className="text-red-500">*</span>
         </label>
@@ -749,7 +1019,10 @@ export function ConfigForm({
           onChange={handleChange}
           step={1}
           min={5}
-          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+          className={inputClassName(
+            'target_pages',
+            'w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100',
+          )}
           disabled={loading}
           required
         />
@@ -762,7 +1035,14 @@ export function ConfigForm({
       </div>
 
       {formData.planning_mode === 'structured' && (
-        <div className="space-y-3 rounded-lg border border-blue-100 bg-blue-50/40 p-4">
+        <div
+          {...errorScrollAttrs('initial_structure')}
+          className={`space-y-3 rounded-lg border p-4 ${errorHighlightClass('initial_structure')} ${
+            fieldErrors.initial_structure
+              ? 'border-red-200 bg-red-50/50'
+              : 'border-blue-100 bg-blue-50/40'
+          }`}
+        >
           <div>
             <h3 className="text-sm font-semibold text-gray-900">
               {t('textbook.structure.title')}
@@ -776,10 +1056,82 @@ export function ConfigForm({
               {fieldErrors.initial_structure}
             </p>
           )}
+          <div className="rounded-lg border border-gray-200 bg-white p-3">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm font-semibold text-gray-900">
+                  {t('textbook.form.structureUploadTitle')}
+                </p>
+                <p className="mt-1 text-xs text-gray-500">
+                  {t('textbook.form.structureUploadHint')}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={clearInitialStructure}
+                  disabled={loading || structureUpload.loading}
+                  className="inline-flex items-center justify-center rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {t('textbook.form.structureClearButton')}
+                </button>
+                <label className={`inline-flex cursor-pointer items-center justify-center rounded-lg border px-4 py-2 text-sm font-medium transition-colors ${
+                  structureUpload.loading || loading
+                    ? 'cursor-not-allowed border-gray-200 bg-gray-100 text-gray-400'
+                    : 'border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100'
+                }`}>
+                  {structureUpload.loading
+                    ? t('textbook.form.structureUploadReading')
+                    : t('textbook.form.structureUploadButton')}
+                  <input
+                    type="file"
+                    accept=".docx,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf"
+                    className="sr-only"
+                    onChange={handleStructureFileUpload}
+                    disabled={loading || structureUpload.loading}
+                  />
+                </label>
+              </div>
+            </div>
+            {structureUpload.fileName && !structureUpload.error && (
+              <p className="mt-2 text-xs text-gray-500">
+                {t('textbook.form.structureUploadFile', { file: structureUpload.fileName })}
+              </p>
+            )}
+            {structureUpload.error && (
+              <p className="mt-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
+                {structureUpload.error}
+              </p>
+            )}
+            {structureUpload.warnings.length > 0 && (
+              <div className="mt-2 space-y-1 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                {structureUpload.warnings.map((warning, index) => (
+                  <p key={index}>{warning}</p>
+                ))}
+              </div>
+            )}
+            {structureUpload.unparsedItems.length > 0 && (
+              <details className="mt-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600">
+                <summary className="cursor-pointer font-medium text-gray-700">
+                  {t('textbook.form.structureUploadUnparsed', {
+                    count: structureUpload.unparsedItems.length,
+                  })}
+                </summary>
+                <ul className="mt-2 space-y-1">
+                  {structureUpload.unparsedItems.slice(0, 10).map((item, index) => (
+                    <li key={index}>- {item}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
           <CurriculumStructureEditor
             value={initialStructure}
             onChange={(next) => {
               setInitialStructure(next)
+              if (missingChildSections.length > 0) {
+                setMissingChildSections([])
+              }
               if (fieldErrors.initial_structure) {
                 setFieldErrors(prev => {
                   const updated = { ...prev }
@@ -789,6 +1141,9 @@ export function ConfigForm({
               }
             }}
             disabled={loading}
+            structureDepth={formData.structure_depth}
+            allowChildControls={formData.planning_mode === 'structured'}
+            missingChildSections={missingChildSections}
           />
         </div>
       )}
@@ -814,7 +1169,10 @@ export function ConfigForm({
       {configExpanded && (
         <div className="space-y-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
           {formData.planning_mode === 'auto' && (
-            <div>
+            <div
+              {...errorScrollAttrs('num_chapters')}
+              className={errorHighlightClass('num_chapters')}
+            >
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 {t('textbook.form.chapters')}
               </label>
@@ -824,7 +1182,10 @@ export function ConfigForm({
                 value={formData.num_chapters}
                 onChange={handleChange}
                 step={1}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className={inputClassName(
+                  'num_chapters',
+                  'w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent',
+                )}
                 disabled={loading}
               />
               {fieldErrors.num_chapters && (
@@ -895,7 +1256,10 @@ export function ConfigForm({
                   ))}
                 </div>
 
-                <div>
+                <div
+                  {...errorScrollAttrs('source_preferences')}
+                  className={errorHighlightClass('source_preferences')}
+                >
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     {t('textbook.form.customSources')}
                   </label>
@@ -912,7 +1276,10 @@ export function ConfigForm({
                       }
                     }}
                     placeholder={t('textbook.form.customSourcesPlaceholder')}
-                    className="w-full resize-none rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:ring-2 focus:ring-blue-500"
+                    className={inputClassName(
+                      'source_preferences',
+                      'w-full resize-none rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:ring-2 focus:ring-blue-500',
+                    )}
                     rows={4}
                     disabled={loading}
                   />
@@ -930,7 +1297,10 @@ export function ConfigForm({
           </div>
 
           {formData.planning_mode === 'auto' && (
-            <div>
+            <div
+              {...errorScrollAttrs('max_subsections_per_chapter')}
+              className={errorHighlightClass('max_subsections_per_chapter')}
+            >
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 {t('textbook.form.maxSubsections')}
               </label>
@@ -940,7 +1310,10 @@ export function ConfigForm({
                 value={formData.max_subsections_per_chapter}
                 onChange={handleChange}
                 step={1}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className={inputClassName(
+                  'max_subsections_per_chapter',
+                  'w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent',
+                )}
                 disabled={loading}
               />
               {fieldErrors.max_subsections_per_chapter && (
@@ -948,6 +1321,35 @@ export function ConfigForm({
               )}
               <p className="mt-1 text-xs text-gray-500">
                 {t('textbook.form.maxSubsectionsHint')}
+              </p>
+            </div>
+          )}
+
+          {formData.planning_mode === 'auto' && formData.structure_depth === 'level2' && (
+            <div
+              {...errorScrollAttrs('max_child_subsections_per_section')}
+              className={errorHighlightClass('max_child_subsections_per_section')}
+            >
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                {t('textbook.form.maxChildSubsections')}
+              </label>
+              <input
+                type="number"
+                name="max_child_subsections_per_section"
+                value={formData.max_child_subsections_per_section}
+                onChange={handleChange}
+                step={1}
+                className={inputClassName(
+                  'max_child_subsections_per_section',
+                  'w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent',
+                )}
+                disabled={loading}
+              />
+              {fieldErrors.max_child_subsections_per_section && (
+                <p className="mt-1 text-xs text-red-600">{fieldErrors.max_child_subsections_per_section}</p>
+              )}
+              <p className="mt-1 text-xs text-gray-500">
+                {t('textbook.form.maxChildSubsectionsHint')}
               </p>
             </div>
           )}
@@ -993,7 +1395,10 @@ export function ConfigForm({
 
       {/* Error Display */}
       {error && (
-        <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
+        <div
+          {...errorScrollAttrs('api_error')}
+          className={`p-4 bg-red-50 border border-red-200 rounded-lg ${errorHighlightClass('api_error')}`}
+        >
           <p className="text-red-600 font-medium text-sm">❌ {error.message}</p>
           {error.suggestions && error.suggestions.length > 0 && (
             <div className="mt-2">
@@ -1037,6 +1442,64 @@ export function ConfigForm({
         )}
       </button>
 
+      {pendingMissingChildData && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black bg-opacity-50 backdrop-blur-sm"
+            onClick={() => setPendingMissingChildData(null)}
+          />
+          <div className="relative w-full max-w-lg mx-4 bg-white rounded-2xl shadow-2xl p-6">
+            <h3 className="text-xl font-bold text-gray-900 text-center mb-2">
+              {t('textbook.form.missingChildSectionsTitle')}
+            </h3>
+            <p className="text-sm text-gray-600 text-center mb-4">
+              {t('textbook.form.missingChildSectionsDescription')}
+            </p>
+            <div className="mb-4 max-h-32 overflow-y-auto rounded-lg border border-red-100 bg-red-50 p-3 text-xs text-red-700">
+              {missingChildSections.map(item => (
+                <div key={item.label}>
+                  {item.label}{item.title ? ` - ${item.title}` : ''}
+                </div>
+              ))}
+            </div>
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 mb-6">
+              {t('textbook.form.missingChildSectionsNote')}
+            </div>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setPendingMissingChildData(null)
+                  setFieldErrors({
+                    initial_structure: t('textbook.form.missingChildSectionsManualHint'),
+                  })
+                }}
+                className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 font-medium rounded-lg hover:bg-gray-300 transition-colors"
+              >
+                {t('textbook.form.missingChildSectionsManual')}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const pending = pendingMissingChildData
+                  setPendingMissingChildData(null)
+                  if (!pending?.submitData) return
+                  const submitWithFill = {
+                    ...pending.submitData,
+                    structure_depth: 'level2',
+                    fill_missing_child_subsections: true,
+                  }
+                  queueSubmitConfirmation(submitWithFill, pending.warnings || [])
+                }}
+                className="flex-1 px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                {t('textbook.form.missingChildSectionsAutoFill')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {pendingStructuredPageData && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div
@@ -1072,12 +1535,7 @@ export function ConfigForm({
                   const pending = pendingStructuredPageData
                   setPendingStructuredPageData(null)
                   if (!pending?.submitData) return
-                  if (pending.warnings?.length > 0) {
-                    setConfirmWarnings(pending.warnings)
-                    setPendingSubmitData(pending.submitData)
-                    return
-                  }
-                  onSubmit(pending.submitData)
+                  queueSubmitConfirmation(pending.submitData, pending.warnings || [])
                 }}
                 className="flex-1 px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors"
               >

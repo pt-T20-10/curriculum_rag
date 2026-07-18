@@ -4,7 +4,7 @@ Textbook management endpoints.
 
 from math import ceil
 from typing import Any, Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
@@ -21,6 +21,7 @@ from app.schemas.textbook import (
     TextbookResponse,
     TextbookListResponse,
     CurriculumConfirmRequest,
+    StructureFileParseResponse,
 )
 from app.security.jwt import get_current_user_id
 from app.services.textbook.language import (
@@ -28,8 +29,13 @@ from app.services.textbook.language import (
     normalize_language,
     progress_text,
 )
+from app.schemas.curriculum import (
+    count_curriculum_leaf_sections,
+    flatten_chapter_leaf_sections,
+)
 from app.services.textbook.structure_parser import (
     StructureParseError,
+    parse_structure_document,
     parse_structure_markdown,
 )
 from app.services.textbook.page_budget import (
@@ -54,6 +60,94 @@ def _clean_positive_float(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return parsed if parsed > 0 else None
+
+
+def _copy_page_and_meta_fields(source: dict, target: dict) -> None:
+    for page_key in (
+        "target_pages",
+        "estimated_pages",
+        "target_words",
+        "target_chars_min",
+        "target_chars_max",
+        "writer_call_count",
+    ):
+        page_value = _clean_positive_float(source.get(page_key))
+        if page_value is None:
+            continue
+        target[page_key] = int(round(page_value))
+    for meta_key in (
+        "layout_profile",
+        "page_budget_mode",
+        "formula_density",
+        "expansion_strategy",
+    ):
+        meta_value = _clean_text(source.get(meta_key))
+        if meta_value:
+            target[meta_key] = meta_value
+    bias_value = _clean_positive_float(source.get("page_fill_bias"))
+    if bias_value is not None:
+        target["page_fill_bias"] = round(bias_value, 3)
+
+
+def _sanitize_section(section: dict, *, child: bool = False) -> dict:
+    title = _clean_text(section.get("title"))
+    if not title:
+        raise HTTPException(
+            status_code=400,
+            detail=("Child subsection title cannot be empty" if child else "Subsection title cannot be empty"),
+        )
+
+    sanitized = {
+        "title": title,
+        "description": _clean_text(section.get("description")) or f"Content about {title}",
+        "search_query": _clean_text(section.get("search_query")) or title,
+        "section_type": _clean_text(section.get("section_type")) or "medium",
+    }
+    _copy_page_and_meta_fields(section, sanitized)
+
+    children = section.get("children")
+    if isinstance(children, list) and children:
+        sanitized_children = []
+        for child_section in children:
+            if not isinstance(child_section, dict):
+                raise HTTPException(status_code=400, detail="Invalid child subsection data")
+            sanitized_children.append(_sanitize_section(child_section, child=True))
+        sanitized["children"] = sanitized_children
+    return sanitized
+
+
+def _structure_has_children(curriculum: dict) -> bool:
+    return any(
+        isinstance(subsection, dict)
+        and isinstance(subsection.get("children"), list)
+        and len(subsection.get("children") or []) > 0
+        for chapter in curriculum.get("chapters") or []
+        if isinstance(chapter, dict)
+        for subsection in chapter.get("subsections") or []
+    )
+
+
+def _missing_child_sections(curriculum: dict) -> list[str]:
+    missing: list[str] = []
+    for chapter_idx, chapter in enumerate(curriculum.get("chapters") or []):
+        if not isinstance(chapter, dict):
+            continue
+        for sub_idx, subsection in enumerate(chapter.get("subsections") or []):
+            if not isinstance(subsection, dict):
+                continue
+            children = subsection.get("children")
+            if not isinstance(children, list) or not children:
+                missing.append(f"{chapter_idx + 1}.{sub_idx + 1}")
+    return missing
+
+
+def _effective_structure_depth(curriculum: dict, requested_depth: str | None = None) -> str:
+    if _structure_has_children(curriculum):
+        return "level2"
+    cleaned = _clean_text(requested_depth)
+    if cleaned in {"level1", "level2"}:
+        return cleaned
+    return "level1"
 
 
 CONTENT_LEVEL_CREDIT_MULTIPLIERS: dict[str, float] = {
@@ -124,45 +218,7 @@ def _sanitize_confirmed_curriculum(curriculum: dict) -> tuple[dict, list[str], i
         for subsection in subsections:
             if not isinstance(subsection, dict):
                 raise HTTPException(status_code=400, detail="Invalid subsection data")
-
-            title = _clean_text(subsection.get("title"))
-            if not title:
-                raise HTTPException(status_code=400, detail="Subsection title cannot be empty")
-
-            description = _clean_text(subsection.get("description")) or f"Content about {title}"
-            search_query = _clean_text(subsection.get("search_query")) or title
-            section_type = _clean_text(subsection.get("section_type")) or "medium"
-            sanitized_subsection = {
-                "title": title,
-                "description": description,
-                "search_query": search_query,
-                "section_type": section_type,
-            }
-            for page_key in (
-                "target_pages",
-                "estimated_pages",
-                "target_words",
-                "target_chars_min",
-                "target_chars_max",
-                "writer_call_count",
-            ):
-                page_value = _clean_positive_float(subsection.get(page_key))
-                if page_value is None:
-                    continue
-                sanitized_subsection[page_key] = int(round(page_value))
-            for meta_key in (
-                "layout_profile",
-                "page_budget_mode",
-                "formula_density",
-                "expansion_strategy",
-            ):
-                meta_value = _clean_text(subsection.get(meta_key))
-                if meta_value:
-                    sanitized_subsection[meta_key] = meta_value
-            bias_value = _clean_positive_float(subsection.get("page_fill_bias"))
-            if bias_value is not None:
-                sanitized_subsection["page_fill_bias"] = round(bias_value, 3)
-            sanitized_subsections.append(sanitized_subsection)
+            sanitized_subsections.append(_sanitize_section(subsection))
 
         sanitized_chapter = {
             "title": chapter_title,
@@ -178,6 +234,18 @@ def _sanitize_confirmed_curriculum(curriculum: dict) -> tuple[dict, list[str], i
         "topic": _clean_text(curriculum.get("topic")),
         "chapters": sanitized_chapters,
     }
+    structure_depth = _effective_structure_depth(curriculum, _clean_text(curriculum.get("structure_depth")))
+    sanitized["structure_depth"] = structure_depth
+    if structure_depth == "level2":
+        missing_children = _missing_child_sections(sanitized)
+        if missing_children:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Level-2 structure requires every section to contain at least "
+                    f"one child subsection. Missing: {', '.join(missing_children)}"
+                ),
+            )
     for page_key in (
         "target_pages",
         "estimated_pages",
@@ -198,7 +266,7 @@ def _sanitize_confirmed_curriculum(curriculum: dict) -> tuple[dict, list[str], i
         if meta_number is not None:
             sanitized[numeric_meta_key] = round(meta_number, 3)
     chapter_titles = [chapter["title"] for chapter in sanitized_chapters]
-    total_subsections = sum(len(chapter["subsections"]) for chapter in sanitized_chapters)
+    total_subsections = count_curriculum_leaf_sections(sanitized)
     return sanitized, chapter_titles, total_subsections
 
 
@@ -287,6 +355,119 @@ def _merge_page_validations(*validations: dict | None) -> dict | None:
     return merged
 
 
+_SECTION_META_KEYS = (
+    "description",
+    "search_query",
+    "section_type",
+    "target_words",
+    "target_chars_min",
+    "target_chars_max",
+    "writer_call_count",
+    "layout_profile",
+    "page_budget_mode",
+    "formula_density",
+    "expansion_strategy",
+    "page_fill_bias",
+)
+
+
+def _leaf_records(curriculum: dict) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for chapter_index, chapter in enumerate(curriculum.get("chapters") or []):
+        if not isinstance(chapter, dict):
+            continue
+        chapter_title = _clean_text(chapter.get("title"))
+        for item in flatten_chapter_leaf_sections(chapter):
+            leaf = item["subsection"]
+            parent = item.get("parent")
+            parent_title = _clean_text(parent.get("title") if isinstance(parent, dict) else "")
+            title = _clean_text(leaf.get("title") if isinstance(leaf, dict) else "")
+            records.append({
+                "path": (
+                    chapter_index,
+                    chapter_title,
+                    item.get("parent_index"),
+                    parent_title,
+                    item.get("child_index"),
+                    title,
+                ),
+                "leaf": leaf,
+            })
+    return records
+
+
+def _needs_metadata_refresh(edited: dict, original: dict | None) -> bool:
+    edited_records = _leaf_records(edited)
+    original_records = _leaf_records(original or {})
+    if len(edited_records) != len(original_records):
+        return True
+    original_paths = [record["path"] for record in original_records]
+    for idx, record in enumerate(edited_records):
+        leaf = record["leaf"]
+        if idx >= len(original_paths) or record["path"] != original_paths[idx]:
+            return True
+        if not _clean_text(leaf.get("description")) or not _clean_text(leaf.get("search_query")):
+            return True
+    return False
+
+
+def _preserve_unchanged_metadata(
+    refreshed: dict,
+    edited: dict,
+    original: dict | None,
+) -> dict:
+    edited_records = _leaf_records(edited)
+    refreshed_records = _leaf_records(refreshed)
+    original_paths = [record["path"] for record in _leaf_records(original or {})]
+    for idx, refreshed_record in enumerate(refreshed_records):
+        if idx >= len(edited_records) or idx >= len(original_paths):
+            continue
+        if edited_records[idx]["path"] != original_paths[idx]:
+            continue
+        edited_leaf = edited_records[idx]["leaf"]
+        refreshed_leaf = refreshed_record["leaf"]
+        for key in _SECTION_META_KEYS:
+            if key in edited_leaf:
+                refreshed_leaf[key] = edited_leaf[key]
+    return refreshed
+
+
+def _refresh_curriculum_metadata_if_needed(
+    *,
+    curriculum: dict,
+    original_curriculum: dict | None,
+    core_topic: str,
+    user_requirements: str,
+    language: str,
+    textbook_mode: str,
+    structure_depth: str,
+) -> dict:
+    if not _needs_metadata_refresh(curriculum, original_curriculum):
+        return curriculum
+    try:
+        from app.services.textbook.planner import HybridPlanner
+
+        planner = HybridPlanner()
+        enriched = planner.enrich_user_structure(
+            core_topic,
+            user_requirements,
+            curriculum,
+            language=language,
+            textbook_mode=textbook_mode,
+            structure_depth=structure_depth,
+        )
+        if not enriched:
+            return curriculum
+        refreshed = enriched.model_dump() if hasattr(enriched, "model_dump") else enriched.dict()
+        refreshed["topic"] = curriculum.get("topic") or core_topic
+        refreshed["structure_depth"] = structure_depth
+        if curriculum.get("target_pages") is not None:
+            refreshed["target_pages"] = curriculum.get("target_pages")
+        return _preserve_unchanged_metadata(refreshed, curriculum, original_curriculum)
+    except Exception:
+        return curriculum
+
+
 def _curriculum_page_configuration_validation(
     curriculum: dict,
     *,
@@ -298,7 +479,7 @@ def _curriculum_page_configuration_validation(
     chapters = curriculum.get("chapters") if isinstance(curriculum, dict) else []
     chapter_count = len(chapters) if isinstance(chapters, list) else 0
     subsection_counts = [
-        len(chapter.get("subsections") or [])
+        count_curriculum_leaf_sections({"chapters": [chapter]})
         for chapter in chapters
         if isinstance(chapter, dict)
     ]
@@ -393,6 +574,27 @@ def _revoke_textbook_task(textbook: Textbook, textbook_id: int) -> None:
     textbook.celery_task_id = None  # type: ignore
 
 
+@router.post("/parse-structure-file", response_model=StructureFileParseResponse)
+async def parse_structure_file(
+    file: UploadFile = File(...),
+    current_user_id: int = Depends(get_current_user_id),
+):
+    """Parse an uploaded Word/PDF outline into the manual structure editor shape."""
+    del current_user_id
+    filename = file.filename or ""
+    if not filename.lower().endswith((".docx", ".pdf")):
+        raise HTTPException(
+            status_code=400,
+            detail="Chỉ hỗ trợ file .docx hoặc .pdf. Vui lòng gửi file đề cương có bảng TT / Nội dung / Số trang.",
+        )
+
+    content = await file.read()
+    try:
+        return parse_structure_document(filename, content)
+    except StructureParseError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/", response_model=TextbookResponse, status_code=201)
 async def create_textbook(
     textbook_data: TextbookCreate,
@@ -476,6 +678,7 @@ async def create_textbook(
     formula_need = validation.get("formula_need", "none")
     textbook_language = normalize_language(validation.get("target_language"), ui_language)
     planning_mode = textbook_data.planning_mode
+    structure_depth = textbook_data.structure_depth
     source_preferences = normalize_source_preferences(
         textbook_data.source_preferences.model_dump()
     )
@@ -496,11 +699,32 @@ async def create_textbook(
                 )
             except StructureParseError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
+        structure_depth = "level2" if _structure_has_children(initial_curriculum) else "level1"
+        if structure_depth == "level2":
+            missing_children = _missing_child_sections(initial_curriculum)
+            if missing_children:
+                if not textbook_data.fill_missing_child_subsections:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "Level-2 structured outline has sections without child "
+                            f"subsections: {', '.join(missing_children)}"
+                        ),
+                    )
+                from app.services.textbook.planner import HybridPlanner
 
-        initial_total_subsections = sum(
-            len(chapter.get("subsections") or [])
-            for chapter in initial_curriculum.get("chapters", [])
-        )
+                planner = HybridPlanner()
+                initial_curriculum = planner.fill_missing_child_subsections(
+                    initial_structure=initial_curriculum,
+                    core_topic=core_topic,
+                    user_requirements=user_requirements,
+                    max_child_subsections=textbook_data.max_child_subsections_per_section,
+                    language=textbook_language,
+                    textbook_mode=textbook_data.textbook_mode,
+                )
+        initial_curriculum["structure_depth"] = structure_depth
+
+        initial_total_subsections = count_curriculum_leaf_sections(initial_curriculum)
         preflight_page_validation = _curriculum_page_configuration_validation(
             initial_curriculum,
             target_pages=textbook_data.target_pages,
@@ -516,7 +740,14 @@ async def create_textbook(
         preflight_page_validation = validate_page_configuration(
             target_pages=textbook_data.target_pages,
             num_chapters=textbook_data.num_chapters,
-            max_subsections_per_chapter=textbook_data.max_subsections_per_chapter,
+            max_subsections_per_chapter=(
+                textbook_data.max_subsections_per_chapter
+                * (
+                    textbook_data.max_child_subsections_per_section
+                    if structure_depth == "level2"
+                    else 1
+                )
+            ),
             enable_images=textbook_data.enable_images,
             language=textbook_language,
             textbook_mode=textbook_data.textbook_mode,
@@ -563,6 +794,8 @@ async def create_textbook(
             if initial_curriculum
             else textbook_data.max_subsections_per_chapter
         ),
+        max_child_subsections_per_section=textbook_data.max_child_subsections_per_section,
+        structure_depth=structure_depth,
         enable_images=textbook_data.enable_images,
         language=textbook_language,
         curriculum_json=initial_curriculum,
@@ -577,6 +810,8 @@ async def create_textbook(
         credits_used=0,
         progress_data={
             "planning_mode": planning_mode,
+            "structure_depth": structure_depth,
+            "max_child_subsections_per_section": textbook_data.max_child_subsections_per_section,
             "textbook_mode": textbook_data.textbook_mode,
             "formula_policy": formula_policy,
             "formula_need": formula_need,
@@ -589,6 +824,8 @@ async def create_textbook(
             "page_validation": page_validation if initial_curriculum else None,
         } if initial_curriculum else {
             "planning_mode": planning_mode,
+            "structure_depth": structure_depth,
+            "max_child_subsections_per_section": textbook_data.max_child_subsections_per_section,
             "textbook_mode": textbook_data.textbook_mode,
             "formula_policy": formula_policy,
             "formula_need": formula_need,
@@ -650,9 +887,11 @@ async def list_textbooks(
             Textbook.num_chapters,
             Textbook.content_level,
             Textbook.max_subsections_per_chapter,
+            Textbook.max_child_subsections_per_section,
             Textbook.enable_images,
             Textbook.language,
             Textbook.content_type,
+            Textbook.structure_depth,
             Textbook.textbook_mode,
             Textbook.formula_policy,
             Textbook.formula_need,
@@ -791,6 +1030,10 @@ async def get_textbook_progress(
         progress_data.setdefault("content_level", textbook.content_level)  # type: ignore
     if textbook.max_subsections_per_chapter:  # type: ignore
         progress_data.setdefault("max_subsections_per_chapter", textbook.max_subsections_per_chapter)  # type: ignore
+    if getattr(textbook, "max_child_subsections_per_section", None):  # type: ignore
+        progress_data.setdefault("max_child_subsections_per_section", textbook.max_child_subsections_per_section)  # type: ignore
+    if getattr(textbook, "structure_depth", None):  # type: ignore
+        progress_data.setdefault("structure_depth", textbook.structure_depth)  # type: ignore
     if textbook.enable_images is not None:  # type: ignore
         progress_data.setdefault("enable_images", textbook.enable_images)  # type: ignore
     if textbook.language:  # type: ignore
@@ -921,8 +1164,23 @@ async def confirm_curriculum(
             "page_validation": dict(textbook.progress_data or {}).get("page_validation"),  # type: ignore
         }
 
-    confirmed_curriculum, chapter_titles, total_subsections = _sanitize_confirmed_curriculum(request.curriculum)
     existing_progress = dict(textbook.progress_data or {})  # type: ignore
+    structure_depth = (
+        _clean_text(request.curriculum.get("structure_depth") if isinstance(request.curriculum, dict) else "")
+        or _clean_text(existing_progress.get("structure_depth"))
+        or _clean_text(getattr(textbook, "structure_depth", "level1"))
+        or "level1"
+    )
+    refreshed_request_curriculum = _refresh_curriculum_metadata_if_needed(
+        curriculum=request.curriculum,
+        original_curriculum=textbook.curriculum_json,  # type: ignore[arg-type]
+        core_topic=textbook.core_topic or textbook.topic,  # type: ignore[arg-type]
+        user_requirements=textbook.user_requirements or "",  # type: ignore[arg-type]
+        language=textbook.language,  # type: ignore[arg-type]
+        textbook_mode=textbook.textbook_mode or "standard",  # type: ignore[attr-defined]
+        structure_depth=structure_depth,
+    )
+    confirmed_curriculum, chapter_titles, total_subsections = _sanitize_confirmed_curriculum(refreshed_request_curriculum)
     target_pages = (
         _clean_positive_float(confirmed_curriculum.get("target_pages"))
         or _clean_positive_float(existing_progress.get("target_pages"))
@@ -992,6 +1250,8 @@ async def confirm_curriculum(
         "total_subsections": total_subsections,
         "language": textbook.language, # type: ignore
         "textbook_mode": textbook.textbook_mode or "standard", # type: ignore
+        "structure_depth": structure_depth,
+        "max_child_subsections_per_section": getattr(textbook, "max_child_subsections_per_section", 3), # type: ignore[attr-defined]
         "formula_policy": textbook.formula_policy or "auto", # type: ignore
         "formula_need": textbook.formula_need or "none", # type: ignore
         "credits_required": credits_required,

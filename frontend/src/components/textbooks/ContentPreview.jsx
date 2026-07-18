@@ -51,6 +51,7 @@ export function ContentPreview({
   const {
     chapterNumber,
     currentGlobalSubsection,
+    totalSubsections: displayedTotalSubsections,
   } = getSubsectionProgress({
     curriculumData,
     currentChapter,
@@ -75,7 +76,7 @@ export function ContentPreview({
         <div className="border-t border-gray-200 px-6 py-3 bg-gray-50">
           <div className="flex justify-between text-sm text-gray-600">
             <span>{t('textbook.contentPreview.chapterCounter', { current: 0, total: totalChapters || 0 })}</span>
-            <span>{t('textbook.contentPreview.subsectionCounter', { current: 0, total: totalSubsections || 0 })}</span>
+            <span>{t('textbook.contentPreview.subsectionCounter', { current: 0, total: displayedTotalSubsections || 0 })}</span>
             <span>{t('textbook.contentPreview.wordCount', { count: 0 })}</span>
           </div>
         </div>
@@ -206,7 +207,7 @@ export function ContentPreview({
       <div className="border-t border-gray-200 px-6 py-3 bg-gray-50 flex-shrink-0">
         <div className="flex justify-between text-sm text-gray-600">
           <span>{t('textbook.contentPreview.chapterCounter', { current: chapterNumber, total: totalChapters || 0 })}</span>
-          <span>{t('textbook.contentPreview.subsectionCounter', { current: currentGlobalSubsection, total: totalSubsections || 0 })}</span>
+          <span>{t('textbook.contentPreview.subsectionCounter', { current: currentGlobalSubsection, total: displayedTotalSubsections || 0 })}</span>
           <span>{t('textbook.contentPreview.wordCount', { count: wordCount.toLocaleString(locale) })}</span>
         </div>
       </div>

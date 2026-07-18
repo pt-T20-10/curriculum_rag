@@ -8,6 +8,8 @@ is provided.
 
 from __future__ import annotations
 
+import re
+
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
@@ -78,12 +80,18 @@ MIN_SECTION_WORDS = 180
 MAX_WORDS_PER_WRITER_CALL = 1500
 MAX_WRITER_CALLS_PER_SECTION = 5
 
-CODE_LAYOUT_KEYWORDS = (
+CODE_LAYOUT_STRONG_KEYWORDS = (
     "python", "javascript", "java", "c++", "c#", "php", "sql", "html", "css",
-    "react", "node", "api", "database", "lập trình", "lap trinh", "mã",
-    "code", "cú pháp", "cu phap", "chương trình", "chuong trinh", "thuật toán",
-    "thuat toan", "biến", "bien", "vòng lặp", "vong lap", "if", "else",
-    "list", "tuple", "class", "function", "hàm", "ham",
+    "react", "node", "bash", "shell", "lập trình", "lap trinh",
+    "code", "mã nguồn", "ma nguon", "cú pháp", "cu phap",
+    "chương trình", "chuong trinh", "script", "debug", "debugging",
+    "dòng lệnh", "dong lenh", "command line", "cli", "hàm", "ham",
+    "function", "class",
+)
+CODE_LAYOUT_SUPPORT_KEYWORDS = (
+    "api", "database", "json", "xml", "thuật toán", "thuat toan",
+    "biến", "bien", "vòng lặp", "vong lap", "if", "else", "list",
+    "tuple", "method", "object", "endpoint", "cấu hình", "cau hinh",
 )
 FORMULA_LAYOUT_KEYWORDS = (
     "toán", "toan", "công thức", "cong thuc", "phương trình", "phuong trinh",
@@ -220,17 +228,49 @@ def _layout_text(curriculum: dict[str, Any]) -> str:
                 continue
             pieces.append(str(subsection.get("title") or ""))
             pieces.append(str(subsection.get("description") or ""))
+            for child in subsection.get("children") or []:
+                if not isinstance(child, dict):
+                    continue
+                pieces.append(str(child.get("title") or ""))
+                pieces.append(str(child.get("description") or ""))
     return " ".join(pieces).lower()
 
 
+def _keyword_in_text(text: str, keyword: str) -> bool:
+    keyword = keyword.lower().strip()
+    if not keyword:
+        return False
+    def is_negated(start: int) -> bool:
+        prefix = text[max(0, start - 48):start]
+        return bool(
+            re.search(
+                r"(?:không|khong|no|not)\s+"
+                r"(?:(?:yêu cầu|yeu cau|cần|can|dùng|dung|có|co|phải|phai|need|require|required|use)\s+)?$",
+                prefix,
+            )
+        )
+    if re.fullmatch(r"[a-z0-9_+#.]+", keyword):
+        pattern = re.compile(
+            rf"(?<![a-z0-9_]){re.escape(keyword)}(?![a-z0-9_])"
+        )
+        return any(not is_negated(match.start()) for match in pattern.finditer(text))
+    start = text.find(keyword)
+    while start >= 0:
+        if not is_negated(start):
+            return True
+        start = text.find(keyword, start + len(keyword))
+    return False
+
+
 def _count_keywords(text: str, keywords: tuple[str, ...]) -> int:
-    return sum(1 for keyword in keywords if keyword in text)
+    return sum(1 for keyword in keywords if _keyword_in_text(text, keyword))
 
 
 def _classify_layout_text(text: str) -> str:
     text = (text or "").lower()
     scores = {
-        "code": _count_keywords(text, CODE_LAYOUT_KEYWORDS),
+        "code_strong": _count_keywords(text, CODE_LAYOUT_STRONG_KEYWORDS),
+        "code_support": _count_keywords(text, CODE_LAYOUT_SUPPORT_KEYWORDS),
         "formula": _count_keywords(text, FORMULA_LAYOUT_KEYWORDS),
         "procedure": _count_keywords(text, PROCEDURE_LAYOUT_KEYWORDS),
         "case_based": _count_keywords(text, CASE_BASED_LAYOUT_KEYWORDS),
@@ -238,7 +278,11 @@ def _classify_layout_text(text: str) -> str:
         "technical": _count_keywords(text, TECHNICAL_LAYOUT_KEYWORDS),
     }
 
-    if scores["code"] >= 2 or (scores["code"] >= 1 and scores["technical"] >= 2):
+    if (
+        scores["code_strong"] >= 2
+        or (scores["code_strong"] >= 1 and scores["code_support"] >= 1)
+        or (scores["code_strong"] >= 1 and scores["technical"] >= 2)
+    ):
         return "code"
     if scores["formula"] >= 2:
         return "formula"
@@ -246,7 +290,7 @@ def _classify_layout_text(text: str) -> str:
     best = max(priority, key=lambda key: scores[key])
     if scores[best] >= 2:
         return best
-    if scores["technical"] >= 1 or scores["code"] >= 1 or scores["formula"] >= 1:
+    if scores["technical"] >= 1 or scores["code_strong"] >= 1 or scores["formula"] >= 1:
         return "technical"
     return "prose"
 
@@ -529,7 +573,20 @@ def _chapter_weight(chapter: dict[str, Any]) -> float:
     subsections = chapter.get("subsections") or []
     if not isinstance(subsections, list) or not subsections:
         return 1.0
-    return sum(SECTION_WEIGHTS.get(_section_type(sub), 1.0) for sub in subsections)
+    total = 0.0
+    for sub in subsections:
+        if not isinstance(sub, dict):
+            continue
+        children = sub.get("children") or []
+        if isinstance(children, list) and children:
+            total += sum(
+                SECTION_WEIGHTS.get(_section_type(child), 1.0)
+                for child in children
+                if isinstance(child, dict)
+            )
+        else:
+            total += SECTION_WEIGHTS.get(_section_type(sub), 1.0)
+    return total or 1.0
 
 
 def _page_budget_mode(page_count: float) -> str:
@@ -786,36 +843,148 @@ def allocate_page_budget(
                 sub_pages = auto_sub_allocations.get(sub_idx, 0.0)
             if sub_pages <= 0:
                 sub_pages = chapter_pages / max(1, len(subsections))
-            subsection_profile = _subsection_layout_profile(
-                subsection,
-                chapter,
-                layout_profile,
-            )
-            subsection_formula_density = _formula_density(
-                formula_policy,
-                subsection_profile,
-            )
-            subsection_strategy = _expansion_strategy(
-                subsection_profile,
-                subsection_formula_density,
-            )
-            estimated_chapter_pages += _apply_section_budget(
-                subsection,
-                sub_pages,
-                language=language,
-                enable_images=enable_images,
-                layout_profile=subsection_profile,
-                page_fill_bias=page_fill_bias,
-                formula_density=subsection_formula_density,
-                expansion_strategy=subsection_strategy,
-                target_total_pages=root_target,
-            )
-            if int(subsection.get("writer_call_count") or 1) > MAX_WRITER_CALLS_PER_SECTION:
-                validation.add_error(_msg(
-                    language,
-                    f"Mục {chapter_idx + 1}.{sub_idx + 1} quá dài cho một đơn vị sinh nội dung. Vui lòng tách mục hoặc giảm số trang của mục.",
-                    f"Subsection {chapter_idx + 1}.{sub_idx + 1} is too large for one generation unit. Please split it or lower its page target.",
-                ))
+            children = subsection.get("children") or []
+            if isinstance(children, list) and children:
+                subsection["target_pages"] = _round_page(sub_pages)
+                explicit_child_total = sum(
+                    _number(child.get("target_pages")) or 0.0
+                    for child in children
+                    if isinstance(child, dict)
+                )
+                child_missing_items = [
+                    (child_idx, SECTION_WEIGHTS.get(_section_type(child), 1.0))
+                    for child_idx, child in enumerate(children)
+                    if isinstance(child, dict) and _number(child.get("target_pages")) is None
+                ]
+                if explicit_child_total > sub_pages:
+                    validation.add_error(_msg(
+                        language,
+                        (
+                            f"Tổng số trang các tiểu mục cấp 2 trong Mục {chapter_idx + 1}.{sub_idx + 1} "
+                            f"({ _round_page(explicit_child_total) }) không được vượt quá "
+                            f"số trang của mục ({ _round_page(sub_pages) })."
+                        ),
+                        (
+                            f"Section {chapter_idx + 1}.{sub_idx + 1} child pages "
+                            f"({ _round_page(explicit_child_total) }) must not exceed "
+                            f"the parent section page target ({ _round_page(sub_pages) })."
+                        ),
+                    ))
+                elif child_missing_items and explicit_child_total + len(child_missing_items) > sub_pages:
+                    validation.add_error(_msg(
+                        language,
+                        (
+                            f"Mục {chapter_idx + 1}.{sub_idx + 1} không còn đủ trang để phân bổ cho "
+                            f"{len(child_missing_items)} tiểu mục cấp 2 chưa nhập trang."
+                        ),
+                        (
+                            f"Section {chapter_idx + 1}.{sub_idx + 1} does not have enough remaining pages "
+                            f"for {len(child_missing_items)} child sections without page targets."
+                        ),
+                    ))
+                child_allocations = _allocate_integer_pages(
+                    child_missing_items,
+                    max(0.0, sub_pages - explicit_child_total),
+                )
+                estimated_parent_pages = 0.0
+                for child_idx, child in enumerate(children):
+                    if not isinstance(child, dict):
+                        continue
+                    child_pages = _number(child.get("target_pages"))
+                    if child_pages is None:
+                        child_pages = child_allocations.get(child_idx, 0.0)
+                    if child_pages <= 0:
+                        child_pages = sub_pages / max(1, len(children))
+                    child_profile = _subsection_layout_profile(
+                        child,
+                        {"title": f"{chapter.get('title', '')} {subsection.get('title', '')}"},
+                        layout_profile,
+                    )
+                    child_formula_density = _formula_density(formula_policy, child_profile)
+                    child_strategy = _expansion_strategy(child_profile, child_formula_density)
+                    estimated_parent_pages += _apply_section_budget(
+                        child,
+                        child_pages,
+                        language=language,
+                        enable_images=enable_images,
+                        layout_profile=child_profile,
+                        page_fill_bias=page_fill_bias,
+                        formula_density=child_formula_density,
+                        expansion_strategy=child_strategy,
+                        target_total_pages=root_target,
+                    )
+                    if int(child.get("writer_call_count") or 1) > MAX_WRITER_CALLS_PER_SECTION:
+                        validation.add_error(_msg(
+                            language,
+                            f"Tiểu mục {chapter_idx + 1}.{sub_idx + 1}.{child_idx + 1} quá dài cho một đơn vị sinh nội dung. Vui lòng tách mục hoặc giảm số trang.",
+                            f"Subsection {chapter_idx + 1}.{sub_idx + 1}.{child_idx + 1} is too large for one generation unit. Please split it or lower its page target.",
+                        ))
+                subsection["estimated_pages"] = _round_page(estimated_parent_pages)
+                subsection["target_words"] = sum(
+                    int(child.get("target_words") or 0)
+                    for child in children
+                    if isinstance(child, dict)
+                )
+                subsection["target_chars_min"] = sum(
+                    int(child.get("target_chars_min") or 0)
+                    for child in children
+                    if isinstance(child, dict)
+                )
+                subsection["target_chars_max"] = sum(
+                    int(child.get("target_chars_max") or 0)
+                    for child in children
+                    if isinstance(child, dict)
+                )
+                subsection["writer_call_count"] = max(
+                    1,
+                    int((
+                        int(subsection.get("target_words") or 0)
+                        + MAX_WORDS_PER_WRITER_CALL - 1
+                    ) // MAX_WORDS_PER_WRITER_CALL),
+                )
+                subsection["layout_profile"] = layout_profile
+                subsection["page_fill_bias"] = round(page_fill_bias, 3)
+                subsection["page_budget_mode"] = _page_budget_mode(sub_pages)
+                subsection["formula_density"] = formula_density
+                subsection["expansion_strategy"] = expansion_strategy
+                if int(subsection.get("writer_call_count") or 1) > MAX_WRITER_CALLS_PER_SECTION:
+                    validation.add_error(_msg(
+                        language,
+                        f"Mục {chapter_idx + 1}.{sub_idx + 1} quá dài cho một block sinh nội dung. Vui lòng tách mục hoặc giảm số trang.",
+                        f"Section {chapter_idx + 1}.{sub_idx + 1} is too large for one generation block. Please split it or lower its page target.",
+                    ))
+                estimated_chapter_pages += estimated_parent_pages
+            else:
+                subsection_profile = _subsection_layout_profile(
+                    subsection,
+                    chapter,
+                    layout_profile,
+                )
+                subsection_formula_density = _formula_density(
+                    formula_policy,
+                    subsection_profile,
+                )
+                subsection_strategy = _expansion_strategy(
+                    subsection_profile,
+                    subsection_formula_density,
+                )
+                estimated_chapter_pages += _apply_section_budget(
+                    subsection,
+                    sub_pages,
+                    language=language,
+                    enable_images=enable_images,
+                    layout_profile=subsection_profile,
+                    page_fill_bias=page_fill_bias,
+                    formula_density=subsection_formula_density,
+                    expansion_strategy=subsection_strategy,
+                    target_total_pages=root_target,
+                )
+                if int(subsection.get("writer_call_count") or 1) > MAX_WRITER_CALLS_PER_SECTION:
+                    validation.add_error(_msg(
+                        language,
+                        f"Mục {chapter_idx + 1}.{sub_idx + 1} quá dài cho một đơn vị sinh nội dung. Vui lòng tách mục hoặc giảm số trang của mục.",
+                        f"Subsection {chapter_idx + 1}.{sub_idx + 1} is too large for one generation unit. Please split it or lower its page target.",
+                    ))
 
         chapter["estimated_pages"] = _round_page(estimated_chapter_pages)
         estimated_body_pages += estimated_chapter_pages
@@ -873,6 +1042,11 @@ def page_budget_enabled(curriculum: Any) -> bool:
         if _number(chapter.get("target_pages")) is not None:
             return True
         for subsection in chapter.get("subsections") or []:
-            if isinstance(subsection, dict) and _number(subsection.get("target_pages")) is not None:
+            if not isinstance(subsection, dict):
+                continue
+            if _number(subsection.get("target_pages")) is not None:
                 return True
+            for child in subsection.get("children") or []:
+                if isinstance(child, dict) and _number(child.get("target_pages")) is not None:
+                    return True
     return False
