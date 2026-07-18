@@ -74,7 +74,7 @@ def detect_deployment_profile(config: dict[str, Any] | None = None) -> dict[str,
         severity = "info"
         title = "Railway test 2 tài khoản"
         summary = "Cấu hình phù hợp để 2 user khác nhau chạy giáo trình cùng lúc, mỗi user 1 giáo trình."
-        recommended_action = "Giữ global concurrency ở 2 cho tới khi benchmark ổn; muốn 5-10 user hãy chuyển sang Chroma server."
+        recommended_action = "Giữ global concurrency ở 2; nếu crawl/embedding bị 429, đặt OPENAI_EMBEDDING_MIN_INTERVAL_SECONDS=2.0 và EMBEDDING_BATCH_SIZE=100."
         max_parallel_jobs = min(celery_concurrency, global_limit)
     else:
         key = "small_safe"

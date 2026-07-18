@@ -66,4 +66,4 @@ def test_embedding_calls_apply_post_call_cooldown(monkeypatch) -> None:
     monkeypatch.setattr(api_rate_limiter, "_sleep_with_jitter", lambda seconds, provider: sleeps.append(seconds))
 
     assert api_rate_limiter.rate_limited_call(lambda: "ok", bucket="embedding") == "ok"
-    assert sleeps == [0.5]
+    assert sleeps == [1.0]

@@ -111,7 +111,7 @@ Những biến quan trọng cần kiểm tra trước khi deploy:
 | BYOK | `BYOK_ENCRYPTION_KEY` bắt buộc khi user tự nhập/lưu API key |
 | Provider keys | `OPENAI_API_KEY` hoặc `OPENAI_API_KEYS` bắt buộc nếu dùng credit hệ thống; `SERPER_API_KEY` hoặc `SERPER_API_KEYS` tùy chọn |
 | OAuth/email/payment | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`, SMTP/Resend, `SEPAY_ACCOUNT_NUMBER` |
-| Worker profile | `CELERY_POOL`, `CELERY_CONCURRENCY`, `CHROMA_MODE`, `GENERATION_GLOBAL_CONCURRENCY`, `GENERATION_PER_USER_CONCURRENCY`, `SEARCH_MAX_WORKERS`, `CRAWL_MAX_WORKERS`, `MAX_CHUNKS_TO_EMBED`, `EMBEDDING_BATCH_SIZE` |
+| Worker profile | `CELERY_POOL`, `CELERY_CONCURRENCY`, `CHROMA_MODE`, `GENERATION_GLOBAL_CONCURRENCY`, `GENERATION_PER_USER_CONCURRENCY`, `SEARCH_MAX_WORKERS`, `CRAWL_MAX_WORKERS`, `MAX_CHUNKS_TO_EMBED`, `EMBEDDING_BATCH_SIZE`, `OPENAI_EMBEDDING_MIN_INTERVAL_SECONDS` |
 
 API keys hệ thống có thể nhập trong Admin System Config sau khi đăng nhập. Field
 `OPENAI_API_KEYS` và `SERPER_API_KEYS` nhận nhiều key, mỗi dòng một key, và
@@ -185,7 +185,7 @@ Profile khuyến nghị:
 | Profile | Mục tiêu | Cấu hình phù hợp |
 |---|---|---|
 | Minimum/demo | 1 giáo trình đang generate toàn hệ thống | Compose hiện tại, Chroma local path, Redis/MySQL cùng VPS |
-| Railway test 2 | 2 user khác nhau generate cùng lúc | `CELERY_POOL=threads`, `CELERY_CONCURRENCY=2`, `CHROMA_MODE=local_per_job`, `GENERATION_GLOBAL_CONCURRENCY=2`, `GENERATION_PER_USER_CONCURRENCY=1` |
+| Railway test 2 | 2 user khác nhau generate cùng lúc | `CELERY_POOL=threads`, `CELERY_CONCURRENCY=2`, `CHROMA_MODE=local_per_job`, `GENERATION_GLOBAL_CONCURRENCY=2`, `GENERATION_PER_USER_CONCURRENCY=1`, `EMBEDDING_BATCH_SIZE=100`, `OPENAI_EMBEDDING_MIN_INTERVAL_SECONDS=2.0` |
 | Medium | 5-10 giáo trình song song từ nhiều user | Chroma server, Redis shared limiter, key pool, global generation semaphore, per-user active limit |
 
 #### Scale Ladder
@@ -195,9 +195,12 @@ Profile khuyến nghị:
    ít tài nguyên, ít rủi ro.
 2. **Railway test 2 tài khoản**: đặt `CELERY_POOL=threads`,
    `CELERY_CONCURRENCY=2`, `CHROMA_MODE=local_per_job`,
-   `GENERATION_GLOBAL_CONCURRENCY=2`, `GENERATION_PER_USER_CONCURRENCY=1`.
+   `GENERATION_GLOBAL_CONCURRENCY=2`, `GENERATION_PER_USER_CONCURRENCY=1`,
+   `EMBEDDING_BATCH_SIZE=100`, `OPENAI_EMBEDDING_MIN_INTERVAL_SECONDS=2.0`.
    Cấu hình này cho 2 user khác nhau chạy cùng lúc, nhưng cùng 1 user vẫn chỉ 1
    giáo trình active; giáo trình tiếp theo vào hàng đợi.
+   Nếu hai tài khoản dùng cùng OpenAI key hoặc cùng quota thấp, biến sleep
+   embedding này giúp giảm lỗi `429 Too Many Requests` trong giai đoạn crawl/RAG.
 3. **Medium production 5-10 user/job**: chuyển sang `CHROMA_MODE=http`, thêm
    Chroma server riêng, giữ Redis chung cho queue/limiter, rồi tăng
    `CELERY_CONCURRENCY` và `GENERATION_GLOBAL_CONCURRENCY` theo benchmark thật.
@@ -241,7 +244,7 @@ Kiểm tra restore trên staging trước khi xem backup là đáng tin.
 | API không lên | `docker compose logs api`, `SECRET_KEY`, `FRONTEND_URL`, `CORS_ORIGINS`, migration |
 | Worker không nhận job | Redis URL/healthcheck, `celery_task_id`, `docker compose logs worker` |
 | Tạo giáo trình fail vì key | Admin System Config, `.env`, generation mode, BYOK credentials |
-| Bị 429/Too Many Requests | Bật Redis shared limiter, tăng sleep/backoff, giảm worker/crawl/image concurrency |
+| Bị 429/Too Many Requests | Bật Redis shared limiter, đặt `OPENAI_EMBEDDING_MIN_INTERVAL_SECONDS=2.0` cho Railway 2 user, giảm `EMBEDDING_BATCH_SIZE`/crawl/image concurrency nếu vẫn bị |
 | Export thiếu PDF/DOCX | Log publisher, Pandoc/Typst trong image, quyền ghi `outputs` volume |
 | RAG/Chroma lỗi khi scale | Đừng tăng worker nếu còn dùng local persistent path; chuyển sang Chroma server trước |
 

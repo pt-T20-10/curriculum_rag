@@ -36,7 +36,12 @@ from app.utils.log_config import setup_logger
 from app.config import settings, get_embedding_model
 from app.services.runtime_config import get_runtime_config
 from app.services.api_rate_limiter import rate_limited_call
-from app.services.chroma_runtime import CHROMA_HTTP, chroma_mode, chroma_vector_store_kwargs
+from app.services.chroma_runtime import (
+    CHROMA_HTTP,
+    chroma_mode,
+    chroma_vector_store_kwargs,
+    effective_chroma_persist_dir,
+)
 from app.utils import stop_signal
 
 CHROMA_DB_DIR = settings.CHROMA_DB_DIR
@@ -2487,7 +2492,7 @@ def ingest_dynamic_data(
         
         # Initialize ChromaDB collection
         if chroma_mode() != CHROMA_HTTP:
-            chroma_dir = Path(persist_directory) if persist_directory else CHROMA_DB_DIR
+            chroma_dir = effective_chroma_persist_dir(persist_directory)
             chroma_dir.mkdir(parents=True, exist_ok=True)
         from langchain_chroma import Chroma
         vector_db = Chroma(
