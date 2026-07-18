@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from '../context/AuthContext'
+import { configAPI } from '../api/config'
 
 export function GoogleCallbackPage() {
   const [searchParams] = useSearchParams()
@@ -40,7 +41,21 @@ export function GoogleCallbackPage() {
       localStorage.removeItem('google_oauth_state')
 
       try {
-        await loginWithToken(token)
+        const loggedInUser = await loginWithToken(token)
+        if (loggedInUser?.role === 'admin') {
+          try {
+            const setupRes = await configAPI.getSetupStatus()
+            const missing = setupRes.data?.missing_required || []
+            if (missing.length > 0 || setupRes.data?.is_ready === false) {
+              const focus = missing[0]?.key
+              navigate(`/admin/config?setup=1${focus ? `&focus=${encodeURIComponent(focus)}` : ''}`, { replace: true })
+              return
+            }
+          } catch {
+            navigate('/admin/config?setup=1', { replace: true })
+            return
+          }
+        }
         navigate('/dashboard', { replace: true })
       } catch {
         setErrorMsg(t('auth.google.errors.profile'))

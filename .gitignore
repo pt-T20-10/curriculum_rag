@@ -19,6 +19,13 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+pytestdebug.log
+*.prof
 
 # --- Virtual Environment ---
 venv/
@@ -45,13 +52,25 @@ chroma_db/
 storage/
 outputs/
 logs/
+backend/logs/
+backend/outputs/
 backend/toP*.tmp
 old_ver/
 tests/
+backend/tests/
+backend/test_local_*.py
+backend/test_manual_*.py
+backend/test_tmp_*.py
+test_local_*.py
+test_manual_*.py
+test_tmp_*.py
 *.zip
 *.pdf
 *.db
 *.sqlite3
+*.tmp
+*.bak
+*.local.*
 /skills.txt
 eval/
 list_models.py
@@ -79,5 +98,6 @@ results/
 results - Copy/
 backend/results/exp2/*
 backup/
+backups/
 stuff/
 data/

@@ -7,7 +7,7 @@ from app.services.textbook.query_formulator import formulate_query
 
 
 def test_textbook_create_defaults_to_standard_mode() -> None:
-    payload = TextbookCreate(topic="Lập trình Python cơ bản")
+    payload = TextbookCreate(topic="Lập trình Python cơ bản", target_pages=20)
 
     assert payload.textbook_mode == "standard"
 
@@ -15,13 +15,14 @@ def test_textbook_create_defaults_to_standard_mode() -> None:
 def test_textbook_create_accepts_practice_mode_only_from_literal_values() -> None:
     payload = TextbookCreate(
         topic="Thực hành lập trình Python cho sinh viên đại học",
+        target_pages=20,
         textbook_mode="practice",
     )
 
     assert payload.textbook_mode == "practice"
 
     try:
-        TextbookCreate(topic="Python", textbook_mode="lab")  # type: ignore[arg-type]
+        TextbookCreate(topic="Python", target_pages=20, textbook_mode="lab")  # type: ignore[arg-type]
     except ValidationError:
         pass
     else:  # pragma: no cover

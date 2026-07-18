@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { configAPI } from '../../api/config'
-import { translateConfigGroup, translateConfigParam } from '../../utils/configTranslations'
+import { translateConfigChoice, translateConfigGroup, translateConfigParam } from '../../utils/configTranslations'
 
 // ---------------------------------------------------------------------------
 // Spinner
@@ -203,7 +203,9 @@ function ParamField({ param, pendingValue, savedValue, defaultValue, onChange, o
     if (param.choices) {
       return (
         <select value={effectiveValue} onChange={e => onChange(e.target.value)} className={commonCls}>
-          {param.choices.map(c => <option key={c} value={c}>{c}</option>)}
+          {param.choices.map(c => (
+            <option key={c} value={c}>{translateConfigChoice(param.key, c, t)}</option>
+          ))}
         </select>
       )
     }

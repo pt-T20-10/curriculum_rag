@@ -22,6 +22,10 @@ from typing import Any, Dict, Optional
 ParameterDef = Dict[str, Any]
 
 LLM_MODEL_CHOICES = [
+    "gpt-5.1",
+    "gpt-5",
+    "gpt-5-mini",
+    "gpt-5-nano",
     "gpt-4o-mini",
     "gpt-4o",
     "gpt-4.1-mini",
@@ -29,6 +33,23 @@ LLM_MODEL_CHOICES = [
     "gpt-5.4-mini",
     "gpt-5.4",
     "gpt-5.5",
+]
+
+TEXTBOOK_GENERATION_MODE_CHOICES = [
+    "user_provided_api_keys",
+    "system_credit_billing",
+]
+
+OPENAI_EMBEDDING_MODEL_CHOICES = [
+    "text-embedding-3-small",
+    "text-embedding-3-large",
+]
+
+IMAGE_MODEL_CHOICES = [
+    "gpt-image-1",
+    "gpt-image-1-mini",
+    "dall-e-3",
+    "gpt-image-2",
 ]
 
 API_COST_PROFILE_CHOICES = [
@@ -217,6 +238,17 @@ PARAMETER_REGISTRY: Dict[str, ParameterDef] = {
         "user_editable": False,
         "admin_only": True,
         "sensitive": True,
+    },
+    "TEXTBOOK_GENERATION_MODE": {
+        "label": "Chế Độ Tạo Giáo Trình",
+        "description": "Chọn cách người dùng trả chi phí tạo giáo trình: tự nhập API key hoặc dùng credit hệ thống.",
+        "group": "api_keys",
+        "type": "str",
+        "default": "user_provided_api_keys",
+        "choices": TEXTBOOK_GENERATION_MODE_CHOICES,
+        "user_editable": False,
+        "admin_only": True,
+        "sensitive": False,
     },
 
     # =========================================================================
@@ -642,6 +674,50 @@ PARAMETER_REGISTRY: Dict[str, ParameterDef] = {
         "group": "generation",
         "type": "str",
         "default": "gpt-4.1",
+        "choices": LLM_MODEL_CHOICES,
+        "user_editable": True,
+        "admin_only": False,
+        "sensitive": False,
+    },
+    "OPENAI_EMBEDDING_MODEL": {
+        "label": "Model Embedding OpenAI",
+        "description": "Model embedding dùng để lập chỉ mục và truy xuất RAG khi EMBEDDING_PROVIDER=openai.",
+        "group": "generation",
+        "type": "str",
+        "default": "text-embedding-3-small",
+        "choices": OPENAI_EMBEDDING_MODEL_CHOICES,
+        "user_editable": True,
+        "admin_only": False,
+        "sensitive": False,
+    },
+    "IMAGE_MODEL_DEFAULT": {
+        "label": "Model Tạo Ảnh Mặc Định",
+        "description": "Model tạo ảnh dùng cho minh họa thường; model mạnh hơn có thể tăng chi phí API của người dùng.",
+        "group": "generation",
+        "type": "str",
+        "default": "gpt-image-2",
+        "choices": IMAGE_MODEL_CHOICES,
+        "user_editable": True,
+        "admin_only": False,
+        "sensitive": False,
+    },
+    "IMAGE_MODEL_PREMIUM": {
+        "label": "Model Tạo Ảnh Premium",
+        "description": "Model tạo ảnh dùng khi hình minh họa cần chất lượng cao hơn; chỉ cảnh báo chi phí, không chặn.",
+        "group": "generation",
+        "type": "str",
+        "default": "gpt-image-2",
+        "choices": IMAGE_MODEL_CHOICES,
+        "user_editable": True,
+        "admin_only": False,
+        "sensitive": False,
+    },
+    "IMAGE_VALIDATION_MODEL": {
+        "label": "Model Kiểm Tra Ảnh",
+        "description": "Model dùng để kiểm tra độ liên quan của ảnh minh họa trước khi chèn vào giáo trình.",
+        "group": "generation",
+        "type": "str",
+        "default": "gpt-5.4-mini",
         "choices": LLM_MODEL_CHOICES,
         "user_editable": True,
         "admin_only": False,

@@ -33,6 +33,10 @@ _database_lookup_enabled: ContextVar[bool] = ContextVar(
     "runtime_config_database_lookup_enabled",
     default=True,
 )
+_runtime_overrides: ContextVar[dict[str, Any]] = ContextVar(
+    "runtime_config_overrides",
+    default={},
+)
 
 
 class RuntimeConfigError(RuntimeError):
@@ -80,7 +84,8 @@ def invalidate_runtime_config_cache() -> None:
     try:
         from app.config import get_embedding_model
 
-        get_embedding_model.cache_clear()
+        if hasattr(get_embedding_model, "cache_clear"):
+            get_embedding_model.cache_clear()
     except Exception as exc:
         logger.debug("Could not clear embedding model cache: %s", exc)
     try:
@@ -119,6 +124,10 @@ def get_runtime_config(key: str, required: bool = False) -> Any:
         2. Settings/.env
         3. RuntimeConfigError when required=True
     """
+    overrides = _runtime_overrides.get()
+    if key in overrides and not _is_missing(overrides[key]):
+        return overrides[key]
+
     now = time.monotonic()
     with _lock:
         cached = _cache.get(key)
@@ -135,6 +144,19 @@ def get_runtime_config(key: str, required: bool = False) -> Any:
             "then Settings/.env fallback."
         )
     return value
+
+
+@contextmanager
+def runtime_config_overrides(overrides: dict[str, Any] | None) -> Iterator[None]:
+    """Temporarily prefer explicit runtime values for the current request/job."""
+    current = dict(_runtime_overrides.get())
+    if overrides:
+        current.update({k: v for k, v in overrides.items() if not _is_missing(v)})
+    token = _runtime_overrides.set(current)
+    try:
+        yield
+    finally:
+        _runtime_overrides.reset(token)
 
 
 def get_api_key(key: str, required: bool = True) -> str:

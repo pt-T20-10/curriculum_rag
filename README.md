@@ -8,6 +8,200 @@ Hệ thống web tạo giáo trình tiếng Việt hoặc tiếng Anh từ một
 ![ChromaDB](https://img.shields.io/badge/VectorDB-ChromaDB-purple)
 ![Frontend](https://img.shields.io/badge/Frontend-React%20%2B%20Vite-61dafb)
 
+## Deploy Quickstart
+
+Đọc phần này trước nếu bạn hoặc một AI agent khác cần deploy hệ thống trên
+server mới. Các phần kiến trúc, workflow và agent được đặt phía sau như tài liệu
+tham khảo kỹ thuật.
+
+### Chọn Kiểu Deploy
+
+| Option | Khi nào dùng | Dịch vụ cần có | Ghi chú |
+|---|---|---|---|
+| Docker Compose VPS | Khuyến nghị mặc định khi chưa biết OS/server cụ thể | Docker, Docker Compose, domain HTTPS | Ít phụ thuộc Ubuntu/Debian/RHEL; app chạy bằng container |
+| Railway / Managed | Muốn dùng MySQL/Redis managed và deploy nhanh | Railway services hoặc provider tương đương | Cần map đúng `MYSQL_URL`, `REDIS_URL`, `FRONTEND_URL`, `BACKEND_URL` |
+| Manual Linux | Server tự quản, muốn tách từng process | Python 3.11, Node, MySQL, Redis, Caddy/Nginx, Celery | Phù hợp khi có người vận hành Linux/systemd |
+| Local Dev | Chạy và test trên máy dev | Python, Node, Docker cho MySQL/Redis | ChromaDB dùng local persistent path, không dành cho multi-worker production |
+
+Nếu chưa chắc server chạy công nghệ gì, chọn **Docker Compose VPS** trước. Miễn
+server cài được Docker và mount được volume persistent, hệ điều hành phía dưới
+không còn quá quan trọng.
+
+### Dịch Vụ Bắt Buộc
+
+| Service | Vai trò | Persistent data |
+|---|---|---|
+| `web` / Caddy | Serve frontend React, HTTPS, proxy API, Basic Auth demo | Caddy data/config |
+| `api` / FastAPI | Auth, textbook API, admin config, progress polling | Không lưu state dài hạn trong container |
+| `worker` / Celery | Chạy planning/content generation dài hạn | Cần truy cập `outputs`, logs, Chroma |
+| MySQL 8 | Users, textbooks, credits, config, credentials | Bắt buộc backup |
+| Redis 7 | Celery broker/result, stop signal, task registry, shared rate limiter | Nên persistent append-only |
+| ChromaDB | Vector store cho RAG theo từng textbook/run | Local path trong branch hiện tại; server riêng khi scale |
+| Outputs volume | Markdown/PDF/DOCX/image sinh ra | Bắt buộc backup nếu cần giữ giáo trình |
+
+### Docker Compose VPS
+
+Cấu hình hiện tại trong `docker-compose.prod.yml` dành cho demo production nhỏ:
+MySQL, Redis, API, worker, web/Caddy chạy trên cùng VPS. Backend image đã đóng
+gói Typst `0.13.1`, Pandoc `3.6.4` và font Liberation Serif để export PDF/Word
+ổn định mà không cần cài thêm trên host.
+
+1. Trỏ domain về VPS và mở cổng `80`, `443`.
+2. Copy `.env.production.example` thành `.env.production`, thay toàn bộ
+   `REPLACE_*`, URL/email mẫu, rồi đặt quyền file secret:
+
+```bash
+cp .env.production.example .env.production
+chmod 600 .env.production
+```
+
+3. Tạo secret:
+
+```bash
+openssl rand -hex 32
+docker run --rm caddy:2.10-alpine caddy hash-password --plaintext 'demo-password'
+python -c "import bcrypt; print(bcrypt.hashpw(b'admin-password', bcrypt.gensalt()).decode())"
+```
+
+Đặt Caddy hash và bcrypt hash trong dấu nháy đơn ở `.env.production` để ký tự
+`$` không bị Docker Compose nội suy. Google OAuth callback phải là:
+
+```text
+https://<domain>/api/v1/auth/google/callback
+```
+
+4. Kiểm tra config, migrate, chạy service:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.prod.yml config
+docker compose --env-file .env.production -f docker-compose.prod.yml run --rm migrate
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d
+docker compose --env-file .env.production -f docker-compose.prod.yml ps
+```
+
+5. Kiểm tra log và smoke test:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.prod.yml logs -f api worker
+DEMO_URL=https://<domain> \
+DEMO_BASIC_AUTH_USER=<user> \
+DEMO_BASIC_AUTH_PASSWORD=<password> \
+bash deploy/smoke.sh
+```
+
+Sau mỗi lần đổi image/code/config, chạy migration rồi recreate process dài hạn
+để Uvicorn/Celery không giữ singleton settings cũ:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.prod.yml run --rm migrate
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d \
+  --force-recreate api worker web
+```
+
+### Environment Checklist
+
+Những biến quan trọng cần kiểm tra trước khi deploy:
+
+| Nhóm | Biến |
+|---|---|
+| URL/security | `ENVIRONMENT=production`, `FRONTEND_URL`, `BACKEND_URL`, `CORS_ORIGINS`, `SECRET_KEY` |
+| MySQL | `MYSQL_URL` hoặc `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_ROOT_PASSWORD` |
+| Redis | `REDIS_URL` hoặc `REDIS_HOST`, `REDIS_PORT` |
+| Generation mode | `TEXTBOOK_GENERATION_MODE=user_provided_api_keys` hoặc `system_credit_billing` |
+| BYOK | `BYOK_ENCRYPTION_KEY` bắt buộc khi user tự nhập/lưu API key |
+| Provider keys | `OPENAI_API_KEY` bắt buộc nếu dùng credit hệ thống; `SERPER_API_KEY` tùy chọn |
+| OAuth/email/payment | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`, SMTP/Resend, `SEPAY_ACCOUNT_NUMBER` |
+| Worker profile | `CELERY_CONCURRENCY`, `SEARCH_MAX_WORKERS`, `CRAWL_MAX_WORKERS`, `MAX_CHUNKS_TO_EMBED`, `EMBEDDING_BATCH_SIZE` |
+
+API keys hệ thống có thể nhập trong Admin System Config sau khi đăng nhập. Nếu
+Admin DB chưa có key thì runtime fallback về `.env`. `BYOK_ENCRYPTION_KEY` là
+secret gốc, không nhập qua Admin UI.
+
+### First Admin Setup
+
+Ở lần backend đầu tiên kết nối database, bootstrap admin được tạo từ các biến
+`DEFAULT_ADMIN_*`. Production validator từ chối email/mật khẩu mẫu, nên phải
+thay `DEFAULT_ADMIN_EMAIL` và `DEFAULT_ADMIN_PASSWORD_HASH` trước khi deploy
+công khai.
+
+Sau khi login, frontend gọi:
+
+```text
+GET /api/v1/config/admin/setup-status
+```
+
+Nếu thiếu cấu hình bắt buộc, Admin được chuyển tới `/admin/config?setup=1` để
+nhập ngay SMTP, OpenAI key cho credit mode, Google OAuth hoặc tài khoản nhận
+tiền. Checklist tính giá trị theo thứ tự Admin DB rồi tới `.env`.
+
+### ChromaDB Modes
+
+| Mode | Trạng thái | Khi nào dùng | Cảnh báo |
+|---|---|---|---|
+| Local persistent path | Đang dùng trong branch hiện tại qua `persist_directory` | Local dev, demo 1 worker | Không tăng Celery concurrency khi nhiều worker cùng mở path này |
+| Chroma server / HTTP | Hướng scale production | 5-10 generation song song trở lên | Cần thêm service Chroma riêng và refactor client sang `HttpClient` |
+
+Workflow hiện tại đã tạo collection riêng cho mỗi textbook/run
+(`dynamic_context_<textbook_id>_<timestamp>`) và cleanup best-effort sau export.
+Điều này tránh lẫn dữ liệu, nhưng chưa thay thế được Chroma server khi chạy
+nhiều worker generation thật sự.
+
+### Scale And Concurrency Notes
+
+Trạng thái branch hiện tại:
+
+- `docker-compose.prod.yml` chạy API `--workers 1`.
+- Worker production chạy `celery --pool=solo --concurrency=1`.
+- `backend/app/config.py` đang validate production và từ chối
+  `CELERY_CONCURRENCY != 1`.
+- README/ops hiện coi đây là demo production nhỏ, không phải multi-worker
+  generation public.
+
+Profile khuyến nghị:
+
+| Profile | Mục tiêu | Cấu hình phù hợp |
+|---|---|---|
+| Minimum/demo | 1 giáo trình đang generate toàn hệ thống | Compose hiện tại, Chroma local path, Redis/MySQL cùng VPS |
+| Medium | 5-10 giáo trình song song từ nhiều user | Chroma server, Redis shared limiter, key pool, global generation semaphore, per-user active limit |
+
+Để lên medium profile, cần làm thêm ở code/runtime trước khi tăng worker:
+
+- Chặn mỗi user chỉ có 1 textbook active hoặc queue theo chính sách rõ ràng.
+- Tách Chroma thành service/server và dùng HTTP client từ worker.
+- Thêm global concurrency limit bằng Redis để worker không vượt sức máy.
+- Với `system_credit_billing`, dùng nhiều OpenAI key của Admin hoặc key pool,
+  mỗi key có bucket rate limit riêng.
+- Giữ `SEARCH_MAX_WORKERS`, `CRAWL_MAX_WORKERS`, `MAX_CHUNKS_TO_EMBED` thấp lúc
+  mới scale, rồi benchmark tăng dần.
+
+### Backup And Restore
+
+Backup trước mỗi deploy hoặc migration:
+
+```bash
+bash deploy/backup.sh
+```
+
+Tối thiểu cần giữ:
+
+- MySQL dump: users, textbooks, credits, config, encrypted credentials.
+- `outputs` volume: Markdown/PDF/DOCX/image đã sinh.
+- Chroma volume/path: chỉ cần nếu muốn giữ corpus RAG tạm; workflow hiện có thể
+  crawl lại, nhưng backup giúp debug và audit.
+
+Kiểm tra restore trên staging trước khi xem backup là đáng tin.
+
+### Troubleshooting
+
+| Triệu chứng | Kiểm tra |
+|---|---|
+| API không lên | `docker compose logs api`, `SECRET_KEY`, `FRONTEND_URL`, `CORS_ORIGINS`, migration |
+| Worker không nhận job | Redis URL/healthcheck, `celery_task_id`, `docker compose logs worker` |
+| Tạo giáo trình fail vì key | Admin System Config, `.env`, generation mode, BYOK credentials |
+| Bị 429/Too Many Requests | Bật Redis shared limiter, tăng sleep/backoff, giảm worker/crawl/image concurrency |
+| Export thiếu PDF/DOCX | Log publisher, Pandoc/Typst trong image, quyền ghi `outputs` volume |
+| RAG/Chroma lỗi khi scale | Đừng tăng worker nếu còn dùng local persistent path; chuyển sang Chroma server trước |
+
 ## System Architecture
 
 ```text
@@ -338,7 +532,7 @@ Các nhóm config chính:
 
 | Nhóm | Setting tiêu biểu |
 |---|---|
-| API keys | `OPENAI_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `SERPER_API_KEY`, Google OAuth, SMTP, SePay |
+| API keys | `TEXTBOOK_GENERATION_MODE`, `BYOK_ENCRYPTION_KEY`, `OPENAI_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `SERPER_API_KEY`, Google OAuth, SMTP, SePay |
 | Database | `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE` |
 | Redis | `REDIS_HOST`, `REDIS_PORT` |
 | LLM | `LLM_MODEL_CHEAP`, `LLM_MODEL_PREMIUM`, `IMAGE_MODEL_DEFAULT`, `IMAGE_MODEL_PREMIUM` |
@@ -365,6 +559,8 @@ GROQ_API_KEY=
 GEMINI_API_KEY=
 ANTHROPIC_API_KEY=
 SERPER_API_KEY=
+TEXTBOOK_GENERATION_MODE=user_provided_api_keys
+BYOK_ENCRYPTION_KEY=
 
 MYSQL_HOST=localhost
 MYSQL_PORT=3306
@@ -414,7 +610,15 @@ IMAGE_MODEL_PREMIUM=gpt-image-2
 IMAGE_VALIDATION_MODEL=gpt-5.4-mini
 ```
 
-`MYSQL_*`, `REDIS_*`, `SECRET_KEY`, URL app và model/config vận hành vẫn nên nằm trong `.env`. API keys có thể nhập bằng Admin UI; nếu DB chưa có key thì runtime fallback về `.env`.
+`TEXTBOOK_GENERATION_MODE` có 2 giá trị: `user_provided_api_keys` tương ứng “Người dùng tự nhập API key” và `system_credit_billing` tương ứng “Nạp tiền bằng credit hệ thống”. Production mặc định nên dùng `user_provided_api_keys`; khi đó người dùng nhập OpenAI key bắt buộc, Serper key tùy chọn, hệ thống không trừ credit khi tạo giáo trình. Nếu bật `system_credit_billing`, admin cần cấu hình `OPENAI_API_KEY` hệ thống và flow credit giữ như trước.
+
+`BYOK_ENCRYPTION_KEY` là Fernet key dùng để mã hóa API key cá nhân và snapshot key theo job. Tạo bằng:
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+`MYSQL_*`, `REDIS_*`, `SECRET_KEY`, URL app và model/config vận hành vẫn nên nằm trong `.env`. API keys hệ thống có thể nhập bằng Admin UI; nếu DB chưa có key thì runtime fallback về `.env`.
 
 ### Advanced Settings API
 
@@ -501,7 +705,7 @@ cd backend
 alembic upgrade head
 ```
 
-Migration `backend/alembic/versions/add_textbook_language.py` thêm cột `textbooks.language` và backfill textbook cũ thành `vi`; migration `backend/alembic/versions/add_textbook_mode.py` thêm mode textbook hiện tại. Nếu bỏ qua migration, các API đọc textbook có thể lỗi thiếu cột schema.
+Migration `backend/alembic/versions/add_textbook_language.py` thêm cột `textbooks.language` và backfill textbook cũ thành `vi`; migration `backend/alembic/versions/add_textbook_mode.py` thêm mode textbook hiện tại; migration `backend/alembic/versions/add_byok_credentials.py` thêm bảng lưu API key cá nhân đã mã hóa và snapshot key theo job; migration `backend/alembic/versions/set_default_textbook_generation_mode.py` chuyển default sang “Người dùng tự nhập API key”. Nếu bỏ qua migration, các API đọc/tạo textbook hoặc chức năng người dùng tự nhập API key có thể lỗi thiếu schema/config.
 
 ### Standalone CLI
 
@@ -574,9 +778,13 @@ Tạo bcrypt hash mới mà không đưa plaintext password vào command history
 Việc cần làm đầu tiên trong Admin UI:
 
 1. Vào trang Admin System Config.
-2. Mở nhóm `API Keys`.
-3. Nhập tối thiểu các key đang dùng trong workflow: `OPENAI_API_KEY`, `GROQ_API_KEY`; nếu bật ảnh/search thì thêm `SERPER_API_KEY`.
+2. Mở nhóm `API Keys` và chọn rõ chế độ tạo giáo trình:
+   - `Người dùng tự nhập API key`: production mặc định; cần `BYOK_ENCRYPTION_KEY`, người dùng nhập OpenAI/Serper key ở trang tạo giáo trình, không trừ credit.
+   - `Nạp tiền bằng credit hệ thống`: admin nhập `OPENAI_API_KEY` hệ thống; credit/top-up/trừ credit chạy như trước.
+3. Nếu dùng chế độ nạp tiền bằng credit hệ thống, nhập tối thiểu `OPENAI_API_KEY`; nếu bật ảnh/search thì thêm `SERPER_API_KEY`.
 4. Nếu dùng Google OAuth, email reset password hoặc thanh toán thì nhập thêm Google OAuth, SMTP và SePay tương ứng.
+
+Sau khi đăng nhập bằng tài khoản Admin bootstrap, frontend gọi `GET /api/v1/config/admin/setup-status`. Nếu còn thiếu cấu hình bắt buộc, Admin được chuyển tới `/admin/config?setup=1` để điền ngay các mục như SMTP, OpenAI key trong chế độ credit, hoặc tài khoản nhận tiền. Checklist tính giá trị theo thứ tự Admin DB rồi tới `.env`; giá trị đã có trong `.env` được xem là đã cấu hình nhưng vẫn hiển thị rõ nguồn. `BYOK_ENCRYPTION_KEY` không nhập qua Admin UI vì đây là secret gốc phải nằm trong biến môi trường/secret manager.
 
 Nếu chưa nhập API keys trong Admin UI và `.env` cũng không có fallback, các task gọi provider tương ứng sẽ fail với lỗi chỉ rõ key nào đang thiếu.
 
@@ -723,87 +931,6 @@ curriculum_rag/
 |       |   |-- topup/
 |       |   |-- common/
 ```
-
-## Deploy Demo Trên VPS
-
-Cấu hình này dành cho một VPS Linux tối thiểu 2 GB RAM + 2 GB swap. Nó giữ
-nguyên API, giao diện, JWT localStorage, Celery workflow và đường dẫn
-`/outputs`; Caddy thêm HTTPS và một lớp Basic Auth bao quanh toàn bộ demo.
-Backend image đã khóa Typst `0.13.1` và Pandoc `3.6.4`, đồng thời có font
-Liberation Serif để xuất PDF/Word nhất quán mà không cần cài chúng trên VPS.
-
-### Chuẩn bị
-
-1. Trỏ domain về VPS và mở cổng `80`, `443`.
-2. Copy `.env.production.example` thành `.env.production`, thay toàn bộ
-   `REPLACE_*`, URL và email mẫu; sau đó chạy `chmod 600 .env.production`.
-3. Tạo các secret cần thiết:
-
-```bash
-openssl rand -hex 32
-docker run --rm caddy:2.10-alpine caddy hash-password --plaintext 'demo-password'
-python -c "import bcrypt; print(bcrypt.hashpw(b'admin-password', bcrypt.gensalt()).decode())"
-```
-
-Đặt Caddy hash và bcrypt hash trong dấu nháy đơn ở `.env.production` để ký tự
-`$` không bị Docker Compose nội suy. Cấu hình Google OAuth callback phải là:
-
-```text
-https://<domain>/api/v1/auth/google/callback
-```
-
-### Build và chạy
-
-Nên build image trên máy local/CI rồi push lên registry hoặc chuyển bằng
-`docker save`/`docker load`; không nên build dependency trên VPS 2 GB. Sau khi
-image có trên server:
-
-```bash
-docker compose --env-file .env.production -f docker-compose.prod.yml config
-docker compose --env-file .env.production -f docker-compose.prod.yml up -d
-docker compose --env-file .env.production -f docker-compose.prod.yml ps
-```
-
-Sau mỗi lần cập nhật image hoặc code cấu hình, recreate các process dài hạn để
-Celery/Uvicorn không giữ singleton Settings cũ trong RAM:
-
-```bash
-docker compose --env-file .env.production -f docker-compose.prod.yml run --rm migrate
-docker compose --env-file .env.production -f docker-compose.prod.yml up -d \
-  --force-recreate api worker web
-```
-
-Service `migrate` chạy `alembic upgrade head` trước khi API và worker khởi
-động. Migration `initial_schema` hỗ trợ database production mới hoàn toàn.
-Nếu mang một database local cũ từng được tạo bằng `create_all()` nhưng chưa có
-Alembic version sang server, phải backup và đối chiếu schema trước khi stamp;
-không chạy baseline đè lên các bảng đã tồn tại. Kiểm tra log và smoke test:
-
-```bash
-docker compose --env-file .env.production -f docker-compose.prod.yml logs -f api worker
-DEMO_URL=https://<domain> \
-DEMO_BASIC_AUTH_USER=<user> \
-DEMO_BASIC_AUTH_PASSWORD=<password> \
-bash deploy/smoke.sh
-```
-
-Backup thủ công trước khi cập nhật:
-
-```bash
-bash deploy/backup.sh
-```
-
-File backup MySQL và `outputs` được đặt dưới `backups/<timestamp>/`. Kiểm tra
-khả năng restore trên môi trường staging trước khi xem backup là hợp lệ.
-
-### Giới hạn scale
-
-Demo khóa `CELERY_CONCURRENCY=1` vì image workspace, provider rate limit và một số singleton runtime vẫn tối ưu cho một job dài hạn. ChromaDB đã dùng collection riêng theo textbook, nhưng chưa coi hệ thống là multi-worker generation cho tới khi hoàn tất kiểm thử đồng thời end-to-end. API, worker, database, Redis và web đã là các service tách biệt nên có thể chuyển sang máy khác trong phase scale sau này.
-
-Dependency audit hiện còn cảnh báo `CVE-2026-45829` ở `chromadb 1.5.9` và chưa
-có bản vá được công bố trong package index. Đây là rủi ro được chấp nhận riêng
-cho bản demo có Basic Auth; cần cập nhật ChromaDB và regression test ngay khi có
-bản vá trước khi coi hệ thống là production công khai.
 
 ## Operational Notes
 

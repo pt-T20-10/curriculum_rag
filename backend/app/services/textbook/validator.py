@@ -7,7 +7,7 @@ import re
 import unicodedata
 from langchain_openai import ChatOpenAI
 from app.config import settings
-from app.services.runtime_config import get_api_key
+from app.services.runtime_config import get_api_key, get_runtime_config
 from app.schemas.curriculum import AgentState
 from app.services.textbook.language import (
     detect_unsupported_requested_language,
@@ -573,7 +573,7 @@ def validate_topic(
     
     try:
         llm = ChatOpenAI(
-            model=settings.LLM_MODEL_CHEAP,
+            model=str(get_runtime_config("LLM_MODEL_CHEAP", required=False) or settings.LLM_MODEL_CHEAP),
             api_key=get_api_key("OPENAI_API_KEY"), #type: ignore
             temperature=0,
             max_completion_tokens=700,

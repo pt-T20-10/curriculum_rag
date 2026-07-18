@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from '../context/AuthContext'
 import { authAPI } from '../api/auth'
+import { byokAPI } from '../api/byok'
 import { PasswordInput } from '../components/common/PasswordInput'
 import { Button } from '../components/common/Button'
 import { Navbar } from '../components/layout/Navbar'
@@ -178,9 +179,42 @@ export function ProfilePage() {
   const { t } = useTranslation()
   const { user } = useAuth()
   const isAdmin = user?.role === 'admin'
-  const TABS = ALL_TABS.filter(t => !(t.hideForAdmin && isAdmin))
+  const [generationMode, setGenerationMode] = useState('user_provided_api_keys')
+  const showTopup = generationMode === 'system_credit_billing'
+  const TABS = useMemo(
+    () => ALL_TABS.filter(tab => (
+      !(tab.hideForAdmin && isAdmin) &&
+      (showTopup || tab.key !== 'topup')
+    )),
+    [isAdmin, showTopup],
+  )
 
   const [activeTab, setActiveTab] = useState('topup')
+
+  useEffect(() => {
+    let cancelled = false
+    const loadMode = async () => {
+      if (!user) return
+      try {
+        const response = await byokAPI.status()
+        if (!cancelled) {
+          setGenerationMode(response.data?.generation_mode || 'user_provided_api_keys')
+        }
+      } catch {
+        if (!cancelled) setGenerationMode('user_provided_api_keys')
+      }
+    }
+    loadMode()
+    return () => {
+      cancelled = true
+    }
+  }, [user])
+
+  useEffect(() => {
+    if (!TABS.some(tab => tab.key === activeTab)) {
+      setActiveTab(TABS[0]?.key || 'password')
+    }
+  }, [TABS, activeTab])
 
   return (
     <div className="min-h-screen bg-gray-50">

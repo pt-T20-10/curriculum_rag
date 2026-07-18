@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { FiEye, FiEyeOff } from 'react-icons/fi'
 import { Navbar } from '../../components/layout/Navbar'
 import { AdminNavigation } from '../../components/layout/AdminNavigation'
 import { SiteInfoSettings } from '../../components/admin/SiteInfoSettings'
 import { configAPI } from '../../api/config'
-import { translateConfigGroup, translateConfigParam } from '../../utils/configTranslations'
+import { translateConfigChoice, translateConfigGroup, translateConfigParam } from '../../utils/configTranslations'
 
 const MASKED_VALUE = '••••••••'
 
@@ -129,6 +129,8 @@ function AdminParamField({
   defaultValue,
   overrideCount,
   isRevealing,
+  setupSource,
+  highlight = false,
   onChange,
   onReset,
   onReveal,
@@ -199,7 +201,9 @@ function AdminParamField({
     if (param.choices) {
       return (
         <select value={effectiveValue} onChange={e => onChange(e.target.value)} className={commonCls}>
-          {param.choices.map(c => <option key={c} value={c}>{c}</option>)}
+          {param.choices.map(c => (
+            <option key={c} value={c}>{translateConfigChoice(param.key, c, t)}</option>
+          ))}
         </select>
       )
     }
@@ -223,11 +227,24 @@ function AdminParamField({
   const showReset = isModified || isPending
 
   return (
-    <div className="mb-5">
+    <div
+      id={`admin-config-field-${param.key}`}
+      className={`mb-5 scroll-mt-28 rounded-lg p-2 transition-colors ${highlight ? 'bg-amber-50 ring-2 ring-amber-300' : ''}`}
+    >
       <div className="flex items-center flex-wrap gap-2 mb-1">
         <code className="text-xs font-mono text-gray-600 bg-gray-100 px-1.5 py-0.5 rounded">{param.key}</code>
         <span className="text-sm font-medium text-gray-700">{param.label}</span>
         <Tooltip text={param.description} />
+        {setupSource === 'env' && (
+          <span className="text-xs px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-medium">
+            Đã cấu hình từ biến môi trường
+          </span>
+        )}
+        {setupSource === 'database' && (
+          <span className="text-xs px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-medium">
+            Đã cấu hình trong Admin
+          </span>
+        )}
         {overrideCount > 0 && (
           <span className="text-xs px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 font-medium">
             {t('admin.config.overrides', { count: overrideCount })}
@@ -335,11 +352,84 @@ function AuditTable({ entries }) {
 
 const GROUP_ORDER = ['api_keys', 'rate_limits', 'rag', 'generation', 'ingestion', 'domain_caps']
 
+function SetupChecklistBanner({ setupStatus, registry, onFocusKey }) {
+  if (!setupStatus) return null
+
+  const missing = setupStatus.missing_required || []
+  const warnings = setupStatus.warnings || []
+  if (missing.length === 0 && warnings.length === 0) {
+    return (
+      <div className="mb-6 rounded-xl border border-emerald-200 bg-emerald-50 px-5 py-4">
+        <p className="text-sm font-semibold text-emerald-800">Cấu hình vận hành đã sẵn sàng</p>
+        <p className="mt-1 text-xs text-emerald-700">
+          Các mục bắt buộc đã có giá trị từ Admin hoặc biến môi trường.
+        </p>
+      </div>
+    )
+  }
+
+  const renderItem = item => {
+    const label = registry?.parameters?.[item.key]?.label || item.label || item.key
+    return (
+      <div key={`${item.severity}-${item.key}`} className="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-white/70 bg-white/80 px-3 py-2">
+        <div>
+          <p className="text-sm font-semibold text-gray-900">{label}</p>
+          <p className="mt-0.5 text-xs text-gray-600">{item.message}</p>
+          <code className="mt-1 inline-block text-[11px] text-gray-500">{item.key}</code>
+        </div>
+        <button
+          type="button"
+          onClick={() => onFocusKey(item.key)}
+          className="rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-blue-600"
+        >
+          Điền ngay
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="mb-6 rounded-xl border border-amber-300 bg-amber-50 px-5 py-4 shadow-sm">
+      <div className="mb-3">
+        <p className="text-sm font-semibold text-amber-900">
+          {missing.length > 0
+            ? 'Cần hoàn tất cấu hình để hệ thống hoạt động ổn định'
+            : 'Một số cấu hình khuyến nghị chưa được thiết lập'}
+        </p>
+        <p className="mt-1 text-xs text-amber-800">
+          Hệ thống kiểm tra theo thứ tự Admin DB rồi tới biến môi trường. Mục đã có trong biến môi trường sẽ không bị xem là thiếu.
+        </p>
+      </div>
+
+      {missing.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs font-semibold uppercase text-red-700">Bắt buộc</p>
+          {missing.map(renderItem)}
+        </div>
+      )}
+
+      {warnings.length > 0 && (
+        <div className={`space-y-2 ${missing.length > 0 ? 'mt-4' : ''}`}>
+          <p className="text-xs font-semibold uppercase text-amber-700">Khuyến nghị</p>
+          {warnings.map(renderItem)}
+        </div>
+      )}
+
+      {(setupStatus.configured_from_env || []).length > 0 && (
+        <p className="mt-3 text-xs text-emerald-800">
+          Đã nhận từ biến môi trường: {(setupStatus.configured_from_env || []).map(item => item.label || item.key).join(', ')}.
+        </p>
+      )}
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 export function AdminSystemConfigPage() {
   const { t } = useTranslation()
+  const location = useLocation()
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [saveSuccess, setSaveSuccess] = useState(false)
@@ -347,6 +437,7 @@ export function AdminSystemConfigPage() {
 
   const [registry, setRegistry] = useState(null)
   const [systemConfig, setSystemConfig] = useState({})
+  const [setupStatus, setSetupStatus] = useState(null)
   const [overrideCounts, setOverrideCounts] = useState({})
   const [auditLog, setAuditLog] = useState([])
   const [pending, setPending] = useState({})
@@ -364,8 +455,10 @@ export function AdminSystemConfigPage() {
         configAPI.getOverrideCounts(),
         configAPI.getAuditLog(20),
       ])
+      const setupRes = await configAPI.getSetupStatus()
       setRegistry(regRes.data)
       setSystemConfig(sysRes.data.config || {})
+      setSetupStatus(setupRes.data || null)
       const countMap = {}
       for (const item of overRes.data) countMap[item.key] = item.override_count
       setOverrideCounts(countMap)
@@ -381,6 +474,32 @@ export function AdminSystemConfigPage() {
     const timer = setTimeout(() => { load() }, 0)
     return () => clearTimeout(timer)
   }, [load])
+
+  const setupSourceByKey = {}
+  for (const item of setupStatus?.configured_from_env || []) setupSourceByKey[item.key] = 'env'
+  for (const item of setupStatus?.configured_from_db || []) setupSourceByKey[item.key] = 'database'
+
+  const setupParams = new URLSearchParams(location.search)
+  const focusKey = setupParams.get('focus') || setupStatus?.missing_required?.[0]?.key || ''
+  const setupMode = setupParams.get('setup') === '1'
+
+  const focusConfigKey = useCallback((key) => {
+    const element = document.getElementById(`admin-config-field-${key}`)
+    if (!element) return
+    element.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    const input = element.querySelector('input, select, textarea, button')
+    if (input && typeof input.focus === 'function') {
+      window.setTimeout(() => input.focus(), 250)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!loading && registry && setupMode && focusKey) {
+      const timer = window.setTimeout(() => focusConfigKey(focusKey), 250)
+      return () => window.clearTimeout(timer)
+    }
+    return undefined
+  }, [focusConfigKey, focusKey, loading, registry, setupMode])
 
   const getDefault = (key) => registry?.parameters?.[key]?.default
 
@@ -480,8 +599,12 @@ export function AdminSystemConfigPage() {
       setPending({})
       setSaveSuccess(true)
       setTimeout(() => setSaveSuccess(false), 3000)
-      const auditRes = await configAPI.getAuditLog(20)
+      const [auditRes, setupRes] = await Promise.all([
+        configAPI.getAuditLog(20),
+        configAPI.getSetupStatus(),
+      ])
       setAuditLog(auditRes.data || [])
+      setSetupStatus(setupRes.data || null)
     } catch (e) {
       const detail = e.response?.data?.detail
       setApiError(typeof detail === 'object' ? JSON.stringify(detail) : (detail || t('admin.config.saveError')))
@@ -493,8 +616,11 @@ export function AdminSystemConfigPage() {
   const pendingCount = Object.keys(pending).length
   const groupedParams = (groupKey) => {
     if (!registry) return []
-    return Object.values(registry.parameters).filter(p => p.group === groupKey)
+    return Object.values(registry.parameters).filter(
+      p => p.group === groupKey && p.key !== 'TEXTBOOK_GENERATION_MODE',
+    )
   }
+  const generationModeParam = registry?.parameters?.TEXTBOOK_GENERATION_MODE
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -520,12 +646,44 @@ export function AdminSystemConfigPage() {
           </div>
         </div>
 
-        <SiteInfoSettings />
-
         {loading && <Spinner />}
 
         {!loading && registry && (
           <>
+            {generationModeParam && (
+              <div className="mb-6 rounded-xl border border-blue-200 bg-white p-5 shadow-sm">
+                <div className="mb-3">
+                  <p className="text-sm font-semibold text-blue-900">
+                    Chế độ tạo giáo trình
+                  </p>
+                  <p className="mt-1 text-xs text-blue-700">
+                    Cấu hình quan trọng nhất: chọn cách người dùng tạo giáo trình và cách hệ thống xử lý credit/API key.
+                  </p>
+                </div>
+                <AdminParamField
+                  param={translateConfigParam(generationModeParam, t)}
+                  pendingValue={pending.TEXTBOOK_GENERATION_MODE}
+                  savedValue={systemConfig.TEXTBOOK_GENERATION_MODE}
+                  defaultValue={generationModeParam.default}
+                  overrideCount={overrideCounts.TEXTBOOK_GENERATION_MODE || 0}
+                  isRevealing={Boolean(revealingKeys.TEXTBOOK_GENERATION_MODE)}
+                  setupSource={setupSourceByKey.TEXTBOOK_GENERATION_MODE}
+                  highlight={focusKey === 'TEXTBOOK_GENERATION_MODE'}
+                  onChange={(val) => handleChange(generationModeParam, val)}
+                  onReset={() => handleReset('TEXTBOOK_GENERATION_MODE')}
+                  onReveal={handleRevealSensitive}
+                />
+              </div>
+            )}
+
+            <SetupChecklistBanner
+              setupStatus={setupStatus}
+              registry={registry}
+              onFocusKey={focusConfigKey}
+            />
+
+            <SiteInfoSettings />
+
             {/* Warning banner */}
             <div className="flex items-start gap-3 bg-red-50 border border-red-200 rounded-lg px-4 py-3 mb-6">
               <svg className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
@@ -542,9 +700,10 @@ export function AdminSystemConfigPage() {
               const translatedGroup = translateConfigGroup(groupKey, group, t)
               const params = groupedParams(groupKey)
               if (params.length === 0) return null
+              const shouldOpen = groupKey === 'api_keys' || params.some(param => param.key === focusKey)
               return (
                 <GroupAccordion key={groupKey} title={translatedGroup.label} description={translatedGroup.description}
-                  defaultOpen={groupKey === 'api_keys'}>
+                  defaultOpen={shouldOpen}>
                   {params.map(param => {
                     const translatedParam = translateConfigParam(param, t)
                     return (
@@ -556,6 +715,8 @@ export function AdminSystemConfigPage() {
                       defaultValue={param.default}
                       overrideCount={overrideCounts[param.key] || 0}
                       isRevealing={Boolean(revealingKeys[param.key])}
+                      setupSource={setupSourceByKey[param.key]}
+                      highlight={focusKey === param.key}
                       onChange={(val) => handleChange(param, val)}
                       onReset={() => handleReset(param.key)}
                       onReveal={handleRevealSensitive}

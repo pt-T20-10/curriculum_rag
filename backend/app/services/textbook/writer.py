@@ -25,7 +25,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.config import settings
 from app.services.api_rate_limiter import rate_limited_invoke
-from app.services.runtime_config import get_api_key
+from app.services.runtime_config import get_api_key, get_runtime_config
 from app.services.textbook.language import get_language_profile
 
 LLM_MODEL_PREMIUM = settings.LLM_MODEL_PREMIUM
@@ -375,8 +375,9 @@ class ContentWriter:
     """
 
     def __init__(self) -> None:
+        self.model = str(get_runtime_config("LLM_MODEL_PREMIUM", required=False) or LLM_MODEL_PREMIUM)
         self._llm = ChatOpenAI(
-            model=LLM_MODEL_PREMIUM, #type: ignore
+            model=self.model, #type: ignore
             api_key=get_api_key("OPENAI_API_KEY"), #type: ignore
             temperature=0.4,
         )

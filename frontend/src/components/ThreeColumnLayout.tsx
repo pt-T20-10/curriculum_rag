@@ -138,8 +138,8 @@ const ThreeColumnLayout: React.FC<ThreeColumnLayoutProps> = ({
       )}
       
       {/* CENTER PANEL */}
-      <div className="flex-1 overflow-y-auto bg-gray-50">
-        <div className="max-w-5xl mx-auto">
+      <div className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden bg-gray-50">
+        <div className="mx-auto w-full max-w-5xl min-w-0">
           {centerPanel}
         </div>
       </div>

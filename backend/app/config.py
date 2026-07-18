@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
     REDIS_URL: str = ""
+    TEXTBOOK_GENERATION_MODE: str = "user_provided_api_keys"
+    BYOK_ENCRYPTION_KEY: str = "YnMCjDyTeb1tHlHSOaEXsZo_kSs_WjoclzCTtV83P7E="
 
     @field_validator("MYSQL_PORT", "MYSQLPORT", mode="before")
     @classmethod
@@ -504,8 +506,8 @@ class Settings(BaseSettings):
                 for origin in self.ALLOWED_CORS_ORIGINS
             ):
                 errors.append("CORS_ORIGINS must contain only public HTTPS origins")
-            if missing(self.OPENAI_API_KEY):
-                errors.append("OPENAI_API_KEY is required")
+            if self.TEXTBOOK_GENERATION_MODE == "system_credit_billing" and missing(self.OPENAI_API_KEY):
+                errors.append("OPENAI_API_KEY is required when using system credit billing")
             if missing(self.GOOGLE_CLIENT_ID) or missing(self.GOOGLE_CLIENT_SECRET):
                 errors.append("Google OAuth credentials are required")
             if missing(self.SMTP_USER) or missing(self.SMTP_PASSWORD) or missing(self.EMAIL_FROM):
@@ -516,6 +518,8 @@ class Settings(BaseSettings):
                 errors.append("EMBEDDING_PROVIDER must be 'openai' on the low-memory demo server")
             if self.CELERY_CONCURRENCY != 1:
                 errors.append("CELERY_CONCURRENCY must remain 1 until per-job RAG isolation is implemented")
+            if self.TEXTBOOK_GENERATION_MODE == "user_provided_api_keys" and missing(self.BYOK_ENCRYPTION_KEY):
+                errors.append("BYOK_ENCRYPTION_KEY is required when users provide their own API keys")
             if self.DEFAULT_ADMIN_ENABLED:
                 if (
                     self.DEFAULT_ADMIN_EMAIL == "admin@example.com"
@@ -548,7 +552,6 @@ def get_settings() -> Settings:
 settings = get_settings()
 
 
-@lru_cache(maxsize=1)
 def get_embedding_model():
     """
     Singleton embedding model factory.
@@ -573,7 +576,10 @@ def get_embedding_model():
         # OpenAI API-based embedding (fast, multilingual)
         from app.services.runtime_config import get_api_key
 
+        from app.services.runtime_config import get_runtime_config
+
         openai_api_key = get_api_key("OPENAI_API_KEY", required=True)
+        embedding_model = str(get_runtime_config("OPENAI_EMBEDDING_MODEL", required=False) or settings.OPENAI_EMBEDDING_MODEL)
         if not openai_api_key:
             raise ValueError(
                 "OPENAI_API_KEY required for OpenAI embeddings. "
@@ -584,7 +590,7 @@ def get_embedding_model():
         
        
         return OpenAIEmbeddings(
-            model=settings.OPENAI_EMBEDDING_MODEL,
+            model=embedding_model,
             api_key=openai_api_key, #type: ignore
             # Dimensions: 1536 for text-embedding-3-small
             # No normalization needed - OpenAI handles internally

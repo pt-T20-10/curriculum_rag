@@ -24,7 +24,7 @@ from langchain_openai import ChatOpenAI
 
 from app.config import settings
 from app.services.api_rate_limiter import rate_limited_invoke
-from app.services.runtime_config import get_api_key
+from app.services.runtime_config import get_api_key, get_runtime_config
 LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
 from app.utils.log_config import setup_logger, setup_prompt_logger
 
@@ -64,7 +64,7 @@ class QueryExpansionAgent:
         """
         
         self.llm = ChatOpenAI(
-            model=LLM_MODEL_CHEAP,
+            model=str(get_runtime_config("LLM_MODEL_CHEAP", required=False) or LLM_MODEL_CHEAP),
             api_key=get_api_key("OPENAI_API_KEY"), # type: ignore[arg-type]
             temperature=0.5,
      )

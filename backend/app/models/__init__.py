@@ -1,4 +1,5 @@
 from app.models.bank_config import BankConfig
+from app.models.api_credential import TextbookJobSecret, UserApiCredential
 from app.models.config import ConfigAuditLog, SystemConfig, UserConfig
 from app.models.credit_history import CreditHistory
 from app.models.plan import Plan
@@ -16,10 +17,12 @@ __all__ = [
     "SiteContactConfig",
     "SystemConfig",
     "Textbook",
+    "TextbookJobSecret",
     "TextbookStatus",
     "Transaction",
     "TransactionStatus",
     "User",
+    "UserApiCredential",
     "UserConfig",
     "UserRole",
 ]

@@ -15,3 +15,15 @@ export function translateConfigParam(param, t) {
     description: t(`configRegistry.params.${param.key}.description`, { defaultValue: param.description || '' }),
   }
 }
+
+export function translateConfigChoice(paramKey, choice, t) {
+  const labels = {
+    TEXTBOOK_GENERATION_MODE: {
+      user_provided_api_keys: 'Người dùng tự nhập API key',
+      system_credit_billing: 'Nạp tiền bằng credit hệ thống',
+    },
+  }
+  return t(`configRegistry.choices.${paramKey}.${choice}`, {
+    defaultValue: labels[paramKey]?.[choice] || choice,
+  })
+}

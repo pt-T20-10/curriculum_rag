@@ -36,9 +36,16 @@ export function PaymentModal({ plan, onClose, onSuccess }) {
   // Only fetch bank config on open — no transaction created yet
   useEffect(() => {
     let cancelled = false
-    plansAPI.getBankConfig().then(r => { if (!cancelled) setBank(r.data) })
+    plansAPI.getBankConfig()
+      .then(r => { if (!cancelled) setBank(r.data) })
+      .catch(e => {
+        if (!cancelled) {
+          const detail = e.response?.data?.detail
+          setError(typeof detail === 'string' ? detail : t('topup.initError'))
+        }
+      })
     return () => { cancelled = true }
-  }, [])
+  }, [t])
 
   // Step 1 → Step 2: create transaction only when user explicitly continues
   const handleContinue = async () => {
@@ -46,12 +53,19 @@ export function PaymentModal({ plan, onClose, onSuccess }) {
     creatingRef.current = true
     setLoading(true)
     setError('')
+    if (!bank?.account_number) {
+      setError('Admin chưa cấu hình số tài khoản nhận tiền cho chức năng nạp tiền.')
+      creatingRef.current = false
+      setLoading(false)
+      return
+    }
     try {
       const r = await transactionsAPI.create(plan.id)
       setTxnData(r.data)
       setStep('qr')
-    } catch {
-      setError(t('topup.initError'))
+    } catch (e) {
+      const detail = e.response?.data?.detail
+      setError(typeof detail === 'string' ? detail : t('topup.initError'))
       creatingRef.current = false   // allow retry on failure
     } finally {
       setLoading(false)
@@ -133,7 +147,7 @@ export function PaymentModal({ plan, onClose, onSuccess }) {
 
               <button
                 onClick={handleContinue}
-                disabled={loading}
+                disabled={loading || !bank?.account_number}
                 className="w-full py-3 bg-primary text-white rounded-xl font-semibold text-sm hover:bg-blue-500 disabled:opacity-60 transition-colors flex items-center justify-center gap-2"
               >
                 {loading

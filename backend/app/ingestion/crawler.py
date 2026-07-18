@@ -34,6 +34,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from app.ingestion.query_expansion import QueryExpansionAgent
 from app.utils.log_config import setup_logger
 from app.config import settings, get_embedding_model
+from app.services.runtime_config import get_runtime_config
 from app.services.api_rate_limiter import rate_limited_call
 from app.utils import stop_signal
 
@@ -150,15 +151,15 @@ def _runtime_diversity_config(runtime_config: dict[str, Any]) -> dict[str, Any]:
 
 def _rate_limited_embed_query(embedding_model, query: str):
     if EMBEDDING_PROVIDER == "openai":
+        model_name = str(get_runtime_config("OPENAI_EMBEDDING_MODEL", required=False) or settings.OPENAI_EMBEDDING_MODEL)
         return rate_limited_call(
             lambda: embedding_model.embed_query(query),
             bucket="embedding",
-            model=settings.OPENAI_EMBEDDING_MODEL,
+            model=model_name,
             metadata={"agent": "Crawler", "node": "ingestion"},
         )
     return embedding_model.embed_query(query)
 
-embedding_model = get_embedding_model()
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -615,7 +616,7 @@ def _embed_with_openai(
                 batch_embeddings = rate_limited_call(
                     lambda: embedding_model.embed_documents(batch),
                     bucket="embedding",
-                    model=settings.OPENAI_EMBEDDING_MODEL,
+                    model=str(get_runtime_config("OPENAI_EMBEDDING_MODEL", required=False) or settings.OPENAI_EMBEDDING_MODEL),
                     metadata={"agent": "Crawler", "node": "ingestion"},
                 )
                 all_embeddings.extend(batch_embeddings)
@@ -870,7 +871,7 @@ def _embed_batch_worker(chunk_texts: list, batch_size: int, worker_id: int, tota
                 batch_emb = rate_limited_call(
                     lambda: embedding_model.embed_documents(batch),
                     bucket="embedding",
-                    model=settings.OPENAI_EMBEDDING_MODEL,
+                    model=str(get_runtime_config("OPENAI_EMBEDDING_MODEL", required=False) or settings.OPENAI_EMBEDDING_MODEL),
                     metadata={
                         "agent": "CrawlerWorker",
                         "node": "embedding_worker",

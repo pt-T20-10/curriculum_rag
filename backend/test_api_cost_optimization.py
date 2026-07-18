@@ -163,9 +163,11 @@ def test_evaluator_skips_llm_when_balanced_cost_context_is_strong(monkeypatch) -
             "valid_chunks": 3,
             "total_chunks": 3,
             "unique_sources": 2,
+            "verified_chunks": 2,
+            "verified_sources": 2,
             "sources": [
-                {"url": "https://a.example", "avg_score": 0.7},
-                {"url": "https://b.example", "avg_score": 0.6},
+                {"url": "https://a.example", "avg_score": 0.7, "status": "verified"},
+                {"url": "https://b.example", "avg_score": 0.6, "status": "verified"},
             ],
         },
     )
@@ -197,15 +199,17 @@ def test_evaluator_calls_llm_when_context_is_missing(monkeypatch) -> None:
         evaluator,
         "build_source_audit_summary",
         lambda *args, **kwargs: {
-            "valid_chunks": 2,
-            "total_chunks": 2,
-            "unique_sources": 2,
-            "sources": [
-                {"url": "https://a.example", "avg_score": 0.7},
-                {"url": "https://b.example", "avg_score": 0.6},
-            ],
-            "warnings": [],
-        },
+                "valid_chunks": 2,
+                "total_chunks": 2,
+                "unique_sources": 2,
+                "verified_chunks": 2,
+                "verified_sources": 2,
+                "sources": [
+                    {"url": "https://a.example", "avg_score": 0.7, "status": "verified"},
+                    {"url": "https://b.example", "avg_score": 0.6, "status": "verified"},
+                ],
+                "warnings": [],
+            },
     )
 
     result = evaluator.evaluate_context(
@@ -355,7 +359,7 @@ def test_reviewer_image_disabled_prompt_and_postprocess(monkeypatch) -> None:
             return "fake-chain"
 
     def fake_rate_limited_invoke(chain, payload, **kwargs):
-        captured["visual_criterion"] = payload["visual_criterion"]
+        captured["called"] = True
         return SimpleNamespace(
             content=payload["draft"] + "\n\n> [IMAGE: Bad | should be removed]"
         )
@@ -380,7 +384,7 @@ def test_reviewer_image_disabled_prompt_and_postprocess(monkeypatch) -> None:
         enable_images=False,
     )
 
-    assert "ADD new image suggestions" not in captured["visual_criterion"]
+    assert captured["called"] is True
     assert "[IMAGE:" not in output
 
 

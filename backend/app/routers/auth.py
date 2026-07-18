@@ -29,7 +29,11 @@ from app.schemas.auth import (
 from app.security.jwt import create_access_token, get_current_user_id
 from app.security.oauth import exchange_google_code, get_google_auth_url
 from app.security.password import pwd_context, verify_password
-from app.services.email_service import send_email_verification_email, send_password_reset_email
+from app.services.email_service import (
+    ensure_email_delivery_configured,
+    send_email_verification_email,
+    send_password_reset_email,
+)
 
 router = APIRouter()
 
@@ -108,6 +112,13 @@ async def register(
     db: AsyncSession = Depends(get_async_db),
 ):
     """Register new user. Returns access token and user data."""
+    try:
+        ensure_email_delivery_configured()
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Hệ thống email chưa được cấu hình. Admin cần hoàn tất SMTP/Email From trong Cấu hình hệ thống.",
+        ) from exc
 
     result = await db.execute(
         select(User).where(User.email == user_data.email)
@@ -142,11 +153,7 @@ async def register(
     await db.commit()
     await db.refresh(new_user)
 
-    try:
-        await send_email_verification_email(user_data.email, otp)
-    except Exception:
-        # Email delivery can be retried from the verification page.
-        pass
+    await send_email_verification_email(user_data.email, otp)
 
     return {
         "message": "Tài khoản đã được tạo. Vui lòng kiểm tra email để xác nhận đăng ký.",
@@ -303,6 +310,14 @@ async def forgot_password(
     Generate and email a 6-digit OTP for password reset.
     Always returns the same response to prevent email enumeration.
     """
+    try:
+        ensure_email_delivery_configured()
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Hệ thống email chưa được cấu hình. Admin cần hoàn tất SMTP/Email From trong Cấu hình hệ thống.",
+        ) from exc
+
     result = await db.execute(
         select(User).where(
             User.email == body.email,
@@ -318,11 +333,7 @@ async def forgot_password(
         user.password_reset_expires = expires     # type: ignore[assignment]
         await db.commit()
 
-        try:
-            await send_password_reset_email(body.email, otp)
-        except Exception:
-            # Log already done inside email_service; don't leak error to client
-            pass
+        await send_password_reset_email(body.email, otp)
 
     return _GENERIC_RESPONSE
 
@@ -393,6 +404,14 @@ async def resend_verification(
     Send a fresh email verification OTP.
     Always returns a generic response to reduce account enumeration.
     """
+    try:
+        ensure_email_delivery_configured()
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Hệ thống email chưa được cấu hình. Admin cần hoàn tất SMTP/Email From trong Cấu hình hệ thống.",
+        ) from exc
+
     result = await db.execute(
         select(User).where(
             User.email == body.email,
@@ -402,13 +421,8 @@ async def resend_verification(
     user = result.scalar_one_or_none()
 
     if user and user.auth_provider == AuthProvider.LOCAL.value and not user.is_verified:  # type: ignore[truthy-bool]
-        try:
-            await _send_verification_code(user)
-            await db.commit()
-        except Exception:
-            await db.rollback()
-            # Log already done inside email_service; do not leak delivery state.
-            pass
+        await _send_verification_code(user)
+        await db.commit()
 
     return {"message": "Nếu tài khoản cần xác nhận, mã mới đã được gửi."}
 

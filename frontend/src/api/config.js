@@ -19,6 +19,7 @@ export const configAPI = {
       ...(options.revealKey ? { reveal_key: options.revealKey } : {}),
     },
   }),
+  getSetupStatus: () => apiClient.get('/config/admin/setup-status'),
   updateSystemConfig: (updates) => apiClient.put('/config/admin/system', { updates }),
   getAuditLog: (limit = 20) => apiClient.get('/config/admin/system/audit', { params: { limit } }),
   getOverrideCounts: () => apiClient.get('/config/admin/system/overrides'),

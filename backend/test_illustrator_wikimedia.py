@@ -66,7 +66,13 @@ def test_wikimedia_image_candidates_parse_url_credit_and_license(monkeypatch) ->
 
 def test_illustrate_section_does_not_strip_when_serper_and_openai_missing(monkeypatch) -> None:
     class FakeAgent:
-        def illustrate_content(self, content: str, section_type: str = "medium", language: str = "vi") -> str:
+        def illustrate_content(
+            self,
+            content: str,
+            section_type: str = "medium",
+            language: str = "vi",
+            **kwargs,
+        ) -> str:
             return content.replace(
                 "> [IMAGE: Ada Lovelace | Ada Lovelace portrait]",
                 "![Ada Lovelace](outputs/images/ada.png){width=70%}",
@@ -131,7 +137,7 @@ def test_search_fallback_uses_openai_before_wikimedia(monkeypatch) -> None:
     monkeypatch.setattr(
         illustrator.IllustratorAgent,
         "generate_image_openai",
-        lambda self, description, is_search_fallback=False, section_type="medium": calls.append("openai") or "",
+        lambda self, description, is_search_fallback=False, section_type="medium", **kwargs: calls.append("openai") or "",
     )
     monkeypatch.setattr(
         illustrator.IllustratorAgent,
@@ -166,7 +172,7 @@ def test_wikimedia_skipped_for_generic_technical_query_after_serper_and_openai_f
     monkeypatch.setattr(
         illustrator.IllustratorAgent,
         "generate_image_openai",
-        lambda self, description, is_search_fallback=False, section_type="medium": calls.append("openai") or "",
+        lambda self, description, is_search_fallback=False, section_type="medium", **kwargs: calls.append("openai") or "",
     )
 
     def fail_wikimedia(self, query: str):

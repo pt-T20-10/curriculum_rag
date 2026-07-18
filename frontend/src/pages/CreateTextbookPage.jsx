@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import ThreeColumnLayout from '../components/ThreeColumnLayout'
 import { useAuth } from '../context/AuthContext'
+import { byokAPI } from '../api/byok'
 import { textbooksAPI } from '../api/textbooks'
 import { Navbar } from '../components/layout/Navbar'
 import { Button } from '../components/common/Button'
@@ -40,6 +41,7 @@ export function CreateTextbookPage() {
   const [creatingTextbook, setCreatingTextbook] = useState(false)
   const [formulaConfirmation, setFormulaConfirmation] = useState(null)
   const [pagePlanConfirmation, setPagePlanConfirmation] = useState(null)
+  const [byokStatus, setByokStatus] = useState(null)
   const pollingRef = useRef(null)
 
   useEffect(() => {
@@ -65,6 +67,19 @@ export function CreateTextbookPage() {
       }
     }
   }, [])
+
+  useEffect(() => {
+    const loadByokStatus = async () => {
+      if (!user) return
+      try {
+        const response = await byokAPI.status()
+        setByokStatus(response.data)
+      } catch (err) {
+        console.error('BYOK status error:', err)
+      }
+    }
+    loadByokStatus()
+  }, [user])
 
   const clearDraftState = () => {
     setPhase('idle')
@@ -109,7 +124,7 @@ export function CreateTextbookPage() {
             }
 
             // Always restore config from API (fields now always present after backend fix)
-            setSubmittedConfig({
+        setSubmittedConfig({
               topic: data.topic || '',
               num_chapters: data.num_chapters || 3,
               content_level: data.content_level || CONTENT_LEVEL.MEDIUM,
@@ -123,6 +138,9 @@ export function CreateTextbookPage() {
               formula_policy: data.formula_policy || 'auto',
               formula_need: data.formula_need || 'none',
               target_pages: data.target_pages || null,
+              generation_mode: data.generation_mode,
+              credential_usage: data.credential_usage,
+              model_selection: data.model_selection_runtime,
               page_validation: data.page_validation || null,
               source_preferences: data.source_preferences || {
                 source_mode: 'system_default',
@@ -221,6 +239,9 @@ export function CreateTextbookPage() {
           custom_domains: [],
         },
         target_pages: formData.target_pages || null,
+        generation_mode: byokStatus?.generation_mode,
+        credential_usage: formData.credential_usage,
+        model_selection: formData.model_selection,
       }) // ⭐ Save actual submitted config
       setConfigExpanded(false)
 
@@ -289,7 +310,10 @@ export function CreateTextbookPage() {
     try {
       setConfirmingCurriculum(true)
       setConfirmedCurriculum(curriculum)
-      await textbooksAPI.confirmCurriculum(textbookId, curriculum, pagePlanConfirmed)
+      await textbooksAPI.confirmCurriculum(textbookId, curriculum, pagePlanConfirmed, {
+        credential_usage: submittedConfig?.credential_usage || 'saved',
+        model_selection: submittedConfig?.model_selection,
+      })
       await loadUser?.()
       setPhase('generating')
     } catch (err) {
@@ -408,7 +432,7 @@ export function CreateTextbookPage() {
           }
 
           centerPanel={
-            <div className="p-6">
+            <div className="min-w-0 p-6">
               {/* Title */}
               <div className="mb-6 text-center">
                 <h1 className="text-2xl font-bold text-gray-800">
@@ -421,7 +445,7 @@ export function CreateTextbookPage() {
               </div>
 
               {/* Form Box */}
-              <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
+              <div className="mb-6 min-w-0 overflow-x-hidden rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
                 {!isIdle && (
                   <div className="flex items-center justify-between gap-4 mb-4">
                     <div className="flex-1" />
@@ -446,6 +470,8 @@ export function CreateTextbookPage() {
                   isActive={isActive}
                   currentTopic={displayTopic}
                   submittedConfig={submittedConfig}
+                  byokStatus={byokStatus}
+                  onByokStatusChange={setByokStatus}
                 />
               </div>
 
@@ -501,6 +527,7 @@ export function CreateTextbookPage() {
                     onConfirm={handleCurriculumConfirm}
                     onReset={handlePlanningReset}
                     confirming={confirmingCurriculum}
+                    generationMode={progressData.generation_mode || byokStatus?.generation_mode}
                   />
                 </div>
               )}
@@ -643,7 +670,10 @@ export function CreateTextbookPage() {
                   if (pending.confirmCurriculum && pending.curriculum && textbookId) {
                     setConfirmingCurriculum(true)
                     try {
-                      await textbooksAPI.confirmCurriculum(textbookId, pending.curriculum, true)
+                      await textbooksAPI.confirmCurriculum(textbookId, pending.curriculum, true, {
+                        credential_usage: submittedConfig?.credential_usage || 'saved',
+                        model_selection: submittedConfig?.model_selection,
+                      })
                       await loadUser?.()
                       setPhase('generating')
                     } finally {

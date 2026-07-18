@@ -21,7 +21,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.database import engine, Base
-from app.routers import account_deletion, admin, auth, base, config, plans, site_info, support, textbook
+from app.routers import account_deletion, admin, auth, base, byok, config, plans, site_info, support, textbook
 
 
 @asynccontextmanager
@@ -109,6 +109,7 @@ app.include_router(base.router, prefix="/api/v1", tags=["Base"])
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["Auth"])
 app.include_router(plans.router, prefix="/api/v1", tags=["Plans"])
 app.include_router(textbook.router, prefix="/api/v1", tags=["Textbooks"])
+app.include_router(byok.router, prefix="/api/v1", tags=["BYOK"])
 app.include_router(admin.router, prefix="/api/v1/admin", tags=["Admin"])
 app.include_router(config.router, prefix="/api/v1", tags=["Config"])
 app.include_router(site_info.router, prefix="/api/v1")

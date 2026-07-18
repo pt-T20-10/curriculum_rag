@@ -9,6 +9,7 @@ from app.ingestion.source_policy import (
     normalize_url,
     source_catalog,
 )
+from app.schemas.byok import CredentialUsage, TextbookModelSelection
 
 
 class ValidationResult(BaseModel):
@@ -98,6 +99,11 @@ class TextbookCreate(BaseModel):
     textbook_mode: Literal["standard", "practice"] = "standard"
     formula_policy: Literal["auto", "include", "exclude"] = "auto"
     formula_confirmed: bool = False
+    credential_usage: CredentialUsage = "saved"
+    openai_api_key: Optional[str] = Field(default=None, max_length=500)
+    serper_api_key: Optional[str] = Field(default=None, max_length=500)
+    skip_serper_api_key: bool = False
+    model_selection: TextbookModelSelection = Field(default_factory=TextbookModelSelection)
     source_preferences: SourcePreferences = Field(default_factory=SourcePreferences)
     initial_structure: Optional[Dict[str, Any]] = None
     initial_structure_markdown: Optional[str] = Field(default=None, max_length=20000)
@@ -181,6 +187,11 @@ class TextbookProgressResponse(BaseModel):
 class CurriculumConfirmRequest(BaseModel):
     curriculum: Dict[str, Any]
     page_plan_confirmed: bool = False
+    credential_usage: CredentialUsage = "saved"
+    openai_api_key: Optional[str] = Field(default=None, max_length=500)
+    serper_api_key: Optional[str] = Field(default=None, max_length=500)
+    skip_serper_api_key: bool = False
+    model_selection: TextbookModelSelection = Field(default_factory=TextbookModelSelection)
 
 
 class CurriculumCreditEstimateRequest(BaseModel):

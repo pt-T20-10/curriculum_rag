@@ -41,7 +41,7 @@ from app.services.cost_profile import (
     RAG_CHUNK_FILTER_OFF,
     get_rag_chunk_llm_filter_mode,
 )
-from app.services.runtime_config import get_api_key
+from app.services.runtime_config import get_api_key, get_runtime_config
 
 LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
 CHROMA_DB_DIR = settings.CHROMA_DB_DIR
@@ -67,18 +67,20 @@ class _RateLimitedEmbeddingFunction:
         self._base = base
 
     def embed_query(self, text: str) -> list[float]:
+        model_name = str(get_runtime_config("OPENAI_EMBEDDING_MODEL", required=False) or settings.OPENAI_EMBEDDING_MODEL)
         return rate_limited_call(
             lambda: self._base.embed_query(text),
             bucket="embedding",
-            model=settings.OPENAI_EMBEDDING_MODEL,
+            model=model_name,
             metadata={"agent": "Retriever", "node": "retriever_node"},
         )
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        model_name = str(get_runtime_config("OPENAI_EMBEDDING_MODEL", required=False) or settings.OPENAI_EMBEDDING_MODEL)
         return rate_limited_call(
             lambda: self._base.embed_documents(texts),
             bucket="embedding",
-            model=settings.OPENAI_EMBEDDING_MODEL,
+            model=model_name,
             metadata={"agent": "Retriever", "node": "retriever_node"},
         )
 
@@ -797,7 +799,7 @@ class Retriever:
 # is opened once and reused for the entire workflow run.
 # ---------------------------------------------------------------------------
 
-_retriever_instances: dict[str, Retriever] = {}
+_retriever_instances: dict[tuple[str, str, str], Retriever] = {}
 
 
 
@@ -938,6 +940,7 @@ def _is_substantive_chunk(text: str) -> bool:
 # ---------------------------------------------------------------------------
 
 _chunk_classifier: Optional[ChatOpenAI] = None
+_chunk_classifier_runtime_key: tuple[str, str] | None = None
 
 
 def _get_chunk_classifier() -> ChatOpenAI:
@@ -945,15 +948,19 @@ def _get_chunk_classifier() -> ChatOpenAI:
     Return singleton Groq LLM instance for chunk classification.
     Instantiated lazily to avoid startup overhead.
     """
-    global _chunk_classifier
-    if _chunk_classifier is None:
+    global _chunk_classifier, _chunk_classifier_runtime_key
+    model = str(get_runtime_config("LLM_MODEL_CHEAP", required=False) or LLM_MODEL_CHEAP)
+    api_key = get_api_key("OPENAI_API_KEY")
+    runtime_key = (model, api_key)
+    if _chunk_classifier is None or _chunk_classifier_runtime_key != runtime_key:
         _chunk_classifier = ChatOpenAI(
-            model=LLM_MODEL_CHEAP,
-            openai_api_key=get_api_key("OPENAI_API_KEY"),       # type: ignore[arg-type]
+            model=model,
+            openai_api_key=api_key,       # type: ignore[arg-type]
             temperature=0,
             max_completion_tokens=10
                          
         )
+        _chunk_classifier_runtime_key = runtime_key
     return _chunk_classifier
 
 
@@ -987,7 +994,7 @@ def _deduplicate_chunks_semantic(
         return chunks
     
     if embedding_model is None:
-        from config import get_embedding_model
+        from app.config import get_embedding_model
         embedding_model = get_embedding_model()
     
     from sklearn.metrics.pairwise import cosine_similarity
@@ -999,7 +1006,7 @@ def _deduplicate_chunks_semantic(
         embeddings = rate_limited_call(
             lambda: embedding_model.embed_documents(texts),
             bucket="embedding",
-            model=settings.OPENAI_EMBEDDING_MODEL,
+            model=str(get_runtime_config("OPENAI_EMBEDDING_MODEL", required=False) or settings.OPENAI_EMBEDDING_MODEL),
             metadata={"agent": "Retriever", "node": "retriever_node"},
         )
     else:
@@ -1321,14 +1328,21 @@ def _get_retriever(collection_name: str = "dynamic_context") -> Retriever:
     calls. Thread-safety is not guaranteed — safe for single-threaded
     LangGraph workflow only.
     """
-    if collection_name not in _retriever_instances:
-        _retriever_instances[collection_name] = Retriever(collection_name=collection_name)
-    return _retriever_instances[collection_name]
+    runtime_key = (
+        collection_name,
+        str(get_runtime_config("OPENAI_EMBEDDING_MODEL", required=False) or settings.OPENAI_EMBEDDING_MODEL),
+        get_api_key("OPENAI_API_KEY", required=False),
+    )
+    if runtime_key not in _retriever_instances:
+        _retriever_instances[runtime_key] = Retriever(collection_name=collection_name)
+    return _retriever_instances[runtime_key]
 
 
 def release_retriever(collection_name: str = "dynamic_context") -> None:
     """Drop the cached retriever for a finished run's collection."""
-    _retriever_instances.pop(collection_name, None)
+    for key in list(_retriever_instances):
+        if key[0] == collection_name:
+            _retriever_instances.pop(key, None)
 
 
 @tool

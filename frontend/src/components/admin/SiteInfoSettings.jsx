@@ -89,6 +89,7 @@ export function SiteInfoSettings() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState(null)
+  const [open, setOpen] = useState(false)
 
   useEffect(() => {
     let active = true
@@ -147,8 +148,12 @@ export function SiteInfoSettings() {
   const localized = suffix => `${suffix}_${language}`
 
   return (
-    <section className="mb-8 rounded-lg border border-gray-200 bg-white p-5" aria-labelledby="site-info-settings-title">
-      <div className="flex flex-wrap items-start justify-between gap-4">
+    <section className="mb-8 overflow-hidden rounded-xl border border-gray-200 bg-white" aria-labelledby="site-info-settings-title">
+      <button
+        type="button"
+        onClick={() => setOpen(current => !current)}
+        className="flex w-full flex-wrap items-start justify-between gap-4 px-5 py-4 text-left transition-colors hover:bg-gray-50"
+      >
         <div>
           <h2 id="site-info-settings-title" className="text-base font-semibold text-gray-900">
             {t('admin.siteInfo.title')}
@@ -157,6 +162,15 @@ export function SiteInfoSettings() {
             {t('admin.siteInfo.description')}
           </p>
         </div>
+        <svg className={`mt-1 h-5 w-5 flex-shrink-0 text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`}
+          fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {open && (
+      <div className="border-t border-gray-100 px-5 pb-5 pt-4">
+        <div className="mb-4 flex justify-end">
         <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-1" role="group" aria-label={t('admin.siteInfo.language')}>
           {['vi', 'en'].map(option => (
             <button
@@ -284,6 +298,8 @@ export function SiteInfoSettings() {
             {saving ? t('app.saving') : t('admin.siteInfo.save')}
           </button>
         </form>
+      )}
+      </div>
       )}
     </section>
   )

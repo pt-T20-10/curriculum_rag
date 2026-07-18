@@ -18,6 +18,7 @@ from app.models.transaction import Transaction, TransactionStatus
 from app.models.user import User
 from app.security.jwt import get_current_user_id
 from app.config import settings
+from app.services.runtime_config import get_runtime_config
 
 router = APIRouter()
 
@@ -84,12 +85,23 @@ async def get_bank_config(db: AsyncSession = Depends(get_async_db)):
     result = await db.execute(select(BankConfig).limit(1))
     cfg = result.scalar_one_or_none()
     if not cfg:
+        account_number = str(get_runtime_config("SEPAY_ACCOUNT_NUMBER", required=False) or settings.SEPAY_ACCOUNT_NUMBER or "").strip()
+        if not account_number:
+            raise HTTPException(
+                status_code=503,
+                detail="Admin chưa cấu hình số tài khoản nhận tiền cho chức năng nạp tiền.",
+            )
         return {
             "bank_name": "Vietcombank",
             "bank_id": "vietcombank",
-            "account_number": settings.SEPAY_ACCOUNT_NUMBER,
+            "account_number": account_number,
             "account_holder": "",
         }
+    if not str(cfg.account_number or "").strip():
+        raise HTTPException(
+            status_code=503,
+            detail="Admin chưa cấu hình số tài khoản nhận tiền cho chức năng nạp tiền.",
+        )
     return {
         "bank_name": cfg.bank_name,
         "bank_id": cfg.bank_id,
@@ -145,6 +157,16 @@ async def create_transaction(
     user_id: int = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_async_db),
 ):
+    bank_result = await db.execute(select(BankConfig).limit(1))
+    bank_cfg = bank_result.scalar_one_or_none()
+    env_account_number = str(get_runtime_config("SEPAY_ACCOUNT_NUMBER", required=False) or settings.SEPAY_ACCOUNT_NUMBER or "").strip()
+    effective_account_number = str(bank_cfg.account_number or "").strip() if bank_cfg else env_account_number
+    if not effective_account_number:
+        raise HTTPException(
+            status_code=503,
+            detail="Admin chưa cấu hình số tài khoản nhận tiền cho chức năng nạp tiền.",
+        )
+
     plan_id = body.get("plan_id")
     if not plan_id:
         raise HTTPException(status_code=422, detail="plan_id is required")

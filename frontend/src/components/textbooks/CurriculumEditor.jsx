@@ -20,7 +20,14 @@ function numericPage(value, fallback) {
   return Number.isFinite(parsed) ? parsed : null
 }
 
-export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, confirming = false }) {
+export function CurriculumEditor({
+  curriculum,
+  textbookId,
+  onConfirm,
+  onReset,
+  confirming = false,
+  generationMode = 'system_credit_billing',
+}) {
   const { t } = useTranslation()
   const [editedCurriculum, setEditedCurriculum] = useState(curriculum)
   const structureDepth = editedCurriculum?.structure_depth || curriculum?.structure_depth || 'level1'
@@ -32,6 +39,7 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
   const [estimateError, setEstimateError] = useState('')
   const [estimatingCredits, setEstimatingCredits] = useState(false)
   const [pendingConfirmCurriculum, setPendingConfirmCurriculum] = useState(null)
+  const usesUserProvidedKeys = generationMode === 'user_provided_api_keys'
 
   // Handle chapter title change
   const handleChapterChange = (chapterIdx, newTitle) => {
@@ -485,16 +493,18 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-sm font-semibold text-emerald-900">
-              {t('textbook.curriculum.creditEstimateTitle')}
+              {usesUserProvidedKeys ? 'Không trừ credit hệ thống' : t('textbook.curriculum.creditEstimateTitle')}
             </p>
             {creditEstimate ? (
               <p className="text-xs text-emerald-700 mt-1">
-                {t('textbook.curriculum.creditEstimateDetails', {
-                  chapters: creditEstimate.total_chapters,
-                  subsections: creditEstimate.total_subsections,
-                  images: creditEstimate.enable_images ? t('app.yes') : t('app.no'),
-                  level: creditEstimate.content_level,
-                })}
+                {usesUserProvidedKeys
+                  ? 'Bạn đang dùng OpenAI/Serper API key của riêng mình; chi phí phát sinh trực tiếp trên tài khoản API của bạn.'
+                  : t('textbook.curriculum.creditEstimateDetails', {
+                    chapters: creditEstimate.total_chapters,
+                    subsections: creditEstimate.total_subsections,
+                    images: creditEstimate.enable_images ? t('app.yes') : t('app.no'),
+                    level: creditEstimate.content_level,
+                  })}
               </p>
             ) : (
               <p className="text-xs text-emerald-700 mt-1">
@@ -505,7 +515,11 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
             )}
           </div>
           <div className="text-right">
-            {creditEstimate?.is_admin_free ? (
+            {usesUserProvidedKeys ? (
+              <p className="text-sm font-bold text-emerald-700">
+                0 credit
+              </p>
+            ) : creditEstimate?.is_admin_free ? (
               <p className="text-sm font-bold text-emerald-700">
                 {t('textbook.curriculum.adminFree')}
               </p>
@@ -514,7 +528,7 @@ export function CurriculumEditor({ curriculum, textbookId, onConfirm, onReset, c
                 {creditEstimate ? creditEstimate.credits_required : '...'}
               </p>
             )}
-            {!creditEstimate?.is_admin_free && (
+            {!usesUserProvidedKeys && !creditEstimate?.is_admin_free && (
               <p className="text-xs text-emerald-700">credits</p>
             )}
           </div>

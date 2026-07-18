@@ -8,6 +8,7 @@ import { Button } from '../components/common/Button'
 import { GoogleLoginButton } from '../components/common/GoogleLoginButton'
 import { LanguageSwitcher } from '../components/common/LanguageSwitcher'
 import { errorMessage, errorMessages, i18nError, mapLoginError } from '../utils/formErrors'
+import { configAPI } from '../api/config'
 
 export function LoginPage() {
   const navigate = useNavigate()
@@ -72,7 +73,21 @@ export function LoginPage() {
     const savedPassword = formData.password
 
     try {
-      await login(savedIdentifier, savedPassword, rememberMe)
+      const loggedInUser = await login(savedIdentifier, savedPassword, rememberMe)
+      if (loggedInUser?.role === 'admin') {
+        try {
+          const setupRes = await configAPI.getSetupStatus()
+          const missing = setupRes.data?.missing_required || []
+          if (missing.length > 0 || setupRes.data?.is_ready === false) {
+            const focus = missing[0]?.key
+            navigate(`/admin/config?setup=1${focus ? `&focus=${encodeURIComponent(focus)}` : ''}`, { replace: true })
+            return
+          }
+        } catch {
+          navigate('/admin/config?setup=1', { replace: true })
+          return
+        }
+      }
       navigate('/dashboard', { replace: true })
     } catch (error) {
       const detail = error.response?.data?.detail || ''

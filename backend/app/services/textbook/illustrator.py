@@ -42,7 +42,7 @@ from PIL import Image
 
 from app.config import settings
 from app.services.api_rate_limiter import rate_limited_call, rate_limited_invoke
-from app.services.runtime_config import get_api_key
+from app.services.runtime_config import get_api_key, get_runtime_config
 from app.services.textbook.language import get_language_profile
 from app.utils.log_config import setup_logger, setup_prompt_logger
 
@@ -94,9 +94,11 @@ def _wikimedia_get(*args, **kwargs) -> requests.Response:
 
 def _select_image_generation_settings(section_type: str) -> tuple[str, str]:
     """Choose the image model and cost-aware quality for a textbook section."""
+    default_model = str(get_runtime_config("IMAGE_MODEL_DEFAULT", required=False) or IMAGE_MODEL_DEFAULT)
+    premium_model = str(get_runtime_config("IMAGE_MODEL_PREMIUM", required=False) or IMAGE_MODEL_PREMIUM)
     if section_type in ("deep", "applied"):
-        return IMAGE_MODEL_PREMIUM, "medium"
-    return IMAGE_MODEL_DEFAULT, "low"
+        return premium_model, "medium"
+    return default_model, "low"
 
 
 # ---------------------------------------------------------------------------
@@ -377,7 +379,7 @@ class IllustratorAgent:
         # preferred over creativity for routing and short-form outputs.
         self.llm = (
             ChatOpenAI(
-                model=LLM_MODEL_CHEAP,
+                model=str(get_runtime_config("LLM_MODEL_CHEAP", required=False) or LLM_MODEL_CHEAP),
                 api_key=openai_api_key, #type: ignore
                 temperature=0,
             )
@@ -1000,7 +1002,7 @@ class IllustratorAgent:
                 img_b64 = base64.b64encode(f.read()).decode()
 
             validator = ChatOpenAI(
-                model=IMAGE_VALIDATION_MODEL,
+                model=str(get_runtime_config("IMAGE_VALIDATION_MODEL", required=False) or IMAGE_VALIDATION_MODEL),
                 api_key=get_api_key("OPENAI_API_KEY"), #type: ignore
                 temperature=0,
             )
@@ -1039,7 +1041,7 @@ class IllustratorAgent:
                 metadata={
                     "agent": "Illustrator",
                     "node": "illustrator",
-                    "model": IMAGE_VALIDATION_MODEL,
+                    "model": str(get_runtime_config("IMAGE_VALIDATION_MODEL", required=False) or IMAGE_VALIDATION_MODEL),
                     "operation": "image_validation",
                 },
             )

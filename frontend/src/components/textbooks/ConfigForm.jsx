@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { FiEye, FiEyeOff } from 'react-icons/fi'
+import { byokAPI } from '../../api/byok'
 import { textbooksAPI } from '../../api/textbooks'
 import { CONTENT_LEVEL } from '../../constants/textbookOptions'
 import {
@@ -48,6 +50,49 @@ const SOURCE_MODE_OPTIONS = [
   ['system_default', 'textbook.form.sourceModeSystem'],
   ['custom_hybrid', 'textbook.form.sourceModeHybrid'],
   ['custom_only', 'textbook.form.sourceModeCustomOnly'],
+]
+
+const USER_PROVIDED_API_KEYS = 'user_provided_api_keys'
+const SYSTEM_CREDIT_BILLING = 'system_credit_billing'
+
+const MAIN_MODEL_OPTIONS = [
+  ['gpt-5.1', 'GPT-5.1 - chất lượng cao, chi phí cao hơn'],
+  ['gpt-5', 'GPT-5 - mạnh hơn, có thể chậm và tốn kém hơn'],
+  ['gpt-5-mini', 'GPT-5 mini - cân bằng chi phí và chất lượng'],
+  ['gpt-5-nano', 'GPT-5 nano - nhanh, tiết kiệm'],
+  ['gpt-4.1', 'GPT-4.1 - mặc định'],
+  ['gpt-4.1-mini', 'GPT-4.1 mini - tiết kiệm hơn'],
+  ['gpt-4o-mini', 'GPT-4o mini - rất tiết kiệm nhưng chất lượng thấp hơn'],
+]
+
+const SUPPORT_MODEL_OPTIONS = [
+  ['gpt-4o-mini', 'GPT-4o mini - mặc định'],
+  ['gpt-5.1', 'GPT-5.1 - chất lượng cao, chi phí cao hơn'],
+  ['gpt-5', 'GPT-5 - mạnh hơn, có thể chậm và tốn kém hơn'],
+  ['gpt-5-mini', 'GPT-5 mini - cân bằng chi phí và chất lượng'],
+  ['gpt-5-nano', 'GPT-5 nano - nhanh, tiết kiệm'],
+  ['gpt-4.1', 'GPT-4.1 - ổn định nhưng tốn hơn'],
+  ['gpt-4.1-mini', 'GPT-4.1 mini - tiết kiệm hơn'],
+]
+
+const EMBEDDING_MODEL_OPTIONS = [
+  ['text-embedding-3-small', 'text-embedding-3-small - mặc định'],
+  ['text-embedding-3-large', 'text-embedding-3-large - chất lượng cao hơn'],
+]
+
+const IMAGE_MODEL_OPTIONS = [
+  ['gpt-image-1', 'GPT Image 1 - ảnh chất lượng cao'],
+  ['gpt-image-1-mini', 'GPT Image 1 mini - tiết kiệm hơn'],
+  ['dall-e-3', 'DALL-E 3 - ổn định, đời cũ'],
+  ['gpt-image-2', 'GPT Image 2 - mặc định'],
+]
+
+const IMAGE_VALIDATION_MODEL_OPTIONS = [
+  ['gpt-5.4-mini', 'GPT-5.4 mini - mặc định'],
+  ['gpt-5.1', 'GPT-5.1 - kiểm ảnh kỹ hơn, chi phí cao hơn'],
+  ['gpt-5-mini', 'GPT-5 mini - cân bằng chi phí và chất lượng'],
+  ['gpt-4.1', 'GPT-4.1 - ổn định'],
+  ['gpt-4o-mini', 'GPT-4o mini - tiết kiệm hơn'],
 ]
 
 const RECOMMENDED_CONFIG = {
@@ -251,7 +296,9 @@ export function ConfigForm({
   onToggleConfig,
   isActive = false,
   currentTopic = '',
-  submittedConfig = null // ⭐ NEW - actual submitted config
+  submittedConfig = null, // ⭐ NEW - actual submitted config
+  byokStatus = null,
+  onByokStatusChange = null,
 }) {
   const { i18n, t } = useTranslation()
   const [formData, setFormData] = useState({
@@ -267,7 +314,17 @@ export function ConfigForm({
     target_pages: '',
     page_plan_confirmed: false,
     enable_images: true,
-    formula_policy: 'auto'
+    formula_policy: 'auto',
+    credential_usage: 'saved',
+    openai_api_key: '',
+    serper_api_key: '',
+    model_selection: {
+      main_model: 'gpt-4.1',
+      support_model: 'gpt-4o-mini',
+      embedding_model: 'text-embedding-3-small',
+      image_model: 'gpt-image-2',
+      image_validation_model: 'gpt-5.4-mini',
+    },
   })
   const [initialStructure, setInitialStructure] = useState(() => createDefaultStructure(t, 'level1'))
   const [sourceInput, setSourceInput] = useState('')
@@ -285,9 +342,29 @@ export function ConfigForm({
     error: '',
   })
   const [highlightedErrorKey, setHighlightedErrorKey] = useState('')
+  const [savingCredentials, setSavingCredentials] = useState(false)
+  const [validatingCredentials, setValidatingCredentials] = useState(false)
+  const [credentialValidation, setCredentialValidation] = useState(null)
+  const [credentialMessage, setCredentialMessage] = useState('')
+  const [pendingSerperChoiceData, setPendingSerperChoiceData] = useState(null)
+  const [showOpenAIKey, setShowOpenAIKey] = useState(false)
+  const [showSerperKey, setShowSerperKey] = useState(false)
   const formRef = useRef(null)
+  const structureFileInputRef = useRef(null)
   const lastErrorSignatureRef = useRef('')
   const isAdmin = user?.role === 'admin'
+  const generationMode = byokStatus?.generation_mode || USER_PROVIDED_API_KEYS
+  const usesUserProvidedKeys = generationMode === USER_PROVIDED_API_KEYS
+  const hasSavedOpenAI = Boolean(byokStatus?.openai?.configured)
+  const hasSavedSerper = Boolean(byokStatus?.serper?.configured)
+  const typedOpenAIKey = String(formData.openai_api_key || '').trim()
+  const typedSerperKey = String(formData.serper_api_key || '').trim()
+  const hasUsableOpenAIKey = formData.credential_usage === 'saved'
+    ? (hasSavedOpenAI || Boolean(typedOpenAIKey))
+    : formData.credential_usage === 'system' && isAdmin
+      ? true
+      : Boolean(typedOpenAIKey)
+  const apiKeyGateMessage = 'Vui lòng nhập hoặc chọn OpenAI API key đã lưu trước khi thao tác tạo giáo trình.'
 
   const errorFields = useMemo(() => Object.keys(fieldErrors), [fieldErrors])
   const firstErrorKey = errorFields[0] || (error ? 'api_error' : '')
@@ -340,6 +417,119 @@ export function ConfigForm({
         : ''
     }`
   )
+
+  const handleCredentialFieldChange = (name, value) => {
+    setFormData(prev => ({
+      ...prev,
+      [name]: value,
+    }))
+    setCredentialValidation(null)
+    setCredentialMessage('')
+    if (fieldErrors.api_keys) {
+      setFieldErrors(prev => {
+        const next = { ...prev }
+        delete next.api_keys
+        return next
+      })
+    }
+  }
+
+  const currentCredentialPayload = () => ({
+    credential_usage: formData.credential_usage,
+    openai_api_key: typedOpenAIKey || undefined,
+    serper_api_key: typedSerperKey || undefined,
+  })
+
+  const handleValidateCredentials = async () => {
+    if (formData.credential_usage === 'system') {
+      setCredentialValidation({
+        openai_valid: true,
+        serper_valid: null,
+        message: 'Admin đang dùng API key hệ thống. Hãy kiểm tra trạng thái trong trang Cấu hình hệ thống nếu cần.',
+      })
+      return
+    }
+    if (!typedOpenAIKey && !(formData.credential_usage === 'saved' && hasSavedOpenAI)) {
+      setFieldErrors(prev => ({
+        ...prev,
+        api_keys: 'Vui lòng nhập OpenAI API key hoặc lưu key trước khi kiểm tra.',
+      }))
+      return
+    }
+    setValidatingCredentials(true)
+    setCredentialValidation(null)
+    setCredentialMessage('')
+    try {
+      const response = await byokAPI.validate(currentCredentialPayload())
+      setCredentialValidation(response.data)
+      if (!response.data?.openai_valid) {
+        setFieldErrors(prev => ({
+          ...prev,
+          api_keys: response.data?.openai_error || response.data?.message || 'OpenAI API key không hợp lệ.',
+        }))
+      } else {
+        setFieldErrors(prev => {
+          const next = { ...prev }
+          delete next.api_keys
+          return next
+        })
+      }
+    } catch (err) {
+      const detail = err.response?.data?.detail
+      setFieldErrors(prev => ({
+        ...prev,
+        api_keys: typeof detail === 'string' ? detail : 'Không kiểm tra được API key.',
+      }))
+    } finally {
+      setValidatingCredentials(false)
+    }
+  }
+
+  const updateModelSelection = (name, value) => {
+    setFormData(prev => ({
+      ...prev,
+      model_selection: {
+        ...(prev.model_selection || {}),
+        [name]: value,
+      },
+    }))
+  }
+
+  const handleSaveCredentials = async () => {
+    if (!typedOpenAIKey && !typedSerperKey) {
+      setFieldErrors(prev => ({
+        ...prev,
+        api_keys: 'Nhập OpenAI API key hoặc Serper API key mới để lưu.',
+      }))
+      return
+    }
+    setSavingCredentials(true)
+    setCredentialMessage('')
+    try {
+      const response = await byokAPI.updateCredentials({
+        openai_api_key: typedOpenAIKey || undefined,
+        serper_api_key: typedSerperKey || undefined,
+      })
+      onByokStatusChange?.(response.data)
+      setFormData(prev => ({
+        ...prev,
+        credential_usage: 'saved',
+        openai_api_key: '',
+        serper_api_key: '',
+      }))
+      setShowOpenAIKey(false)
+      setShowSerperKey(false)
+      setCredentialMessage(response.data?.message || 'Da luu API key.')
+    } catch (err) {
+      const detail = err.response?.data?.detail
+      setFieldErrors(prev => ({
+        ...prev,
+        api_keys: typeof detail === 'string' ? detail : 'Khong luu duoc API key.',
+      }))
+    } finally {
+      setSavingCredentials(false)
+    }
+  }
 
   const getConfigIssues = (data) => {
     const errors = {}
@@ -442,9 +632,13 @@ export function ConfigForm({
     setPendingSubmitData(data)
   }
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault()
     if (!formData.topic.trim()) {
+      return
+    }
+    if (usesUserProvidedKeys && !hasUsableOpenAIKey) {
+      setFieldErrors({ api_keys: apiKeyGateMessage })
       return
     }
 
@@ -457,6 +651,9 @@ export function ConfigForm({
       target_pages: parseIntegerInput(formData.target_pages),
       page_plan_confirmed: Boolean(formData.page_plan_confirmed),
       fill_missing_child_subsections: false,
+      openai_api_key: typedOpenAIKey || undefined,
+      serper_api_key: typedSerperKey || undefined,
+      model_selection: formData.model_selection,
     }
     let structuredMissingChildren = []
     const shouldUseCustomSources = (formData.source_preferences?.source_mode || 'system_default') !== 'system_default'
@@ -542,6 +739,39 @@ export function ConfigForm({
     }
 
     const combinedWarnings = [...topicWarnings, ...warnings]
+
+    if (usesUserProvidedKeys && formData.credential_usage !== 'system') {
+      setValidatingCredentials(true)
+      try {
+        const response = await byokAPI.validate(currentCredentialPayload())
+        const validation = response.data || {}
+        setCredentialValidation(validation)
+        if (!validation.openai_valid) {
+          setFieldErrors({
+            api_keys: validation.openai_error || validation.message || 'OpenAI API key không hợp lệ.',
+          })
+          return
+        }
+        if (validation.serper_valid === false) {
+          setPendingSerperChoiceData({
+            submitData,
+            warnings: combinedWarnings,
+            structuredMissingChildren,
+            hasMissingPages: submitData.planning_mode === 'structured' && hasMissingStructurePageTargets(initialStructure),
+            serperError: validation.serper_error || 'Serper API key có lỗi.',
+          })
+          return
+        }
+      } catch (err) {
+        const detail = err.response?.data?.detail
+        setFieldErrors({
+          api_keys: typeof detail === 'string' ? detail : 'Không kiểm tra được API key.',
+        })
+        return
+      } finally {
+        setValidatingCredentials(false)
+      }
+    }
 
     if (
       submitData.planning_mode === 'structured' &&
@@ -635,6 +865,10 @@ export function ConfigForm({
     const file = event.target.files?.[0]
     event.target.value = ''
     if (!file) return
+    if (usesUserProvidedKeys && !hasUsableOpenAIKey) {
+      setFieldErrors({ api_keys: apiKeyGateMessage })
+      return
+    }
 
     const allowed = ['.docx', '.pdf']
     const lowerName = file.name.toLowerCase()
@@ -855,7 +1089,220 @@ export function ConfigForm({
   }
 
   return (
-    <form ref={formRef} onSubmit={handleSubmit} className="space-y-4" noValidate>
+    <form ref={formRef} onSubmit={handleSubmit} className="min-w-0 space-y-4" noValidate>
+      {usesUserProvidedKeys && (
+        <div
+          className={`rounded-lg border bg-white p-4 ${fieldErrors.api_keys ? 'border-red-300 bg-red-50' : 'border-blue-200'}`}
+          {...errorScrollAttrs('api_keys')}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-gray-900">API key của bạn</p>
+              <p className="mt-1 text-xs text-gray-600">
+                Chế độ hiện tại: <span className="font-semibold">{byokStatus?.generation_mode_label || 'Người dùng tự nhập API key'}</span>. OpenAI API key là bắt buộc; hệ thống không trừ credit khi tạo giáo trình ở chế độ này.
+              </p>
+            </div>
+            {hasSavedOpenAI && (
+              <span className="shrink-0 rounded-md bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700">
+                OpenAI đã lưu ••••{byokStatus?.openai?.last4}
+              </span>
+            )}
+          </div>
+
+          <div className="mt-3 grid grid-cols-2 gap-2 rounded-lg border border-gray-200 bg-gray-50 p-1">
+            {[
+              ['saved', 'Lưu key mã hóa trong tài khoản'],
+              ['one_time', 'Chỉ dùng key một lần cho giáo trình này'],
+              ...(isAdmin ? [['system', 'Sử dụng API key hệ thống']] : []),
+            ].map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => handleCredentialFieldChange('credential_usage', value)}
+                disabled={loading || savingCredentials}
+                className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                  formData.credential_usage === value
+                    ? 'bg-white text-blue-700 shadow-sm ring-1 ring-blue-200'
+                    : 'text-gray-600 hover:bg-white/70'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {formData.credential_usage === 'system' && isAdmin && (
+            <p className="mt-3 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+              Admin đang dùng API key đã cấu hình trong hệ thống cho giáo trình này. Chế độ này vẫn không trừ credit vì hệ thống đang ở “Người dùng tự nhập API key”.
+            </p>
+          )}
+
+          {formData.credential_usage !== 'system' && (
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-700">
+                OpenAI API key <span className="text-red-500">*</span>
+              </label>
+              <div className="relative">
+                <input
+                  type={showOpenAIKey ? 'text' : 'password'}
+                  value={formData.openai_api_key}
+                  onChange={(e) => handleCredentialFieldChange('openai_api_key', e.target.value)}
+                  placeholder={hasSavedOpenAI ? `Đang dùng key đã lưu ••••${byokStatus?.openai?.last4}` : 'sk-...'}
+                  className={inputClassName('api_keys', 'w-full rounded-lg border border-gray-300 px-3 py-2 pr-10 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100')}
+                  disabled={loading || savingCredentials}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowOpenAIKey(current => !current)}
+                  disabled={loading || savingCredentials || !formData.openai_api_key}
+                  className="absolute inset-y-0 right-0 flex items-center px-3 text-gray-400 transition-colors hover:text-gray-600 disabled:cursor-not-allowed disabled:opacity-40"
+                  title={showOpenAIKey ? 'Ẩn OpenAI API key' : 'Hiện OpenAI API key'}
+                  aria-label={showOpenAIKey ? 'Ẩn OpenAI API key' : 'Hiện OpenAI API key'}
+                >
+                  {showOpenAIKey ? <FiEyeOff className="h-4 w-4" /> : <FiEye className="h-4 w-4" />}
+                </button>
+              </div>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-700">
+                Serper API key <span className="font-normal text-gray-400">(tùy chọn)</span>
+              </label>
+              <div className="relative">
+                <input
+                  type={showSerperKey ? 'text' : 'password'}
+                  value={formData.serper_api_key}
+                  onChange={(e) => handleCredentialFieldChange('serper_api_key', e.target.value)}
+                  placeholder={hasSavedSerper ? `Đang dùng key đã lưu ••••${byokStatus?.serper?.last4}` : 'Tăng chất lượng ảnh tìm kiếm thực tế'}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 pr-10 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                  disabled={loading || savingCredentials}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowSerperKey(current => !current)}
+                  disabled={loading || savingCredentials || !formData.serper_api_key}
+                  className="absolute inset-y-0 right-0 flex items-center px-3 text-gray-400 transition-colors hover:text-gray-600 disabled:cursor-not-allowed disabled:opacity-40"
+                  title={showSerperKey ? 'Ẩn Serper API key' : 'Hiện Serper API key'}
+                  aria-label={showSerperKey ? 'Ẩn Serper API key' : 'Hiện Serper API key'}
+                >
+                  {showSerperKey ? <FiEyeOff className="h-4 w-4" /> : <FiEye className="h-4 w-4" />}
+                </button>
+              </div>
+            </div>
+          </div>
+          )}
+
+          {formData.credential_usage !== 'system' && !hasSavedSerper && !typedSerperKey && (
+            <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              Không có Serper API key thì ảnh sẽ chủ yếu là AI-generated/Wikimedia, ít ảnh tìm kiếm thực tế hơn.
+            </p>
+          )}
+
+          {formData.credential_usage !== 'system' && (
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={handleValidateCredentials}
+                disabled={
+                  loading ||
+                  savingCredentials ||
+                  validatingCredentials ||
+                  (!typedOpenAIKey && !(formData.credential_usage === 'saved' && hasSavedOpenAI))
+                }
+                className="rounded-lg border border-blue-300 bg-white px-3 py-2 text-sm font-medium text-blue-700 transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {validatingCredentials ? 'Đang kiểm tra...' : 'Kiểm tra key'}
+              </button>
+            </div>
+          )}
+
+          {credentialValidation && formData.credential_usage !== 'system' && (
+            <div className="mt-2 space-y-1 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs">
+              <p className={credentialValidation.openai_valid ? 'text-emerald-700' : 'font-medium text-red-700'}>
+                OpenAI: {credentialValidation.openai_valid
+                  ? 'Key hợp lệ.'
+                  : (credentialValidation.openai_error || credentialValidation.message || 'Key không hợp lệ.')}
+              </p>
+              {typedSerperKey || hasSavedSerper ? (
+                <p className={
+                  credentialValidation.serper_valid === true
+                    ? 'text-emerald-700'
+                    : credentialValidation.serper_valid === false
+                      ? 'font-medium text-amber-700'
+                      : 'text-gray-500'
+                }>
+                  Serper: {credentialValidation.serper_valid === true
+                    ? 'Key hợp lệ.'
+                    : credentialValidation.serper_valid === false
+                      ? (credentialValidation.serper_error || 'Key có lỗi.')
+                      : 'Chưa kiểm tra.'}
+                </p>
+              ) : (
+                <p className="text-gray-500">
+                  Serper: chưa nhập key, hệ thống sẽ dùng AI-generated/Wikimedia nếu tiếp tục.
+                </p>
+              )}
+            </div>
+          )}
+
+          {formData.credential_usage === 'saved' && (
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={handleSaveCredentials}
+                disabled={loading || savingCredentials || validatingCredentials || (!typedOpenAIKey && !typedSerperKey)}
+                className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {savingCredentials ? 'Đang lưu...' : 'Lưu key mã hóa'}
+              </button>
+              {credentialMessage && (
+                <span className="text-xs font-medium text-emerald-700">{credentialMessage}</span>
+              )}
+            </div>
+          )}
+
+          <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-3">
+            <p className="text-xs font-semibold text-gray-800">Model sử dụng key của bạn</p>
+            <p className="mt-1 text-xs text-gray-500">
+              Chọn model mạnh hơn có thể tăng chi phí và thời gian chạy trên tài khoản OpenAI của bạn.
+            </p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              {[
+                ['main_model', 'Model chính', MAIN_MODEL_OPTIONS],
+                ['support_model', 'Model phụ trợ / phản biện', SUPPORT_MODEL_OPTIONS],
+                ['embedding_model', 'Model embedding', EMBEDDING_MODEL_OPTIONS],
+                ['image_model', 'Model vẽ ảnh', IMAGE_MODEL_OPTIONS],
+                ['image_validation_model', 'Model kiểm tra ảnh', IMAGE_VALIDATION_MODEL_OPTIONS],
+              ].map(([name, label, options]) => (
+                <label key={name} className="block">
+                  <span className="mb-1 block text-xs font-medium text-gray-700">{label}</span>
+                  <select
+                    value={formData.model_selection?.[name] || ''}
+                    onChange={(e) => updateModelSelection(name, e.target.value)}
+                    disabled={loading}
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                  >
+                    {options.map(([value, optionLabel]) => (
+                      <option key={value} value={value}>{optionLabel}</option>
+                    ))}
+                  </select>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {fieldErrors.api_keys && (
+            <p className="mt-2 text-sm font-medium text-red-700">{fieldErrors.api_keys}</p>
+          )}
+        </div>
+      )}
+
+      {!usesUserProvidedKeys && (
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+          Chế độ hiện tại: <span className="font-semibold">Nạp tiền bằng credit hệ thống</span>. Quy trình nạp tiền và trừ credit giữ như hiện tại.
+        </div>
+      )}
+
       {/* Topic Input */}
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -1070,27 +1517,34 @@ export function ConfigForm({
                 <button
                   type="button"
                   onClick={clearInitialStructure}
-                  disabled={loading || structureUpload.loading}
+                  disabled={loading || structureUpload.loading || (usesUserProvidedKeys && !hasUsableOpenAIKey)}
                   className="inline-flex items-center justify-center rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {t('textbook.form.structureClearButton')}
                 </button>
-                <label className={`inline-flex cursor-pointer items-center justify-center rounded-lg border px-4 py-2 text-sm font-medium transition-colors ${
-                  structureUpload.loading || loading
-                    ? 'cursor-not-allowed border-gray-200 bg-gray-100 text-gray-400'
-                    : 'border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100'
-                }`}>
+                <button
+                  type="button"
+                  onClick={() => structureFileInputRef.current?.click()}
+                  disabled={structureUpload.loading || loading || (usesUserProvidedKeys && !hasUsableOpenAIKey)}
+                  className={`inline-flex items-center justify-center rounded-lg border px-4 py-2 text-sm font-medium transition-colors ${
+                    structureUpload.loading || loading || (usesUserProvidedKeys && !hasUsableOpenAIKey)
+                      ? 'cursor-not-allowed border-gray-200 bg-gray-100 text-gray-400'
+                      : 'border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100'
+                  }`}
+                >
                   {structureUpload.loading
                     ? t('textbook.form.structureUploadReading')
                     : t('textbook.form.structureUploadButton')}
-                  <input
-                    type="file"
-                    accept=".docx,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf"
-                    className="sr-only"
-                    onChange={handleStructureFileUpload}
-                    disabled={loading || structureUpload.loading}
-                  />
-                </label>
+                </button>
+                <input
+                  ref={structureFileInputRef}
+                  type="file"
+                  accept=".docx,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf"
+                  className="hidden"
+                  tabIndex={-1}
+                  onChange={handleStructureFileUpload}
+                  disabled={loading || structureUpload.loading || (usesUserProvidedKeys && !hasUsableOpenAIKey)}
+                />
               </div>
             </div>
             {structureUpload.fileName && !structureUpload.error && (
@@ -1125,26 +1579,28 @@ export function ConfigForm({
               </details>
             )}
           </div>
-          <CurriculumStructureEditor
-            value={initialStructure}
-            onChange={(next) => {
-              setInitialStructure(next)
-              if (missingChildSections.length > 0) {
-                setMissingChildSections([])
-              }
-              if (fieldErrors.initial_structure) {
-                setFieldErrors(prev => {
-                  const updated = { ...prev }
-                  delete updated.initial_structure
-                  return updated
-                })
-              }
-            }}
-            disabled={loading}
-            structureDepth={formData.structure_depth}
-            allowChildControls={formData.planning_mode === 'structured'}
-            missingChildSections={missingChildSections}
-          />
+          <div className="max-h-[70vh] min-w-0 overflow-y-auto overflow-x-hidden rounded-lg border border-blue-100 bg-white p-3">
+            <CurriculumStructureEditor
+              value={initialStructure}
+              onChange={(next) => {
+                setInitialStructure(next)
+                if (missingChildSections.length > 0) {
+                  setMissingChildSections([])
+                }
+                if (fieldErrors.initial_structure) {
+                  setFieldErrors(prev => {
+                    const updated = { ...prev }
+                    delete updated.initial_structure
+                    return updated
+                  })
+                }
+              }}
+              disabled={loading}
+              structureDepth={formData.structure_depth}
+              allowChildControls={formData.planning_mode === 'structured'}
+              missingChildSections={missingChildSections}
+            />
+          </div>
         </div>
       )}
 
@@ -1414,7 +1870,7 @@ export function ConfigForm({
       )}
 
       {/* Credits Display */}
-      {user && (
+      {user && generationMode === SYSTEM_CREDIT_BILLING && (
         <div className="flex items-center justify-between p-3 bg-blue-50 border border-blue-200 rounded-lg">
           <span className="text-sm text-blue-900">
             💳 {t('textbook.form.creditsAvailable')} <span className="font-bold">{user.credits}</span>
@@ -1426,16 +1882,22 @@ export function ConfigForm({
       {/* Submit Button */}
       <button
         type="submit"
-        disabled={loading || !formData.topic.trim() || (user && !isAdmin && user.credits < 1)}
+        disabled={
+          loading ||
+          validatingCredentials ||
+          !formData.topic.trim() ||
+          (usesUserProvidedKeys && !hasUsableOpenAIKey) ||
+          (generationMode === SYSTEM_CREDIT_BILLING && user && !isAdmin && user.credits < 1)
+        }
         className="w-full py-3 px-4 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 focus:ring-4 focus:ring-blue-200 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
       >
-        {loading ? (
+        {loading || validatingCredentials ? (
           <span className="flex items-center justify-center gap-2">
             <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
             </svg>
-            {t('textbook.form.submitting')}
+            {validatingCredentials ? 'Đang kiểm tra key...' : t('textbook.form.submitting')}
           </span>
         ) : (
           `🚀 ${t('textbook.form.submit')}`
@@ -1540,6 +2002,84 @@ export function ConfigForm({
                 className="flex-1 px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors"
               >
                 {t('textbook.form.structuredMissingPagesAutoFill')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pendingSerperChoiceData && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black bg-opacity-50 backdrop-blur-sm"
+            onClick={() => setPendingSerperChoiceData(null)}
+          />
+          <div className="relative bg-white rounded-lg shadow-2xl max-w-lg w-full mx-4 p-6">
+            <div className="flex items-center justify-center w-12 h-12 mx-auto mb-4 bg-amber-100 rounded-full">
+              <svg className="w-6 h-6 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+            </div>
+            <h3 className="text-xl font-bold text-gray-900 text-center mb-2">
+              Serper API key có lỗi
+            </h3>
+            <p className="text-sm text-gray-600 text-center mb-4">
+              {pendingSerperChoiceData.serperError}
+            </p>
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 mb-6">
+              Nếu tiếp tục, hệ thống sẽ bỏ qua Serper API key cho giáo trình này. Ảnh sẽ chủ yếu dùng AI-generated/Wikimedia và ít ảnh tìm kiếm thực tế hơn.
+            </div>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setPendingSerperChoiceData(null)
+                  setFieldErrors({
+                    api_keys: pendingSerperChoiceData.serperError || 'Serper API key có lỗi.',
+                  })
+                }}
+                className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 font-medium rounded-lg hover:bg-gray-300 transition-colors"
+              >
+                Dừng lại để sửa key
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const pending = pendingSerperChoiceData
+                  setPendingSerperChoiceData(null)
+                  if (!pending?.submitData) return
+                  const nextWarnings = [
+                    ...(pending.warnings || []),
+                    'Bạn đã chọn tiếp tục không dùng Serper API key cho giáo trình này.',
+                  ]
+                  const nextSubmitData = {
+                    ...pending.submitData,
+                    serper_api_key: undefined,
+                    skip_serper_api_key: true,
+                  }
+                  if ((pending.structuredMissingChildren || []).length > 0) {
+                    setMissingChildSections(pending.structuredMissingChildren)
+                    setPendingMissingChildData({
+                      submitData: nextSubmitData,
+                      warnings: nextWarnings,
+                    })
+                    return
+                  }
+                  if (pending.hasMissingPages) {
+                    setPendingStructuredPageData({
+                      submitData: nextSubmitData,
+                      warnings: nextWarnings,
+                    })
+                    return
+                  }
+                  queueSubmitConfirmation(
+                    nextSubmitData,
+                    nextWarnings,
+                  )
+                }}
+                className="flex-1 px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                Tiếp tục không dùng Serper
               </button>
             </div>
           </div>

@@ -242,6 +242,200 @@ class OverrideCountItem(BaseModel):
     override_count: int
 
 
+class SetupStatusItem(BaseModel):
+    key: str
+    label: str
+    group: str
+    severity: str
+    source: str
+    message: str
+
+
+class SetupConfiguredItem(BaseModel):
+    key: str
+    label: str
+    group: str
+    source: str
+    masked: bool
+
+
+class AdminSetupStatusResponse(BaseModel):
+    is_ready: bool
+    generation_mode: str
+    missing_required: List[SetupStatusItem]
+    warnings: List[SetupStatusItem]
+    configured_from_env: List[SetupConfiguredItem]
+    configured_from_db: List[SetupConfiguredItem]
+
+
+SETUP_ALWAYS_REQUIRED = [
+    "SMTP_HOST",
+    "SMTP_PORT",
+    "SMTP_USER",
+    "SMTP_PASSWORD",
+    "EMAIL_FROM",
+]
+
+
+def _setup_label(admin_registry: Dict[str, Dict[str, Any]], key: str) -> str:
+    return str(admin_registry.get(key, {}).get("label") or key)
+
+
+def _setup_group(admin_registry: Dict[str, Dict[str, Any]], key: str) -> str:
+    return str(admin_registry.get(key, {}).get("group") or "api_keys")
+
+
+def _setup_is_missing(value: Any) -> bool:
+    return value is None or str(value).strip() == "" or value == MASKED_VALUE
+
+
+def _setup_source(key: str, system_overrides: Dict[str, Any]) -> tuple[str, Any]:
+    db_value = system_overrides.get(key)
+    if not _setup_is_missing(db_value):
+        return "database", db_value
+    return "env", getattr(settings, key, None)
+
+
+def _setup_item(
+    admin_registry: Dict[str, Dict[str, Any]],
+    key: str,
+    severity: str,
+    source: str,
+    message: str,
+) -> SetupStatusItem:
+    return SetupStatusItem(
+        key=key,
+        label=_setup_label(admin_registry, key),
+        group=_setup_group(admin_registry, key),
+        severity=severity,
+        source=source,
+        message=message,
+    )
+
+
+def _configured_item(
+    admin_registry: Dict[str, Dict[str, Any]],
+    key: str,
+    source: str,
+) -> SetupConfiguredItem:
+    entry = admin_registry.get(key, {})
+    return SetupConfiguredItem(
+        key=key,
+        label=_setup_label(admin_registry, key),
+        group=_setup_group(admin_registry, key),
+        source=source,
+        masked=bool(entry.get("sensitive")),
+    )
+
+
+def _build_admin_setup_status(
+    admin_registry: Dict[str, Dict[str, Any]],
+    system_overrides: Dict[str, Any],
+) -> AdminSetupStatusResponse:
+    missing_required: List[SetupStatusItem] = []
+    warnings: List[SetupStatusItem] = []
+    configured_from_env: List[SetupConfiguredItem] = []
+    configured_from_db: List[SetupConfiguredItem] = []
+    tracked_keys: set[str] = set()
+
+    def inspect_key(key: str, severity: str, message: str) -> None:
+        source, value = _setup_source(key, system_overrides)
+        tracked_keys.add(key)
+        if _setup_is_missing(value):
+            target = missing_required if severity == "required" else warnings
+            target.append(_setup_item(admin_registry, key, severity, "missing", message))
+        elif source == "database":
+            configured_from_db.append(_configured_item(admin_registry, key, source))
+        else:
+            configured_from_env.append(_configured_item(admin_registry, key, source))
+
+    for key in SETUP_ALWAYS_REQUIRED:
+        inspect_key(
+            key,
+            "required",
+            "Cần cấu hình email để gửi xác nhận đăng ký, đổi mật khẩu và thông báo hệ thống.",
+        )
+
+    generation_mode_source, generation_mode_value = _setup_source("TEXTBOOK_GENERATION_MODE", system_overrides)
+    generation_mode = str(generation_mode_value or settings.TEXTBOOK_GENERATION_MODE)
+    tracked_keys.add("TEXTBOOK_GENERATION_MODE")
+    if generation_mode_source == "database":
+        configured_from_db.append(_configured_item(admin_registry, "TEXTBOOK_GENERATION_MODE", "database"))
+    else:
+        configured_from_env.append(_configured_item(admin_registry, "TEXTBOOK_GENERATION_MODE", "env"))
+
+    if generation_mode == "system_credit_billing":
+        inspect_key(
+            "OPENAI_API_KEY",
+            "required",
+            "Chế độ nạp tiền bằng credit hệ thống cần OpenAI API key để tạo giáo trình.",
+        )
+        inspect_key(
+            "SEPAY_ACCOUNT_NUMBER",
+            "required",
+            "Cần số tài khoản SePay/tài khoản nhận tiền để màn hình nạp tiền hoạt động đúng.",
+        )
+        inspect_key(
+            "SERPER_API_KEY",
+            "warning",
+            "Thiếu Serper API key thì ảnh/search thực tế sẽ giảm chất lượng.",
+        )
+        inspect_key(
+            "SEPAY_API_KEY",
+            "warning",
+            "Thiếu SePay API key thì các thao tác tích hợp SePay tự động có thể không hoạt động.",
+        )
+    else:
+        inspect_key(
+            "OPENAI_API_KEY",
+            "warning",
+            "Tùy chọn: cần key này nếu Admin muốn tạo giáo trình bằng API key hệ thống.",
+        )
+        inspect_key(
+            "SERPER_API_KEY",
+            "warning",
+            "Tùy chọn: giúp Admin dùng API key hệ thống có ảnh/search thực tế tốt hơn.",
+        )
+
+    google_keys = ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URI"]
+    google_values = {key: _setup_source(key, system_overrides) for key in google_keys}
+    if any(not _setup_is_missing(value) for _, value in google_values.values()):
+        for key, (source, value) in google_values.items():
+            tracked_keys.add(key)
+            if _setup_is_missing(value):
+                warnings.append(_setup_item(
+                    admin_registry,
+                    key,
+                    "warning",
+                    "missing",
+                    "Đăng nhập Google đang được cấu hình dở; cần đủ Client ID, Client Secret và Redirect URI.",
+                ))
+            elif source == "database":
+                configured_from_db.append(_configured_item(admin_registry, key, source))
+            else:
+                configured_from_env.append(_configured_item(admin_registry, key, source))
+
+    def dedupe(items: List[Any]) -> List[Any]:
+        seen: set[tuple[str, str]] = set()
+        result = []
+        for item in items:
+            marker = (item.key, getattr(item, "source", ""))
+            if marker in seen:
+                continue
+            seen.add(marker)
+            result.append(item)
+        return result
+
+    return AdminSetupStatusResponse(
+        is_ready=len(missing_required) == 0,
+        generation_mode=generation_mode,
+        missing_required=dedupe(missing_required),
+        warnings=dedupe(warnings),
+        configured_from_env=dedupe(configured_from_env),
+        configured_from_db=dedupe(configured_from_db),
+    )
+
+
 # ---------------------------------------------------------------------------
 # GET /config/registry
 # ---------------------------------------------------------------------------
@@ -421,6 +615,21 @@ async def get_system_config(
             reveal_key=reveal_key,
         )
     )
+
+
+@router.get(
+    "/config/admin/setup-status",
+    response_model=AdminSetupStatusResponse,
+    summary="Admin setup checklist status",
+)
+async def get_admin_setup_status(
+    admin_id: int = Depends(require_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
+    await _require_admin_user(db, admin_id)
+    system_overrides = await _load_system_config(db)
+    admin_registry = get_admin_registry()
+    return _build_admin_setup_status(admin_registry, system_overrides)
 
 
 # ---------------------------------------------------------------------------

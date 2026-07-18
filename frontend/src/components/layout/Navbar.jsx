@@ -1,5 +1,7 @@
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
+import { byokAPI } from '../../api/byok'
 import { useAuth } from '../../context/AuthContext'
 import { Button } from '../common/Button'
 import { LanguageSwitcher } from '../common/LanguageSwitcher'
@@ -7,6 +9,27 @@ import { LanguageSwitcher } from '../common/LanguageSwitcher'
 export function Navbar() {
   const { user, logout } = useAuth()
   const { t } = useTranslation()
+  const [generationMode, setGenerationMode] = useState('user_provided_api_keys')
+  const showCreditControls = generationMode === 'system_credit_billing'
+
+  useEffect(() => {
+    let cancelled = false
+    const loadMode = async () => {
+      if (!user) return
+      try {
+        const response = await byokAPI.status()
+        if (!cancelled) {
+          setGenerationMode(response.data?.generation_mode || 'user_provided_api_keys')
+        }
+      } catch {
+        if (!cancelled) setGenerationMode('user_provided_api_keys')
+      }
+    }
+    loadMode()
+    return () => {
+      cancelled = true
+    }
+  }, [user])
 
   return (
     <nav className="h-full bg-white shadow-sm border-b border-gray-200">
@@ -48,15 +71,18 @@ export function Navbar() {
             </Link>
 
             {/* Top-up link */}
-            <Link
-              to="/profile"
-              className="hidden sm:block text-sm font-medium text-primary hover:text-blue-500 transition-colors"
-              title={t('nav.topupTitle')}
-            >
-              {t('nav.topup')}
-            </Link>
+            {showCreditControls && (
+              <Link
+                to="/profile"
+                className="hidden sm:block text-sm font-medium text-primary hover:text-blue-500 transition-colors"
+                title={t('nav.topupTitle')}
+              >
+                {t('nav.topup')}
+              </Link>
+            )}
 
             {/* Credits badge */}
+            {showCreditControls && (
             <div className="flex items-center gap-2 px-3 py-1.5 bg-primary/10 rounded-full">
               <svg 
                 className="w-5 h-5 text-primary" 
@@ -75,6 +101,7 @@ export function Navbar() {
                 {user?.credits || 0}
               </span>
             </div>
+            )}
 
             {/* Logout button */}
             <Button

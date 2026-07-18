@@ -21,7 +21,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from app.schemas.curriculum import AgentState, CurriculumOutline, count_curriculum_leaf_sections
 from app.config import settings
 from app.services.api_rate_limiter import rate_limited_invoke
-from app.services.runtime_config import get_api_key
+from app.services.runtime_config import get_api_key, get_runtime_config
 from app.services.textbook.language import get_language_profile
 from app.utils.log_config import setup_logger, setup_prompt_logger
 
@@ -55,8 +55,9 @@ class HybridPlanner:
         Temperature=0.3 balances creativity with consistency for curriculum design.
         No ChromaDB connection needed — planner generates curriculum from topic only.
         """
+        self.model = str(get_runtime_config("LLM_MODEL_PREMIUM", required=False) or LLM_MODEL_PREMIUM)
         self.llm = ChatOpenAI(
-            model=LLM_MODEL_PREMIUM,
+            model=self.model,
             api_key=get_api_key("OPENAI_API_KEY"),  # type: ignore[arg-type]
             temperature=0.3,
         )

@@ -36,7 +36,7 @@ from app.schemas.curriculum import (
 from app.config import settings
 from app.services.cost_profile import auxiliary_chat_model, use_balanced_cost
 from app.services.api_rate_limiter import rate_limited_invoke
-from app.services.runtime_config import get_api_key
+from app.services.runtime_config import get_api_key, get_runtime_config
 from app.services.textbook.language import get_language_profile
 
 LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
@@ -55,8 +55,8 @@ MAX_REVISIONS = settings.REVIEWER_MAX_REVISIONS
 
 def _quality_gate_model(advanced_config: dict | None = None) -> str:
     return auxiliary_chat_model(
-        cheap_model=LLM_MODEL_CHEAP,
-        premium_model=LLM_MODEL_PREMIUM,
+        cheap_model=str(get_runtime_config("LLM_MODEL_CHEAP", required=False) or LLM_MODEL_CHEAP),
+        premium_model=str(get_runtime_config("LLM_MODEL_PREMIUM", required=False) or LLM_MODEL_PREMIUM),
         advanced_config=advanced_config,
     )
 
@@ -554,8 +554,9 @@ class ReviewerAgent:
         undesirable and consistency is critical.
         """
 
+        self.model = str(get_runtime_config("LLM_MODEL_PREMIUM", required=False) or LLM_MODEL_PREMIUM)
         self.llm = ChatOpenAI(
-            model=LLM_MODEL_PREMIUM,
+            model=self.model,
             api_key=get_api_key("OPENAI_API_KEY"), # type: ignore[arg-type]
             temperature=0.1,
         )
@@ -1012,7 +1013,7 @@ No fences, no preamble, no explanation.
             )
 
             llm_format = ChatOpenAI(
-                model=LLM_MODEL_PREMIUM,
+                model=str(get_runtime_config("LLM_MODEL_PREMIUM", required=False) or LLM_MODEL_PREMIUM),
                 api_key=get_api_key("OPENAI_API_KEY"),  # type: ignore[arg-type]
                 temperature=0.0,
             )
@@ -1258,7 +1259,7 @@ Output rules:
             )
 
             llm_content = ChatOpenAI(
-                model=LLM_MODEL_PREMIUM,
+                model=str(get_runtime_config("LLM_MODEL_PREMIUM", required=False) or LLM_MODEL_PREMIUM),
                 api_key=get_api_key("OPENAI_API_KEY"),  # type: ignore[arg-type]
                 temperature=0.2,
             )
@@ -1358,7 +1359,7 @@ Return raw Markdown only. No preamble, no explanation, no fences.
                 context_label=f"{section_num} {section_title} [EM-DASH-CLEANUP]",
             )
             llm_cleanup = ChatOpenAI(
-                model=LLM_MODEL_PREMIUM,
+                model=str(get_runtime_config("LLM_MODEL_PREMIUM", required=False) or LLM_MODEL_PREMIUM),
                 api_key=get_api_key("OPENAI_API_KEY"),  # type: ignore[arg-type]
                 temperature=0.0,
             )

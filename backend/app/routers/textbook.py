@@ -44,12 +44,38 @@ from app.services.textbook.page_budget import (
     validate_page_configuration,
 )
 from app.services.textbook.validator import validate_topic
+from app.services.byok_service import (
+    ByokConfigurationError,
+    ByokCredentialError,
+    SYSTEM_CREDIT_BILLING,
+    USER_PROVIDED_API_KEYS,
+    generation_mode,
+    generation_mode_label,
+    load_job_runtime_overrides,
+    replace_job_secrets,
+    resolve_request_keys,
+    upsert_user_key,
+    validate_model_selection,
+)
+from app.services.runtime_config import RuntimeConfigError, get_api_key, runtime_config_overrides
 
 router = APIRouter(prefix="/textbooks", tags=["textbooks"])
 
 
 def _clean_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _require_system_openai_key_for_credit_mode(mode: str) -> None:
+    if mode != SYSTEM_CREDIT_BILLING:
+        return
+    try:
+        get_api_key("OPENAI_API_KEY", required=True)
+    except RuntimeConfigError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Chế độ nạp tiền bằng credit hệ thống cần Admin cấu hình OPENAI_API_KEY trước khi tạo giáo trình.",
+        ) from exc
 
 
 def _clean_positive_float(value: Any) -> float | None:
@@ -612,12 +638,43 @@ async def create_textbook(
 
     # ================ VALIDATE TOPIC ================
     ui_language = normalize_language(textbook_data.ui_language)
-    validation = validate_topic(
-        textbook_data.topic,
-        ui_language=ui_language,
-        formula_policy=textbook_data.formula_policy,
-        formula_confirmed=textbook_data.formula_confirmed,
-    )
+    result = await db.execute(select(User).where(User.id == current_user_id))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    mode = generation_mode()
+    using_user_keys = mode == USER_PROVIDED_API_KEYS
+    _require_system_openai_key_for_credit_mode(mode)
+    try:
+        model_overrides = validate_model_selection(textbook_data.model_selection) if using_user_keys else {}
+        request_keys = (
+            await resolve_request_keys(
+                db,
+                current_user_id,
+                credential_usage=textbook_data.credential_usage,
+                openai_api_key=textbook_data.openai_api_key,
+                serper_api_key=textbook_data.serper_api_key,
+                allow_system_credentials=_is_free_admin(user),
+                skip_serper=textbook_data.skip_serper_api_key,
+            )
+            if using_user_keys
+            else {}
+        )
+    except ByokConfigurationError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except ByokCredentialError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    runtime_overrides = {**model_overrides, **request_keys}
+    with runtime_config_overrides(runtime_overrides):
+        validation = validate_topic(
+            textbook_data.topic,
+            ui_language=ui_language,
+            formula_policy=textbook_data.formula_policy,
+            formula_confirmed=textbook_data.formula_confirmed,
+        )
 
     if not validation:
         raise HTTPException(
@@ -685,7 +742,6 @@ async def create_textbook(
     initial_curriculum: dict[str, Any] | None = None
     initial_total_subsections = 0
     preflight_page_validation: dict | None = None
-    page_validation: dict | None = None
 
     if planning_mode == "structured":
         if textbook_data.initial_structure:
@@ -713,15 +769,16 @@ async def create_textbook(
                     )
                 from app.services.textbook.planner import HybridPlanner
 
-                planner = HybridPlanner()
-                initial_curriculum = planner.fill_missing_child_subsections(
-                    initial_structure=initial_curriculum,
-                    core_topic=core_topic,
-                    user_requirements=user_requirements,
-                    max_child_subsections=textbook_data.max_child_subsections_per_section,
-                    language=textbook_language,
-                    textbook_mode=textbook_data.textbook_mode,
-                )
+                with runtime_config_overrides(runtime_overrides):
+                    planner = HybridPlanner()
+                    initial_curriculum = planner.fill_missing_child_subsections(
+                        initial_structure=initial_curriculum,
+                        core_topic=core_topic,
+                        user_requirements=user_requirements,
+                        max_child_subsections=textbook_data.max_child_subsections_per_section,
+                        language=textbook_language,
+                        textbook_mode=textbook_data.textbook_mode,
+                    )
         initial_curriculum["structure_depth"] = structure_depth
 
         initial_total_subsections = count_curriculum_leaf_sections(initial_curriculum)
@@ -758,22 +815,29 @@ async def create_textbook(
         )
     
     # ================ CHECK CREDITS ================
-    result = await db.execute(select(User).where(User.id == current_user_id))
-    user = result.scalar_one_or_none()
-
-    if not user:
-        raise HTTPException(
-            status_code=400,
-            detail=localized_validation_fallback("insufficient_credits", ui_language)
-        )
-
-    if not _is_free_admin(user) and user.credits < 1:  # type: ignore
+    if mode == SYSTEM_CREDIT_BILLING and not _is_free_admin(user) and user.credits < 1:  # type: ignore
         raise HTTPException(
             status_code=400,
             detail=localized_validation_fallback("insufficient_credits", ui_language)
         )
 
     # ================ CREATE TEXTBOOK ================
+    base_progress = {
+        "planning_mode": planning_mode,
+        "structure_depth": structure_depth,
+        "max_child_subsections_per_section": textbook_data.max_child_subsections_per_section,
+        "textbook_mode": textbook_data.textbook_mode,
+        "formula_policy": formula_policy,
+        "formula_need": formula_need,
+        "source_preferences": source_preferences,
+        "target_pages": textbook_data.target_pages,
+        "page_plan_confirmed": textbook_data.page_plan_confirmed,
+        "generation_mode": mode,
+        "generation_mode_label": generation_mode_label(mode),
+        "credential_usage": textbook_data.credential_usage if using_user_keys else "system",
+        "model_selection_runtime": model_overrides,
+        "byok_serper_configured": bool(request_keys.get("SERPER_API_KEY")),
+    }
     textbook = Textbook(
         user_id=current_user_id,
         topic=textbook_data.topic, 
@@ -809,29 +873,13 @@ async def create_textbook(
         status=TextbookStatus.PENDING,
         credits_used=0,
         progress_data={
-            "planning_mode": planning_mode,
-            "structure_depth": structure_depth,
-            "max_child_subsections_per_section": textbook_data.max_child_subsections_per_section,
-            "textbook_mode": textbook_data.textbook_mode,
-            "formula_policy": formula_policy,
-            "formula_need": formula_need,
-            "source_preferences": source_preferences,
-            "target_pages": textbook_data.target_pages,
-            "page_plan_confirmed": textbook_data.page_plan_confirmed,
+            **base_progress,
             "curriculum_data": initial_curriculum,
             "total_chapters": len(initial_curriculum["chapters"]) if initial_curriculum else 0,
             "total_subsections": initial_total_subsections,
-            "page_validation": page_validation if initial_curriculum else None,
+            "page_validation": preflight_page_validation if initial_curriculum else None,
         } if initial_curriculum else {
-            "planning_mode": planning_mode,
-            "structure_depth": structure_depth,
-            "max_child_subsections_per_section": textbook_data.max_child_subsections_per_section,
-            "textbook_mode": textbook_data.textbook_mode,
-            "formula_policy": formula_policy,
-            "formula_need": formula_need,
-            "source_preferences": source_preferences,
-            "target_pages": textbook_data.target_pages,
-            "page_plan_confirmed": textbook_data.page_plan_confirmed,
+            **base_progress,
             "page_validation": preflight_page_validation,
         },
     )
@@ -839,6 +887,17 @@ async def create_textbook(
     db.add(textbook)
     await db.commit()
     await db.refresh(textbook)
+    if using_user_keys:
+        try:
+            if textbook_data.credential_usage == "saved":
+                await upsert_user_key(db, current_user_id, "openai", textbook_data.openai_api_key or "")
+                await upsert_user_key(db, current_user_id, "serper", textbook_data.serper_api_key or "")
+            await replace_job_secrets(db, textbook.id, request_keys)  # type: ignore[arg-type]
+            await db.commit()
+        except ByokConfigurationError as exc:
+            await db.delete(textbook)
+            await db.commit()
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     # ================ TRIGGER PLANNING TASK ================
     from app.tasks.textbook_tasks import generate_textbook_task
@@ -964,6 +1023,8 @@ async def delete_textbook(
     if not textbook:
         raise HTTPException(status_code=404, detail="Textbook not found")
 
+    from app.services.byok_service import delete_job_secrets
+    await delete_job_secrets(db, textbook_id)
     await db.delete(textbook)
     await db.commit()
     return None
@@ -1079,9 +1140,11 @@ async def estimate_curriculum_credits(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     is_admin_free = _is_free_admin(user)
+    progress_data = dict(textbook.progress_data or {})  # type: ignore
+    textbook_generation_mode = progress_data.get("generation_mode") or generation_mode()
+    using_user_keys = textbook_generation_mode == USER_PROVIDED_API_KEYS
 
     sanitized_curriculum, chapter_titles, total_subsections = _sanitize_confirmed_curriculum(request.curriculum)
-    progress_data = dict(textbook.progress_data or {})  # type: ignore
     target_pages = (
         _clean_positive_float(sanitized_curriculum.get("target_pages"))
         or _clean_positive_float(progress_data.get("target_pages"))
@@ -1109,7 +1172,7 @@ async def estimate_curriculum_credits(
     )
 
     return CurriculumCreditEstimateResponse(
-        credits_required=0 if is_admin_free else credits_required,
+        credits_required=0 if using_user_keys or is_admin_free else credits_required,
         total_chapters=len(chapter_titles),
         total_subsections=total_subsections,
         enable_images=bool(textbook.enable_images),  # type: ignore
@@ -1151,35 +1214,62 @@ async def confirm_curriculum(
         raise HTTPException(status_code=404, detail="User not found")
 
     is_admin_free = _is_free_admin(user)
+    existing_progress = dict(textbook.progress_data or {})  # type: ignore
+    textbook_generation_mode = existing_progress.get("generation_mode") or generation_mode()
+    using_user_keys = textbook_generation_mode == USER_PROVIDED_API_KEYS
+    _require_system_openai_key_for_credit_mode(textbook_generation_mode)
+    try:
+        request_model_overrides = validate_model_selection(request.model_selection) if using_user_keys else {}
+        model_overrides = request_model_overrides or dict(existing_progress.get("model_selection_runtime") or {})
+        request_keys: dict[str, str] = {}
+        if using_user_keys:
+            job_keys = await load_job_runtime_overrides(db, textbook_id)
+            if job_keys.get("OPENAI_API_KEY") and not request.openai_api_key and not request.serper_api_key:
+                request_keys = job_keys
+            else:
+                request_keys = await resolve_request_keys(
+                    db,
+                    current_user_id,
+                credential_usage=request.credential_usage,
+                openai_api_key=request.openai_api_key,
+                serper_api_key=request.serper_api_key,
+                allow_system_credentials=_is_free_admin(user),
+                skip_serper=request.skip_serper_api_key,
+            )
+        runtime_overrides = {**model_overrides, **request_keys}
+    except ByokConfigurationError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except ByokCredentialError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    progress_phase = dict(textbook.progress_data or {}).get("phase")  # type: ignore
+    progress_phase = existing_progress.get("phase")
     if progress_phase in {"generating", "done"}:
         return {
             "message": "Content generation already started",
             "textbook_id": textbook_id,
-            "credits_required": 0 if is_admin_free else int(textbook.credits_used or 0),  # type: ignore
+            "credits_required": 0 if using_user_keys or is_admin_free else int(textbook.credits_used or 0),  # type: ignore
             "credits_charged": 0,
             "balance_after": user.credits,  # type: ignore
             "is_admin_free": is_admin_free,
             "page_validation": dict(textbook.progress_data or {}).get("page_validation"),  # type: ignore
         }
 
-    existing_progress = dict(textbook.progress_data or {})  # type: ignore
     structure_depth = (
         _clean_text(request.curriculum.get("structure_depth") if isinstance(request.curriculum, dict) else "")
         or _clean_text(existing_progress.get("structure_depth"))
         or _clean_text(getattr(textbook, "structure_depth", "level1"))
         or "level1"
     )
-    refreshed_request_curriculum = _refresh_curriculum_metadata_if_needed(
-        curriculum=request.curriculum,
-        original_curriculum=textbook.curriculum_json,  # type: ignore[arg-type]
-        core_topic=textbook.core_topic or textbook.topic,  # type: ignore[arg-type]
-        user_requirements=textbook.user_requirements or "",  # type: ignore[arg-type]
-        language=textbook.language,  # type: ignore[arg-type]
-        textbook_mode=textbook.textbook_mode or "standard",  # type: ignore[attr-defined]
-        structure_depth=structure_depth,
-    )
+    with runtime_config_overrides(runtime_overrides):
+        refreshed_request_curriculum = _refresh_curriculum_metadata_if_needed(
+            curriculum=request.curriculum,
+            original_curriculum=textbook.curriculum_json,  # type: ignore[arg-type]
+            core_topic=textbook.core_topic or textbook.topic,  # type: ignore[arg-type]
+            user_requirements=textbook.user_requirements or "",  # type: ignore[arg-type]
+            language=textbook.language,  # type: ignore[arg-type]
+            textbook_mode=textbook.textbook_mode or "standard",  # type: ignore[attr-defined]
+            structure_depth=structure_depth,
+        )
     confirmed_curriculum, chapter_titles, total_subsections = _sanitize_confirmed_curriculum(refreshed_request_curriculum)
     target_pages = (
         _clean_positive_float(confirmed_curriculum.get("target_pages"))
@@ -1210,10 +1300,23 @@ async def confirm_curriculum(
         content_level=textbook.content_level,  # type: ignore
         enable_images=bool(textbook.enable_images),  # type: ignore
     )
-    credits_required = 0 if is_admin_free else estimated_credits
+    credits_required = 0 if using_user_keys or is_admin_free else estimated_credits
     credits_charged = 0
 
-    if not is_admin_free and not textbook.credits_used:  # type: ignore
+    if using_user_keys:
+        textbook.credits_used = 0  # type: ignore
+        if request.credential_usage == "saved":
+            try:
+                await upsert_user_key(db, current_user_id, "openai", request.openai_api_key or "")
+                await upsert_user_key(db, current_user_id, "serper", request.serper_api_key or "")
+            except ByokConfigurationError as exc:
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
+        if request_keys:
+            try:
+                await replace_job_secrets(db, textbook_id, request_keys)
+            except ByokConfigurationError as exc:
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
+    elif not is_admin_free and not textbook.credits_used:  # type: ignore
         current_credits = int(user.credits or 0)  # type: ignore
         if current_credits < credits_required:
             raise HTTPException(
@@ -1257,6 +1360,11 @@ async def confirm_curriculum(
         "credits_required": credits_required,
         "credits_charged": credits_charged,
         "is_admin_free": is_admin_free,
+        "generation_mode": textbook_generation_mode,
+        "generation_mode_label": generation_mode_label(textbook_generation_mode),
+        "credential_usage": request.credential_usage if using_user_keys else "system",
+        "model_selection_runtime": model_overrides,
+        "byok_serper_configured": bool(request_keys.get("SERPER_API_KEY")),
         "target_pages": target_pages,
         "page_plan_confirmed": request.page_plan_confirmed,
         "page_validation": page_validation,
@@ -1318,6 +1426,8 @@ async def stop_generation(
         # Planning has not spent credits or produced useful content, so it is
         # still safe to revoke and delete immediately.
         _revoke_textbook_task(textbook, textbook_id)
+        from app.services.byok_service import delete_job_secrets
+        await delete_job_secrets(db, textbook_id)
         await db.delete(textbook)
         await db.commit()
         return {"message": "Planning draft deleted", "deleted": True}

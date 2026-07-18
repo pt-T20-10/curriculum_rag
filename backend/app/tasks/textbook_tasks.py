@@ -14,11 +14,30 @@ from app.models.textbook import Textbook, TextbookStatus
 from app.models.user import User
 from app.schemas.curriculum import count_curriculum_leaf_sections
 from app.services.config_service import load_effective_config
+from app.services.byok_service import (
+    USER_PROVIDED_API_KEYS,
+    delete_job_secrets,
+    load_job_runtime_overrides,
+)
+from app.services.runtime_config import runtime_config_overrides
 from app.services.textbook.language import progress_text
 from app.utils.log_config import setup_logger
 from sqlalchemy import select
 
 logger = setup_logger(name="TextbookTasks", logfile="logs/celery_tasks.log")
+
+
+async def _textbook_runtime_overrides(db, textbook: Textbook, advanced_config: dict | None = None) -> dict:
+    progress_data = dict(textbook.progress_data or {})  # type: ignore
+    model_overrides = dict(progress_data.get("model_selection_runtime") or {})
+    job_secrets = {}
+    if progress_data.get("generation_mode") == USER_PROVIDED_API_KEYS:
+        job_secrets = await load_job_runtime_overrides(db, textbook.id)  # type: ignore[arg-type]
+    return {
+        **(advanced_config or {}),
+        **model_overrides,
+        **job_secrets,
+    }
 
 
 async def update_textbook_progress(db, textbook_id: int, **kwargs):
@@ -127,15 +146,18 @@ async def _prepare_structured_content_generation(
         textbook.error_message = detail  # type: ignore
         await db.commit()
         return {"success": False, "error": detail}, {}
+    using_user_keys = progress_data.get("generation_mode") == USER_PROVIDED_API_KEYS
     estimated_credits = estimate_textbook_credits(
         total_subsections=total_subsections,
         content_level=textbook.content_level,  # type: ignore[arg-type]
         enable_images=bool(textbook.enable_images),
     )
-    credits_required = 0 if is_admin_free else estimated_credits
+    credits_required = 0 if using_user_keys or is_admin_free else estimated_credits
     credits_charged = 0
 
-    if not is_admin_free and not textbook.credits_used:  # type: ignore
+    if using_user_keys:
+        textbook.credits_used = 0  # type: ignore
+    elif not is_admin_free and not textbook.credits_used:  # type: ignore
         current_credits = int(user.credits or 0)  # type: ignore
         if current_credits < credits_required:
             detail = _insufficient_credits_detail(
@@ -253,12 +275,14 @@ async def _run_content_generation_for_textbook(
         current_subsection=0,
     )
 
-    result = await continue_after_curriculum_confirmation(
-        textbook_id=textbook.id,  # type: ignore[arg-type]
-        confirmed_curriculum=confirmed_curriculum,
-        initial_state=initial_state,  # type: ignore[arg-type]
-        db=db,
-    )
+    runtime_overrides = await _textbook_runtime_overrides(db, textbook, advanced_config)
+    with runtime_config_overrides(runtime_overrides):
+        result = await continue_after_curriculum_confirmation(
+            textbook_id=textbook.id,  # type: ignore[arg-type]
+            confirmed_curriculum=confirmed_curriculum,
+            initial_state=initial_state,  # type: ignore[arg-type]
+            db=db,
+        )
 
     if result.get("success"):
         textbook.status = TextbookStatus.COMPLETED.value  # type: ignore
@@ -275,6 +299,9 @@ async def _run_content_generation_for_textbook(
             textbook.error_message = None  # type: ignore
 
         await db.commit()
+        if dict(textbook.progress_data or {}).get("generation_mode") == USER_PROVIDED_API_KEYS:  # type: ignore
+            await delete_job_secrets(db, textbook.id)  # type: ignore[arg-type]
+            await db.commit()
         logger.info("[TASK] ✓ Content generation complete")
         return {
             "status": "stopped_published" if result.get("stopped_early") else "success",
@@ -295,6 +322,9 @@ async def _run_content_generation_for_textbook(
     textbook.docx_path = result.get("docx_path")  # type: ignore
     textbook.completed_at = None  # type: ignore
     await db.commit()
+    if dict(textbook.progress_data or {}).get("generation_mode") == USER_PROVIDED_API_KEYS:  # type: ignore
+        await delete_job_secrets(db, textbook.id)  # type: ignore[arg-type]
+        await db.commit()
 
     logger.error(f"[TASK] Content generation failed: {error_msg}")
     return {"status": "error", "error": error_msg}
@@ -369,21 +399,23 @@ def generate_textbook_task(self, textbook_id: int):
                 # Import workflow runner
                 from app.services.textbook.workflow_runner import run_textbook_workflow
                 advanced_config = await load_effective_config(db, textbook.user_id)  # type: ignore[arg-type]
+                runtime_overrides = await _textbook_runtime_overrides(db, textbook, advanced_config)
                 
                 # Run planning phase (stops at curriculum review)
-                result = await run_textbook_workflow(
-                    textbook_id=textbook.id, #type: ignore
-                    topic=textbook.topic, #type: ignore
-                    num_chapters=textbook.num_chapters, #type: ignore
-                    content_level=textbook.content_level, #type: ignore
-                    max_subsections_per_chapter=textbook.max_subsections_per_chapter, #type: ignore
-                    enable_images=textbook.enable_images, #type: ignore
-                    export_formats=["PDF", "Word"],
-                    max_child_subsections_per_section=getattr(textbook, "max_child_subsections_per_section", 3), # type: ignore[arg-type]
-                    language=textbook.language, # type: ignore
-                    advanced_config=advanced_config,
-                    db=db,
-                )
+                with runtime_config_overrides(runtime_overrides):
+                    result = await run_textbook_workflow(
+                        textbook_id=textbook.id, #type: ignore
+                        topic=textbook.topic, #type: ignore
+                        num_chapters=textbook.num_chapters, #type: ignore
+                        content_level=textbook.content_level, #type: ignore
+                        max_subsections_per_chapter=textbook.max_subsections_per_chapter, #type: ignore
+                        enable_images=textbook.enable_images, #type: ignore
+                        export_formats=["PDF", "Word"],
+                        max_child_subsections_per_section=getattr(textbook, "max_child_subsections_per_section", 3), # type: ignore[arg-type]
+                        language=textbook.language, # type: ignore
+                        advanced_config=advanced_config,
+                        db=db,
+                    )
                 
                 if result.get("success"):
                     # ⭐ Save curriculum to dedicated field
@@ -411,6 +443,9 @@ def generate_textbook_task(self, textbook_id: int):
                     textbook.status = TextbookStatus.FAILED.value #type: ignore
                     textbook.error_message = error_msg
                     await db.commit()
+                    if existing_progress.get("generation_mode") == USER_PROVIDED_API_KEYS:
+                        await delete_job_secrets(db, textbook.id)  # type: ignore[arg-type]
+                        await db.commit()
 
                     logger.error(f"[TASK] Planning failed: {error_msg}")
                     return {"status": "error", "error": error_msg}
@@ -419,6 +454,9 @@ def generate_textbook_task(self, textbook_id: int):
                 textbook.status = TextbookStatus.FAILED.value #type: ignore
                 textbook.error_message = str(e) #type: ignore
                 await db.commit()
+                if dict(textbook.progress_data or {}).get("generation_mode") == USER_PROVIDED_API_KEYS:  # type: ignore
+                    await delete_job_secrets(db, textbook.id)  # type: ignore[arg-type]
+                    await db.commit()
                 
                 logger.error(f"[TASK] Exception: {e}", exc_info=True)
                 return {"status": "error", "error": str(e)}
@@ -508,13 +546,14 @@ def continue_textbook_generation_task(self, textbook_id: int, confirmed_curricul
                     current_subsection=0
                 )
                 
-                # Run content generation
-                result = await continue_after_curriculum_confirmation(
-                    textbook_id=textbook.id, #type: ignore
-                    confirmed_curriculum=confirmed_curriculum,
-                    initial_state=initial_state, #type: ignore
-                    db=db,
-                )
+                runtime_overrides = await _textbook_runtime_overrides(db, textbook, advanced_config)
+                with runtime_config_overrides(runtime_overrides):
+                    result = await continue_after_curriculum_confirmation(
+                        textbook_id=textbook.id, #type: ignore
+                        confirmed_curriculum=confirmed_curriculum,
+                        initial_state=initial_state, #type: ignore
+                        db=db,
+                    )
                 
                 if result.get("success"):
                     # Update database — only overwrite title if result has a non-empty one
@@ -532,6 +571,9 @@ def continue_textbook_generation_task(self, textbook_id: int, confirmed_curricul
                         textbook.error_message = None #type: ignore
 
                     await db.commit()
+                    if dict(textbook.progress_data or {}).get("generation_mode") == USER_PROVIDED_API_KEYS:  # type: ignore
+                        await delete_job_secrets(db, textbook.id)  # type: ignore[arg-type]
+                        await db.commit()
 
                     logger.info(f"[TASK] ✓ Content generation complete")
                     return {
@@ -556,6 +598,9 @@ def continue_textbook_generation_task(self, textbook_id: int, confirmed_curricul
                     textbook.docx_path = result.get("docx_path") #type: ignore
                     textbook.completed_at = None #type: ignore
                     await db.commit()
+                    if dict(textbook.progress_data or {}).get("generation_mode") == USER_PROVIDED_API_KEYS:  # type: ignore
+                        await delete_job_secrets(db, textbook.id)  # type: ignore[arg-type]
+                        await db.commit()
 
                     logger.error(f"[TASK] Content generation failed: {error_msg}")
                     return {"status": "error", "error": error_msg}
@@ -564,6 +609,9 @@ def continue_textbook_generation_task(self, textbook_id: int, confirmed_curricul
                 textbook.status = TextbookStatus.FAILED.value #type: ignore
                 textbook.error_message = str(e) #type: ignore
                 await db.commit()
+                if dict(textbook.progress_data or {}).get("generation_mode") == USER_PROVIDED_API_KEYS:  # type: ignore
+                    await delete_job_secrets(db, textbook.id)  # type: ignore[arg-type]
+                    await db.commit()
                 
                 logger.error(f"[TASK] Exception: {e}", exc_info=True)
                 return {"status": "error", "error": str(e)}

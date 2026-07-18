@@ -139,7 +139,7 @@ export function CurriculumStructureEditor({
         <div key={chapterIdx} className={`rounded-lg border bg-white p-4 ${
           isOverBudget ? 'border-red-300' : 'border-gray-200'
         }`}>
-          <div className="mb-3 flex items-start gap-3">
+          <div className="mb-3 flex min-w-0 flex-wrap items-start gap-3">
             <div className="min-w-0 flex-1">
               <label className="mb-2 block text-sm font-semibold text-blue-700">
                 {t('textbook.structure.chapter', { number: chapterIdx + 1 })}
@@ -212,7 +212,7 @@ export function CurriculumStructureEditor({
               const childOverBudget = subsectionPages && childAllocated > subsectionPages
               return (
                 <div key={subIdx} className="space-y-2">
-                  <div className="flex items-center gap-2">
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
                     <div className="w-12 shrink-0 text-right text-sm font-medium text-blue-500">
                       {chapterIdx + 1}.{subIdx + 1}
                     </div>
@@ -221,7 +221,7 @@ export function CurriculumStructureEditor({
                       value={subsection.title}
                       onChange={(event) => updateSubsection(chapterIdx, subIdx, { title: event.target.value })}
                       disabled={disabled}
-                      className="min-w-0 flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100 disabled:bg-gray-100"
+                      className="min-w-[220px] flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100 disabled:bg-gray-100"
                     />
                     <input
                       type="number"
@@ -245,7 +245,7 @@ export function CurriculumStructureEditor({
                     </button>
                   </div>
                   {childRowsVisible && (
-                    <div className={`ml-12 space-y-2 rounded-md border p-2 ${
+                    <div className={`ml-0 space-y-2 rounded-md border p-2 sm:ml-12 ${
                       childOverBudget || isMissingChild ? 'border-red-200 bg-red-50' : 'border-gray-100 bg-gray-50'
                     }`}>
                       {isMissingChild && (
@@ -265,7 +265,7 @@ export function CurriculumStructureEditor({
                         </p>
                       )}
                       {(subsection.children || []).map((child, childIdx) => (
-                        <div key={childIdx} className="flex items-center gap-2">
+                        <div key={childIdx} className="flex min-w-0 flex-wrap items-center gap-2">
                           <div className="w-16 shrink-0 text-right text-xs font-medium text-blue-500">
                             {chapterIdx + 1}.{subIdx + 1}.{childIdx + 1}
                           </div>
@@ -274,7 +274,7 @@ export function CurriculumStructureEditor({
                             value={child.title}
                             onChange={(event) => updateChild(chapterIdx, subIdx, childIdx, { title: event.target.value })}
                             disabled={disabled}
-                            className="min-w-0 flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100 disabled:bg-gray-100"
+                            className="min-w-[200px] flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100 disabled:bg-gray-100"
                           />
                           <input
                             type="number"
@@ -302,7 +302,7 @@ export function CurriculumStructureEditor({
                         type="button"
                         onClick={() => addChild(chapterIdx, subIdx)}
                         disabled={disabled}
-                        className="ml-16 rounded-md border border-blue-200 px-3 py-1.5 text-xs font-medium text-blue-700 transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        className="ml-0 rounded-md border border-blue-200 px-3 py-1.5 text-xs font-medium text-blue-700 transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 sm:ml-16"
                       >
                         + {t('textbook.structure.addChildSubsection')}
                       </button>

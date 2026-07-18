@@ -11,6 +11,28 @@ from app.services.runtime_config import get_runtime_config
 logger = logging.getLogger(__name__)
 
 
+def _missing(value: object) -> bool:
+    return value is None or str(value).strip() == ""
+
+
+def ensure_email_delivery_configured() -> None:
+    provider = str(get_runtime_config("EMAIL_PROVIDER", required=False) or "smtp").strip().lower()
+    if provider == "resend":
+        missing = [
+            key for key in ("RESEND_API_KEY", "EMAIL_FROM")
+            if _missing(get_runtime_config(key, required=False))
+        ]
+    else:
+        missing = [
+            key for key in ("SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "EMAIL_FROM")
+            if _missing(get_runtime_config(key, required=False))
+        ]
+    if missing:
+        raise RuntimeError(
+            "Email delivery is not configured. Missing: " + ", ".join(missing)
+        )
+
+
 def _smtp_transport_options(smtp_port: int) -> dict:
     """Gmail and most SMTP providers use SSL on 465, STARTTLS on 587."""
     if int(smtp_port) == 465:
@@ -87,6 +109,7 @@ async def _send_email_message(
     plain_body: str | None = None,
     reply_to: str | None = None,
 ) -> None:
+    ensure_email_delivery_configured()
     provider = str(get_runtime_config("EMAIL_PROVIDER", required=False) or "smtp").strip().lower()
     resend_api_key = str(get_runtime_config("RESEND_API_KEY", required=False) or "")
     if provider == "resend" or (resend_api_key and provider in {"", "auto"}):

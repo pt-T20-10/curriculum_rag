@@ -179,8 +179,8 @@ class EvaluatorAgent:
 
     def __init__(self, advanced_config: dict[str, Any] | None = None) -> None:
         model = auxiliary_chat_model(
-            cheap_model=LLM_MODEL_CHEAP,
-            premium_model=LLM_MODEL_PREMIUM,
+            cheap_model=str(get_runtime_config("LLM_MODEL_CHEAP", required=False) or LLM_MODEL_CHEAP),
+            premium_model=str(get_runtime_config("LLM_MODEL_PREMIUM", required=False) or LLM_MODEL_PREMIUM),
             advanced_config=advanced_config,
         )
         self._llm = ChatOpenAI(

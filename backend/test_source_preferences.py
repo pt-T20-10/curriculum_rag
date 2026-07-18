@@ -7,13 +7,14 @@ from app.schemas.textbook import TextbookCreate
 
 
 def test_textbook_create_source_preferences_default_and_validation() -> None:
-    payload = TextbookCreate(topic="Machine Learning đại cương")
+    payload = TextbookCreate(topic="Machine Learning đại cương", target_pages=20)
 
     assert payload.source_preferences.source_mode == "system_default"
     assert payload.source_preferences.custom_urls == []
 
     custom = TextbookCreate(
         topic="Machine Learning",
+        target_pages=20,
         source_preferences={
             "source_mode": "custom_hybrid",
             "selected_source_ids": ["en_academic_open_textbooks"],
@@ -26,6 +27,7 @@ def test_textbook_create_source_preferences_default_and_validation() -> None:
     try:
         TextbookCreate(
             topic="Python",
+            target_pages=20,
             source_preferences={
                 "source_mode": "custom_hybrid",
                 "custom_urls": ["openstax.org/not-a-url"],
