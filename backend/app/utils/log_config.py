@@ -1,13 +1,13 @@
 """
-Logging configuration with Celery and absolute path support.
+Logging configuration with robust absolute path support.
 
 CRITICAL FIXES:
-1. force_file_handler=True: Ensures file logging works in Celery context
+1. force_file_handler=True: Ensures file logging remains attached after reloads
 2. Absolute path resolution: Relative paths converted using BASE_DIR
-3. logger.propagate=False: Prevents duplicate logs in Celery
+3. logger.propagate=False: Prevents duplicate logs
 
-Without these fixes, logs appear in terminal but not in files when
-running under Celery worker.
+Without these fixes, logs can appear in terminal but not in files when running
+from different working directories.
 """
 
 import logging
@@ -118,13 +118,12 @@ def setup_logger(
     """
     Sets up and returns a shared logger instance with both console and file handlers.
     
-    Celery-compatible: Forces file handler addition even if logger already has handlers
-    from Celery's own configuration. This ensures logs are written to files in both
-    direct execution and Celery worker contexts.
+    Forces file handler addition even if logger already has handlers. This
+    keeps logs written to files across reloads and embedded task threads.
     
     CRITICAL FIX: Resolves relative log paths to absolute paths using BASE_DIR.
-    Without this, Celery workers write logs to wrong directories based on their
-    working directory instead of the project root.
+    Without this, processes started from a different working directory can
+    write logs to the wrong location instead of the project root.
     
     Parameters
     ----------
@@ -140,7 +139,7 @@ def setup_logger(
         Logging level (default: INFO).
     force_file_handler : bool, optional
         If True, adds file handler even if logger already has handlers.
-        Set to True for Celery compatibility (default: True).
+        Set to True to keep the file handler attached after logger reuse.
     
     Returns
     -------
@@ -149,20 +148,20 @@ def setup_logger(
     
     Notes
     -----
-    In Celery worker context, loggers are pre-configured with console handlers.
-    Without force_file_handler=True, file logging would be skipped entirely.
+    When a logger is reused with pre-configured console handlers, file logging
+    would be skipped without force_file_handler=True.
     
     Relative paths are resolved to absolute using settings.BASE_DIR to ensure
-    logs are written to the correct location regardless of Celery's working directory.
+    logs are written to the correct location regardless of the process working directory.
     """
     # ⭐ CRITICAL FIX: Resolve relative paths to absolute using BASE_DIR
-    # Celery workers may run from different working directories, causing
-    # relative paths like "logs/url_filter.log" to write to wrong locations.
+    # Processes may run from different working directories, causing relative
+    # paths like "logs/url_filter.log" to write to wrong locations.
     from app.config import settings
     
     logger = logging.getLogger(name)
     logger.setLevel(level)
-    logger.propagate = False  # ⭐ Prevent duplicate logs in Celery
+    logger.propagate = False  # Prevent duplicate logs through root handlers.
     
     # Format: Timestamp - [Level] - LoggerName - Function() - Message
     formatter = logging.Formatter(
@@ -185,7 +184,7 @@ def setup_logger(
         print(f"[LOG_CONFIG] Failed to create log directory {log_path.parent}: {e}", file=sys.stderr)
     
     # ========================================================================
-    # Check if handlers already exist (Celery compatibility)
+    # Check if handlers already exist.
     # ========================================================================
     
     has_console = any(isinstance(h, logging.StreamHandler) and h.stream == sys.stdout 

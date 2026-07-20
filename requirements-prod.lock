@@ -12,8 +12,6 @@ aiosmtplib==5.1.2
     # via -r requirements-prod.txt
 alembic==1.18.4
     # via -r requirements-prod.txt
-amqp==5.3.1
-    # via kombu
 annotated-doc==0.0.4
     # via
     #   fastapi
@@ -42,16 +40,10 @@ bcrypt==4.0.1
     #   chromadb
 beautifulsoup4==4.15.0
     # via -r requirements-prod.txt
-billiard==4.2.4
-    # via
-    #   -r requirements-prod.txt
-    #   celery
 brotli==1.2.0
     # via httpx
 build==1.5.0
     # via chromadb
-celery==5.6.3
-    # via -r requirements-prod.txt
 certifi==2026.6.17
     # via
     #   httpcore
@@ -69,20 +61,10 @@ chromadb==1.5.9
 click==8.4.1
     # via
     #   -r requirements-prod.txt
-    #   celery
-    #   click-didyoumean
-    #   click-plugins
-    #   click-repl
     #   ddgs
     #   huggingface-hub
     #   typer
     #   uvicorn
-click-didyoumean==0.3.1
-    # via celery
-click-plugins==1.1.1.2
-    # via celery
-click-repl==0.3.0
-    # via celery
 cryptography==49.0.0
     # via
     #   -r requirements-prod.txt
@@ -180,10 +162,6 @@ jsonschema==4.26.0
     # via chromadb
 jsonschema-specifications==2025.9.1
     # via jsonschema
-kombu==5.6.2
-    # via
-    #   -r requirements-prod.txt
-    #   celery
 kubernetes==36.0.2
     # via chromadb
 langchain==1.3.10
@@ -324,7 +302,6 @@ packaging==26.2
     #   -r requirements-prod.txt
     #   build
     #   huggingface-hub
-    #   kombu
     #   langchain-core
     #   langsmith
     #   onnxruntime
@@ -335,8 +312,6 @@ pillow==12.2.0
     # via -r requirements-prod.txt
 primp==1.3.1
     # via ddgs
-prompt-toolkit==3.0.52
-    # via click-repl
 propcache==0.5.2
     # via
     #   aiohttp
@@ -390,9 +365,7 @@ pypika==0.51.1
 pyproject-hooks==1.2.0
     # via build
 python-dateutil==2.9.0.post0
-    # via
-    #   celery
-    #   kubernetes
+    # via kubernetes
 python-docx==1.2.0
     # via -r requirements-prod.txt
 python-dotenv==1.2.2
@@ -520,10 +493,6 @@ typing-inspection==0.4.2
     #   fastapi
     #   pydantic
     #   pydantic-settings
-tzdata==2026.2
-    # via kombu
-tzlocal==5.4.3
-    # via celery
 urllib3==2.7.0
     # via
     #   -r requirements-prod.txt
@@ -539,16 +508,8 @@ uvicorn==0.49.0
     #   chromadb
 uvloop==0.22.1
     # via uvicorn
-vine==5.1.0
-    # via
-    #   -r requirements-prod.txt
-    #   amqp
-    #   celery
-    #   kombu
 watchfiles==1.2.0
     # via uvicorn
-wcwidth==0.8.1
-    # via prompt-toolkit
 websocket-client==1.9.0
     # via kubernetes
 websockets==15.0.1

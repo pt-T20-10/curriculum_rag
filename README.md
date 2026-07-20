@@ -1,6 +1,6 @@
 # Curriculum RAG - AI Textbook Generator
 
-Hệ thống web tạo giáo trình tiếng Việt hoặc tiếng Anh từ một chủ đề đầu vào. Sản phẩm hiện tại gồm frontend React song ngữ VI/EN, backend FastAPI, hàng đợi Celery/Redis, MySQL, và một workflow LangGraph nhiều tác nhân để nhận diện ngôn ngữ, lập dàn ý, cho người dùng duyệt curriculum, crawl dữ liệu song ngữ, sinh nội dung theo CRAG, kiểm duyệt, minh họa và xuất PDF/Word.
+Hệ thống web tạo giáo trình tiếng Việt hoặc tiếng Anh từ một chủ đề đầu vào. Sản phẩm hiện tại gồm frontend React song ngữ VI/EN, backend FastAPI, task runner chạy ngầm ngay trong API process, MySQL, và một workflow LangGraph nhiều tác nhân để nhận diện ngôn ngữ, lập dàn ý, cho người dùng duyệt curriculum, crawl dữ liệu song ngữ, sinh nội dung theo CRAG, kiểm duyệt, minh họa và xuất PDF/Word.
 
 ![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)
 ![FastAPI](https://img.shields.io/badge/API-FastAPI-teal)
@@ -19,9 +19,9 @@ tham khảo kỹ thuật.
 | Option | Khi nào dùng | Dịch vụ cần có | Ghi chú |
 |---|---|---|---|
 | Docker Compose VPS | Khuyến nghị mặc định khi chưa biết OS/server cụ thể | Docker, Docker Compose, domain HTTPS | Ít phụ thuộc Ubuntu/Debian/RHEL; app chạy bằng container |
-| Railway / Managed | Muốn dùng MySQL/Redis managed và deploy nhanh | Railway services hoặc provider tương đương | Cần map đúng `MYSQL_URL`, `REDIS_URL`, `FRONTEND_URL`, `BACKEND_URL` |
-| Manual Linux | Server tự quản, muốn tách từng process | Python 3.11, Node, MySQL, Redis, Caddy/Nginx, Celery | Phù hợp khi có người vận hành Linux/systemd |
-| Local Dev | Chạy và test trên máy dev | Python, Node, Docker cho MySQL/Redis | ChromaDB dùng local persistent path, không dành cho multi-worker production |
+| Railway / Managed | Muốn dùng MySQL managed và deploy nhanh | Railway services hoặc provider tương đương | Cần map đúng `MYSQL_URL`, `FRONTEND_URL`, `BACKEND_URL` |
+| Manual Linux | Server tự quản | Python 3.11, Node, MySQL, Caddy/Nginx | Phù hợp khi có người vận hành Linux/systemd |
+| Local Dev | Chạy và test trên máy dev | Python, Node, Docker cho MySQL | ChromaDB dùng local persistent path, không dành cho multi-worker production |
 
 Nếu chưa chắc server chạy công nghệ gì, chọn **Docker Compose VPS** trước. Miễn
 server cài được Docker và mount được volume persistent, hệ điều hành phía dưới
@@ -33,16 +33,16 @@ không còn quá quan trọng.
 |---|---|---|
 | `web` / Caddy | Serve frontend React, HTTPS, proxy API, Basic Auth demo | Caddy data/config |
 | `api` / FastAPI | Auth, textbook API, admin config, progress polling | Không lưu state dài hạn trong container |
-| `worker` / Celery | Chạy planning/content generation dài hạn | Cần truy cập `outputs`, logs, Chroma |
+| FastAPI task runner | Chạy planning/content generation dài hạn trong API process | V1 dùng `SERVER_TASK_MAX_WORKERS=1`; frontend polling theo `task_id` |
 | MySQL 8 | Users, textbooks, credits, config, credentials | Bắt buộc backup |
-| Redis 7 | Celery broker/result, stop signal, task registry, shared rate limiter | Nên persistent append-only |
+| Redis 7 optional | Shared rate limiter/key pool nếu bật cấu hình tương ứng | Không còn là queue, stop signal, hay task registry cho textbook tasks |
 | ChromaDB | Vector store cho RAG theo từng textbook/run | Local path trong branch hiện tại; server riêng khi scale |
 | Outputs volume | Markdown/PDF/DOCX/image sinh ra | Bắt buộc backup nếu cần giữ giáo trình |
 
 ### Docker Compose VPS
 
 Cấu hình hiện tại trong `docker-compose.prod.yml` dành cho demo production nhỏ:
-MySQL, Redis, API, worker, web/Caddy chạy trên cùng VPS. Backend image đã đóng
+MySQL, API, task runner nội bộ, web/Caddy chạy trên cùng VPS. Backend image đã đóng
 gói Typst `0.13.1`, Pandoc `3.6.4` và font Liberation Serif để export PDF/Word
 ổn định mà không cần cài thêm trên host.
 
@@ -82,7 +82,7 @@ docker compose --env-file .env.production -f docker-compose.prod.yml ps
 5. Kiểm tra log và smoke test:
 
 ```bash
-docker compose --env-file .env.production -f docker-compose.prod.yml logs -f api worker
+docker compose --env-file .env.production -f docker-compose.prod.yml logs -f api
 DEMO_URL=https://<domain> \
 DEMO_BASIC_AUTH_USER=<user> \
 DEMO_BASIC_AUTH_PASSWORD=<password> \
@@ -90,13 +90,19 @@ bash deploy/smoke.sh
 ```
 
 Sau mỗi lần đổi image/code/config, chạy migration rồi recreate process dài hạn
-để Uvicorn/Celery không giữ singleton settings cũ:
+để Uvicorn không giữ singleton settings cũ:
 
 ```bash
 docker compose --env-file .env.production -f docker-compose.prod.yml run --rm migrate
 docker compose --env-file .env.production -f docker-compose.prod.yml up -d \
-  --force-recreate api worker web
+  --force-recreate api web
 ```
+
+Backend startup cũng có compatibility repair hẹp cho cột task nền:
+`textbooks.task_id`. Nếu DB cũ còn `textbooks.celery_task_id`, backend sẽ rename
+sang `task_id`; nếu thiếu cả hai, backend sẽ add `task_id`. Cơ chế này giúp máy
+đã có DB cũ không phải chạy lại file init SQL toàn bộ, nhưng Alembic migration
+vẫn là cách chuẩn khi deploy production.
 
 ### Environment Checklist
 
@@ -106,12 +112,12 @@ Những biến quan trọng cần kiểm tra trước khi deploy:
 |---|---|
 | URL/security | `ENVIRONMENT=production`, `FRONTEND_URL`, `BACKEND_URL`, `CORS_ORIGINS`, `SECRET_KEY` |
 | MySQL | `MYSQL_URL` hoặc `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_ROOT_PASSWORD` |
-| Redis | `REDIS_URL` hoặc `REDIS_HOST`, `REDIS_PORT` |
+| Redis optional | `REDIS_URL` hoặc `REDIS_HOST`, `REDIS_PORT` nếu bật shared limiter/key pool |
 | Generation mode | `TEXTBOOK_GENERATION_MODE=user_provided_api_keys` hoặc `system_credit_billing` |
 | BYOK | `BYOK_ENCRYPTION_KEY` bắt buộc khi user tự nhập/lưu API key |
 | Provider keys | `OPENAI_API_KEY` hoặc `OPENAI_API_KEYS` bắt buộc nếu dùng credit hệ thống; `SERPER_API_KEY` hoặc `SERPER_API_KEYS` tùy chọn |
 | OAuth/email/payment | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`, SMTP/Resend, `SEPAY_ACCOUNT_NUMBER` |
-| Worker profile | `CELERY_POOL`, `CELERY_CONCURRENCY`, `CHROMA_MODE`, `GENERATION_GLOBAL_CONCURRENCY`, `GENERATION_PER_USER_CONCURRENCY`, `SEARCH_MAX_WORKERS`, `CRAWL_MAX_WORKERS`, `MAX_CHUNKS_TO_EMBED`, `EMBEDDING_BATCH_SIZE`, `OPENAI_EMBEDDING_MIN_INTERVAL_SECONDS` |
+| Task profile | `SERVER_TASK_MAX_WORKERS`, `CHROMA_MODE`, `GENERATION_GLOBAL_CONCURRENCY`, `GENERATION_PER_USER_CONCURRENCY`, `SEARCH_MAX_WORKERS`, `CRAWL_MAX_WORKERS`, `MAX_CHUNKS_TO_EMBED`, `EMBEDDING_BATCH_SIZE`, `OPENAI_EMBEDDING_MIN_INTERVAL_SECONDS` |
 
 API keys hệ thống có thể nhập trong Admin System Config sau khi đăng nhập. Field
 `OPENAI_API_KEYS` và `SERPER_API_KEYS` nhận nhiều key, mỗi dòng một key, và
@@ -140,7 +146,7 @@ tiền. Checklist tính giá trị theo thứ tự Admin DB rồi tới `.env`.
 
 | Mode | Trạng thái | Khi nào dùng | Cảnh báo |
 |---|---|---|---|
-| Local persistent path | Đang dùng trong branch hiện tại qua `persist_directory` | Local dev, demo 1 worker | Không tăng Celery concurrency khi nhiều worker cùng mở path này |
+| Local persistent path | Đang dùng trong branch hiện tại qua `persist_directory` | Local dev, demo 1 worker | Không tăng `SERVER_TASK_MAX_WORKERS` khi nhiều worker cùng mở path này |
 | Local per-job path | Railway smoke test 2 user | `CHROMA_MODE=local_per_job`, mỗi textbook có thư mục riêng dưới `CHROMA_RUNS_DIR` | Phù hợp test nhỏ; không dùng cho 5-10 job lâu dài |
 | Chroma server / HTTP | Hướng scale production | 5-10 generation song song trở lên | Cần thêm service Chroma riêng và đặt `CHROMA_HTTP_HOST`/`CHROMA_HTTP_PORT` |
 
@@ -157,44 +163,42 @@ khi Admin đăng nhập. Popup lần đầu và banner nhỏ sẽ nói rõ hệ 
 
 #### Biến Nào Cần Redeploy
 
-`CELERY_POOL` và `CELERY_CONCURRENCY` là cấu hình **process-level** của Celery
-worker. Hai biến này phải đặt trong `.env.production`, Railway Variables, hoặc
-biến môi trường của service worker trước khi process khởi động. Sau khi đổi,
-bạn cần restart/redeploy worker thì số job chạy song song mới thật sự thay đổi.
+`SERVER_TASK_MAX_WORKERS` là cấu hình **process-level** của task runner chạy
+trong FastAPI. V1 khuyến nghị giữ `SERVER_TASK_MAX_WORKERS=1`, API chạy
+`--workers 1`, và frontend polling theo `task_id`.
 
 `GENERATION_GLOBAL_CONCURRENCY`, `GENERATION_PER_USER_CONCURRENCY`,
-`GENERATION_QUEUE_RETRY_SECONDS`, `CHROMA_MODE`, `CHROMA_RUNS_DIR` và
+`CHROMA_MODE`, `CHROMA_RUNS_DIR` và
 `CHROMA_HTTP_*` là cấu hình runtime mà Admin Config có thể hiển thị/ghi đè trong
-database. Tuy nhiên nếu tăng runtime limit cao hơn số worker Celery đang chạy,
-hệ thống vẫn không chạy nhanh hơn vì Celery chưa có thêm process/thread để xử
-lý job.
+database. Tuy nhiên nếu tăng runtime limit cao hơn `SERVER_TASK_MAX_WORKERS`,
+hệ thống vẫn không chạy nhanh hơn vì task runner chưa có thêm thread để xử lý
+job.
 
 Trạng thái mặc định:
 
 - `docker-compose.prod.yml` chạy API `--workers 1`.
-- Worker production mặc định chạy `celery --pool=solo --concurrency=1`; Railway
-  start script có đọc `CELERY_POOL`/`CELERY_CONCURRENCY`.
-- Production validator cho phép `CELERY_CONCURRENCY=2` khi
+- Task nền chạy trong chính API process qua `SERVER_TASK_MAX_WORKERS=1`.
+- Production validator cho phép `SERVER_TASK_MAX_WORKERS=2` khi
   `CHROMA_MODE=local_per_job`; vẫn từ chối tăng worker nếu còn
   `CHROMA_MODE=local_shared`.
 - Mỗi user vẫn chỉ chạy 1 giáo trình active tại một thời điểm. Job mới của cùng
-  user sẽ vào hàng đợi và retry bằng Celery.
+  user sẽ vào hàng đợi FIFO trong process.
 
 Profile khuyến nghị:
 
 | Profile | Mục tiêu | Cấu hình phù hợp |
 |---|---|---|
-| Minimum/demo | 1 giáo trình đang generate toàn hệ thống | Compose hiện tại, Chroma local path, Redis/MySQL cùng VPS |
-| Railway test 2 | 2 user khác nhau generate cùng lúc | `CELERY_POOL=threads`, `CELERY_CONCURRENCY=2`, `CHROMA_MODE=local_per_job`, `GENERATION_GLOBAL_CONCURRENCY=2`, `GENERATION_PER_USER_CONCURRENCY=1`, `EMBEDDING_BATCH_SIZE=100`, `OPENAI_EMBEDDING_MIN_INTERVAL_SECONDS=2.0` |
+| Minimum/demo | 1 giáo trình đang generate toàn hệ thống | Compose hiện tại, Chroma local path, MySQL cùng VPS |
+| Railway test 2 | 2 user khác nhau generate cùng lúc | `SERVER_TASK_MAX_WORKERS=2`, `CHROMA_MODE=local_per_job`, `GENERATION_GLOBAL_CONCURRENCY=2`, `GENERATION_PER_USER_CONCURRENCY=1`, `EMBEDDING_BATCH_SIZE=100`, `OPENAI_EMBEDDING_MIN_INTERVAL_SECONDS=2.0` |
 | Medium | 5-10 giáo trình song song từ nhiều user | Chroma server, Redis shared limiter, key pool, global generation semaphore, per-user active limit |
 
 #### Scale Ladder
 
-1. **Small safe**: giữ mặc định `CELERY_CONCURRENCY=1`,
+1. **Small safe**: giữ mặc định `SERVER_TASK_MAX_WORKERS=1`,
    `GENERATION_GLOBAL_CONCURRENCY=1`, `CHROMA_MODE=local_shared`. Phù hợp demo,
    ít tài nguyên, ít rủi ro.
-2. **Railway test 2 tài khoản**: đặt `CELERY_POOL=threads`,
-   `CELERY_CONCURRENCY=2`, `CHROMA_MODE=local_per_job`,
+2. **Railway test 2 tài khoản**: đặt `SERVER_TASK_MAX_WORKERS=2`,
+   `CHROMA_MODE=local_per_job`,
    `GENERATION_GLOBAL_CONCURRENCY=2`, `GENERATION_PER_USER_CONCURRENCY=1`,
    `EMBEDDING_BATCH_SIZE=100`, `OPENAI_EMBEDDING_MIN_INTERVAL_SECONDS=2.0`.
    Cấu hình này cho 2 user khác nhau chạy cùng lúc, nhưng cùng 1 user vẫn chỉ 1
@@ -202,19 +206,19 @@ Profile khuyến nghị:
    Nếu hai tài khoản dùng cùng OpenAI key hoặc cùng quota thấp, biến sleep
    embedding này giúp giảm lỗi `429 Too Many Requests` trong giai đoạn crawl/RAG.
 3. **Medium production 5-10 user/job**: chuyển sang `CHROMA_MODE=http`, thêm
-   Chroma server riêng, giữ Redis chung cho queue/limiter, rồi tăng
-   `CELERY_CONCURRENCY` và `GENERATION_GLOBAL_CONCURRENCY` theo benchmark thật.
+   Chroma server riêng, giữ Redis chung cho limiter nếu cần, rồi tăng
+   `SERVER_TASK_MAX_WORKERS` và `GENERATION_GLOBAL_CONCURRENCY` theo benchmark thật.
 
 Để lên medium profile:
 
 - Tách Chroma thành service/server và đặt `CHROMA_MODE=http`.
-- Tăng `GENERATION_GLOBAL_CONCURRENCY` sau khi benchmark worker/RAM/quota.
+- Tăng `GENERATION_GLOBAL_CONCURRENCY` sau khi benchmark task runner/RAM/quota.
 - Với `system_credit_billing`, nhập nhiều OpenAI/Serper key của Admin bằng
   `OPENAI_API_KEYS`/`SERPER_API_KEYS`; mỗi dòng một key.
 - Giữ `SEARCH_MAX_WORKERS`, `CRAWL_MAX_WORKERS`, `MAX_CHUNKS_TO_EMBED` thấp lúc
   mới scale, rồi benchmark tăng dần.
 
-Không tăng `CELERY_CONCURRENCY` lên 5-10 nếu vẫn dùng
+Không tăng `SERVER_TASK_MAX_WORKERS` lên 5-10 nếu vẫn dùng
 `CHROMA_MODE=local_shared`. Khi nhiều worker cùng mở một local Chroma path, rủi
 ro lock/crash/corrupt state cao hơn nhiều so với lợi ích. Với Railway test nhỏ,
 `local_per_job` cô lập dữ liệu theo từng textbook; với production lớn, dùng
@@ -242,11 +246,11 @@ Kiểm tra restore trên staging trước khi xem backup là đáng tin.
 | Triệu chứng | Kiểm tra |
 |---|---|
 | API không lên | `docker compose logs api`, `SECRET_KEY`, `FRONTEND_URL`, `CORS_ORIGINS`, migration |
-| Worker không nhận job | Redis URL/healthcheck, `celery_task_id`, `docker compose logs worker` |
+| Task không chạy | Kiểm tra `SERVER_TASK_MAX_WORKERS`, `task_id`, `docker compose logs api` |
 | Tạo giáo trình fail vì key | Admin System Config, `.env`, generation mode, BYOK credentials |
 | Bị 429/Too Many Requests | Bật Redis shared limiter, đặt `OPENAI_EMBEDDING_MIN_INTERVAL_SECONDS=2.0` cho Railway 2 user, giảm `EMBEDDING_BATCH_SIZE`/crawl/image concurrency nếu vẫn bị |
 | Export thiếu PDF/DOCX | Log publisher, Pandoc/Typst trong image, quyền ghi `outputs` volume |
-| RAG/Chroma lỗi khi scale | Đừng tăng worker nếu còn dùng local persistent path; chuyển sang Chroma server trước |
+| RAG/Chroma lỗi khi scale | Đừng tăng `SERVER_TASK_MAX_WORKERS` nếu còn dùng local persistent path; chuyển sang Chroma server trước |
 
 ## System Architecture
 
@@ -262,10 +266,10 @@ FastAPI backend
   |-- Plans/payments/admin/config APIs
   |
   |-- MySQL: users, textbooks, plans, transactions, config overrides
-  |-- Redis: Celery broker/result backend, task registry, stop signals
+  |-- Redis optional: shared limiter/key pool khi bật
   |
   v
-Celery worker
+FastAPI in-process task runner
   |
   |-- Phase 1 task: generate_textbook
   |     planner -> curriculum_json -> review gate in UI
@@ -313,7 +317,7 @@ generate_preface
 
 1. Người dùng tạo textbook từ UI hoặc `POST /api/v1/textbooks`; frontend gửi thêm `ui_language` (`vi` hoặc `en`).
 2. `ValidatorAgent` kiểm tra topic, suy luận ngôn ngữ input/ngôn ngữ được yêu cầu, khóa `target_language`, rồi tách topic thành `content_type`, `core_topic`, và `user_requirements`. Feedback validation luôn theo ngôn ngữ UI.
-3. Backend kiểm tra user còn ít nhất 1 credit, tạo planning draft với `credits_used=0`, rồi đẩy Celery task `generate_textbook`. Chưa trừ credit ở bước này.
+3. Backend kiểm tra user còn ít nhất 1 credit, tạo planning draft với `credits_used=0`, sinh `task_id`, lưu vào DB, rồi enqueue server task planning. Chưa trừ credit ở bước này.
 4. Phase 1 chỉ chạy planner. Planner sinh chapter titles và subsections từ LLM, không crawl web ở bước này.
 5. Frontend hiển thị curriculum để người dùng sửa/xóa/thêm chapter và subsection. Stop hoặc Reset trong planning/review sẽ revoke task, xóa draft khỏi database và không trừ credit.
 6. Khi người dùng xác nhận, `POST /api/v1/textbooks/{id}/confirm-curriculum` validate curriculum, trừ đúng 1 credit trong transaction, đồng bộ các progress counters và đẩy task `continue_textbook_generation`. Request xác nhận lặp lại không trừ credit lần hai.
@@ -572,7 +576,7 @@ Các external/API secrets được resolve theo thứ tự:
 system_config trong database -> .env / Settings -> lỗi rõ ràng nếu key bắt buộc bị thiếu
 ```
 
-Vì vậy trên máy mới, chỉ cần cấu hình bootstrap cho MySQL/Redis/JWT trong `.env`, đăng nhập bằng admin mặc định, rồi nhập API keys tại Admin System Config. `.env` vẫn có thể giữ API keys như fallback, nhưng không còn là nơi bắt buộc duy nhất.
+Vì vậy trên máy mới, chỉ cần cấu hình bootstrap cho MySQL/JWT trong `.env`, đăng nhập bằng admin mặc định, rồi nhập API keys tại Admin System Config. `.env` vẫn có thể giữ API keys như fallback, nhưng không còn là nơi bắt buộc duy nhất.
 
 Các nhóm config chính:
 
@@ -580,7 +584,7 @@ Các nhóm config chính:
 |---|---|
 | API keys | `TEXTBOOK_GENERATION_MODE`, `BYOK_ENCRYPTION_KEY`, `OPENAI_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `SERPER_API_KEY`, Google OAuth, SMTP, SePay |
 | Database | `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE` |
-| Redis | `REDIS_HOST`, `REDIS_PORT` |
+| Redis optional | `REDIS_HOST`, `REDIS_PORT` nếu bật shared limiter/key pool |
 | LLM | `LLM_MODEL_CHEAP`, `LLM_MODEL_PREMIUM`, `IMAGE_MODEL_DEFAULT`, `IMAGE_MODEL_PREMIUM` |
 | Embeddings | `EMBEDDING_PROVIDER`, `OPENAI_EMBEDDING_MODEL`, `EMBEDDING_MODEL_NAME` |
 | RAG | `RAG_INITIAL_K`, `RAG_TOOL_K`, `RAG_TOP_K`, `RAG_TRUSTED_DOMAIN_QUOTA`, `RAG_SEMANTIC_DEDUP_THRESHOLD` |
@@ -684,7 +688,7 @@ Nhóm `API Keys` trong Admin System Config lưu secret vào bảng `system_confi
 - Python 3.11+
 - Node.js 20+
 - MySQL 8
-- Redis 7
+- Redis 7 optional nếu bật shared limiter/key pool
 - Pandoc 3.6.4+ (cần bản hỗ trợ Typst PDF engine)
 - Typst
 
@@ -701,12 +705,12 @@ macOS:
 brew install pandoc typst
 ```
 
-### Start MySQL And Redis
+### Start MySQL
 
-Repo có `docker-compose.yml` cho MySQL, Redis và phpMyAdmin:
+Repo có `docker-compose.yml` cho MySQL và phpMyAdmin:
 
 ```bash
-docker compose up -d mysql redis
+docker compose up -d mysql
 ```
 
 Nếu dùng compose mặc định, cấu hình credential/database trong `.env`. Alembic và
@@ -755,8 +759,8 @@ Migration `backend/alembic/versions/add_textbook_language.py` thêm cột `textb
 
 ### Standalone CLI
 
-CLI chạy toàn bộ pipeline mà không cần khởi động FastAPI, MySQL, Redis hay
-Celery. Validator vẫn kiểm tra và chuẩn hóa query trước khi planner chạy; cấu
+CLI chạy toàn bộ pipeline mà không cần khởi động FastAPI, MySQL hay Redis.
+Validator vẫn kiểm tra và chuẩn hóa query trước khi planner chạy; cấu
 trúc được tự động chấp nhận và sản phẩm được lưu trong `backend/outputs`.
 
 CLI chỉ đọc API key và cấu hình mặc định từ `.env` ở project root. Tối thiểu
@@ -834,12 +838,8 @@ Sau khi đăng nhập bằng tài khoản Admin bootstrap, frontend gọi `GET /
 
 Nếu chưa nhập API keys trong Admin UI và `.env` cũng không có fallback, các task gọi provider tương ứng sẽ fail với lỗi chỉ rõ key nào đang thiếu.
 
-Chạy Celery worker ở terminal khác. Trên Windows nên dùng `--pool=solo`:
-
-```bash
-cd backend
-celery -A app.celery_app worker --loglevel=info --pool=solo
-```
+Không cần chạy worker riêng. Textbook tasks chạy ngầm trong FastAPI process và
+trả `task_id` để frontend polling `/api/v1/tasks/{task_id}`.
 
 ### Frontend
 
@@ -920,7 +920,7 @@ curriculum_rag/
 |   |   |-- config.py
 |   |   |-- config_registry.py
 |   |   |-- database.py
-|   |   |-- celery_app.py
+|   |   |-- services/server_task_manager.py
 |   |   |-- routers/
 |   |   |   |-- auth.py
 |   |   |   |-- textbook.py
@@ -980,8 +980,8 @@ curriculum_rag/
 
 ## Operational Notes
 
-- ChromaDB dùng chung persist path `backend/data/chroma_db`, nhưng mỗi generation dùng collection riêng theo textbook/run và có cleanup best-effort sau export. Vẫn nên giữ một worker generation cho bản demo cho tới khi kiểm thử concurrent jobs đầy đủ.
-- Celery stop dùng Redis key `textbook_stop:{id}` và task registry `task:{id}`. LangGraph node được bọc bởi `_with_stop_check`.
+- ChromaDB dùng chung persist path `backend/data/chroma_db`, nhưng mỗi generation dùng collection riêng theo textbook/run và có cleanup best-effort sau export. Vẫn nên giữ `SERVER_TASK_MAX_WORKERS=1` cho bản demo cho tới khi kiểm thử concurrent jobs đầy đủ.
+- Stop signal và task registry của textbook tasks dùng memory trong FastAPI process. LangGraph node được bọc bởi `_with_stop_check`.
 - Planning/review draft có `credits_used=0`; Stop/Reset xóa record. Sau confirm, credit không được hoàn lại khi user dừng generation.
 - `backend/logs/prompts/*_prompts.log` lưu prompt theo agent để audit khi
   `ENABLE_PROMPT_LOGS=true`; cấu hình demo mặc định tắt để giảm dùng ổ đĩa.

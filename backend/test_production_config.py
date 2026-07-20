@@ -8,28 +8,6 @@ from pydantic import ValidationError
 from app.config import Settings
 
 
-class _FakeRedis:
-    def __init__(self) -> None:
-        self.members = {}
-
-    def eval(self, script, numkeys, key, now, limit, expires_at, token, ttl):
-        self.members = {
-            member: score
-            for member, score in self.members.items()
-            if score > float(now)
-        }
-        if len(self.members) >= int(limit):
-            return 0
-        self.members[token] = float(expires_at)
-        return 1
-
-    def zrem(self, key, token):
-        self.members.pop(token, None)
-
-    def ping(self):
-        return True
-
-
 def _valid_production_settings(**overrides):
     values = {
         "ENVIRONMENT": "production",
@@ -47,17 +25,17 @@ def _valid_production_settings(**overrides):
         "EMAIL_FROM": "demo@demo.test",
         "SEPAY_ACCOUNT_NUMBER": "demo-account",
         "EMBEDDING_PROVIDER": "openai",
-        "CELERY_CONCURRENCY": 1,
+        "SERVER_TASK_MAX_WORKERS": 1,
         "DEFAULT_ADMIN_ENABLED": False,
     }
     values.update(overrides)
     return Settings(_env_file=None, **values)
 
 
-def test_valid_production_settings_keep_single_worker_and_domain_cors() -> None:
+def test_valid_production_settings_keep_single_task_worker_and_domain_cors() -> None:
     settings = _valid_production_settings()
 
-    assert settings.CELERY_CONCURRENCY == 1
+    assert settings.SERVER_TASK_MAX_WORKERS == 1
     assert settings.ALLOWED_CORS_ORIGINS == ["https://demo.test"]
     assert "db-password-with-special%40characters" in settings.DATABASE_URL
 
@@ -77,14 +55,13 @@ def test_railway_mysql_url_is_normalized_for_sqlalchemy() -> None:
 
 def test_railway_two_user_profile_allows_two_workers_with_per_job_chroma() -> None:
     settings = _valid_production_settings(
-        CELERY_POOL="threads",
-        CELERY_CONCURRENCY=2,
+        SERVER_TASK_MAX_WORKERS=2,
         CHROMA_MODE="local_per_job",
         GENERATION_GLOBAL_CONCURRENCY=2,
         GENERATION_PER_USER_CONCURRENCY=1,
     )
 
-    assert settings.CELERY_CONCURRENCY == 2
+    assert settings.SERVER_TASK_MAX_WORKERS == 2
     assert settings.CHROMA_MODE == "local_per_job"
 
 
@@ -107,7 +84,7 @@ def test_native_railway_mysql_variables_are_supported() -> None:
     ("override", "expected"),
     [
         ({"SECRET_KEY": "short"}, "SECRET_KEY"),
-        ({"CELERY_CONCURRENCY": 2, "CHROMA_MODE": "local_shared"}, "CELERY_CONCURRENCY"),
+        ({"SERVER_TASK_MAX_WORKERS": 2, "CHROMA_MODE": "local_shared"}, "SERVER_TASK_MAX_WORKERS"),
         ({"FRONTEND_URL": "http://localhost:5173"}, "FRONTEND_URL"),
         ({"CORS_ORIGINS": "http://localhost:5173"}, "CORS_ORIGINS"),
         ({"EMBEDDING_PROVIDER": "local"}, "EMBEDDING_PROVIDER"),
@@ -171,15 +148,13 @@ def test_openai_rate_limit_settings_are_admin_configurable() -> None:
 def test_deployment_profile_detector_classifies_common_profiles(monkeypatch) -> None:
     from app.services import deployment_profile
 
-    monkeypatch.setattr(deployment_profile.settings, "CELERY_POOL", "solo")
-    monkeypatch.setattr(deployment_profile.settings, "CELERY_CONCURRENCY", 1)
+    monkeypatch.setattr(deployment_profile.settings, "SERVER_TASK_MAX_WORKERS", 1)
     monkeypatch.setattr(deployment_profile.settings, "GENERATION_GLOBAL_CONCURRENCY", 1)
     monkeypatch.setattr(deployment_profile.settings, "GENERATION_PER_USER_CONCURRENCY", 1)
     monkeypatch.setattr(deployment_profile.settings, "CHROMA_MODE", "local_shared")
     assert deployment_profile.detect_deployment_profile()["key"] == "small_safe"
 
-    monkeypatch.setattr(deployment_profile.settings, "CELERY_POOL", "threads")
-    monkeypatch.setattr(deployment_profile.settings, "CELERY_CONCURRENCY", 2)
+    monkeypatch.setattr(deployment_profile.settings, "SERVER_TASK_MAX_WORKERS", 2)
     monkeypatch.setattr(deployment_profile.settings, "GENERATION_GLOBAL_CONCURRENCY", 2)
     monkeypatch.setattr(deployment_profile.settings, "CHROMA_MODE", "local_per_job")
     assert deployment_profile.detect_deployment_profile()["key"] == "railway_test_2"
@@ -187,7 +162,7 @@ def test_deployment_profile_detector_classifies_common_profiles(monkeypatch) -> 
     monkeypatch.setattr(deployment_profile.settings, "CHROMA_MODE", "local_shared")
     assert deployment_profile.detect_deployment_profile()["key"] == "misconfigured"
 
-    monkeypatch.setattr(deployment_profile.settings, "CELERY_CONCURRENCY", 5)
+    monkeypatch.setattr(deployment_profile.settings, "SERVER_TASK_MAX_WORKERS", 5)
     monkeypatch.setattr(deployment_profile.settings, "GENERATION_GLOBAL_CONCURRENCY", 5)
     monkeypatch.setattr(deployment_profile.settings, "CHROMA_MODE", "http")
     assert deployment_profile.detect_deployment_profile()["key"] == "medium_ready"
@@ -272,38 +247,6 @@ def test_chroma_per_job_cleanup_stays_inside_runs_dir(tmp_path, monkeypatch) -> 
     assert outside.exists()
     assert chroma_runtime.cleanup_rag_persist_dir(str(inside)) is True
     assert not inside.exists()
-
-
-@pytest.mark.asyncio
-async def test_generation_limiter_allows_two_global_slots_then_queues(monkeypatch) -> None:
-    from types import SimpleNamespace
-    from app.services import generation_limiter
-
-    fake_redis = _FakeRedis()
-    values = {
-        "GENERATION_GLOBAL_CONCURRENCY": 2,
-        "GENERATION_QUEUE_RETRY_SECONDS": 5,
-    }
-    monkeypatch.setattr(
-        generation_limiter,
-        "get_runtime_config",
-        lambda key, required=False: values.get(key, ""),
-    )
-    monkeypatch.setattr(generation_limiter, "_get_redis_client", lambda: fake_redis)
-
-    async def no_older_active(db, textbook):
-        return False
-
-    monkeypatch.setattr(generation_limiter, "_has_older_active_textbook", no_older_active)
-
-    first = await generation_limiter.acquire_generation_slot(None, SimpleNamespace(id=1))
-    second = await generation_limiter.acquire_generation_slot(None, SimpleNamespace(id=2))
-    with pytest.raises(generation_limiter.GenerationSlotUnavailable):
-        await generation_limiter.acquire_generation_slot(None, SimpleNamespace(id=3))
-
-    first.release()
-    second.release()
-    assert fake_redis.members == {}
 
 
 def test_content_level_word_targets_are_configurable() -> None:

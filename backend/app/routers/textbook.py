@@ -584,20 +584,12 @@ def _planning_draft_phase(textbook: Textbook) -> bool:
 
 
 def _revoke_textbook_task(textbook: Textbook, textbook_id: int) -> None:
+    from app.services.server_task_manager import server_task_manager
     from app.utils import task_registry
 
-    celery_task_id = (
-        str(textbook.celery_task_id)  # type: ignore
-        if textbook.celery_task_id  # type: ignore
-        else task_registry.get(textbook_id)
-    )
-    if not celery_task_id:
-        return
-
-    from app.celery_app import celery_app
-    celery_app.control.revoke(celery_task_id, terminate=True, signal="SIGKILL")
+    server_task_manager.request_stop(textbook_id)
     task_registry.delete(textbook_id)
-    textbook.celery_task_id = None  # type: ignore
+    textbook.task_id = None  # type: ignore
 
 
 @router.post("/parse-structure-file", response_model=StructureFileParseResponse)
@@ -900,12 +892,24 @@ async def create_textbook(
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     # ================ TRIGGER PLANNING TASK ================
-    from app.tasks.textbook_tasks import generate_textbook_task
-    from app.utils import task_registry
-    task_result = generate_textbook_task.delay(textbook.id)
-    task_registry.store(textbook.id, task_result.id)  # type: ignore
-    textbook.celery_task_id = task_result.id  # type: ignore
+    from app.services.server_task_manager import server_task_manager
+    from app.tasks.textbook_tasks import run_planning_task
+
+    task_id = server_task_manager.new_task_id()
+    textbook.task_id = task_id  # type: ignore
+    progress_data = dict(textbook.progress_data or {})  # type: ignore[arg-type]
+    progress_data.update({
+        "phase": progress_data.get("phase") or "queued",
+        "task_id": task_id,
+    })
+    textbook.progress_data = progress_data  # type: ignore
     await db.commit()
+    server_task_manager.submit(
+        textbook_id=textbook.id,  # type: ignore[arg-type]
+        kind="planning",
+        target=run_planning_task,
+        task_id=task_id,
+    )
 
     return textbook
 
@@ -1039,8 +1043,8 @@ async def get_textbook_progress(
     """
     Get real-time progress for textbook generation.
 
-    Polled by frontend every 2 seconds. Returns progress_data only —
-    does NOT trigger any Celery tasks.
+    Polled by frontend every 2 seconds. Returns progress_data only and does
+    not trigger any background tasks.
     """
     result = await db.execute(
         select(Textbook).where(
@@ -1058,7 +1062,8 @@ async def get_textbook_progress(
 
     progress_data = dict(textbook.progress_data or {})  # type: ignore
 
-    # Always surface DB fields so frontend doesn't show "..." while Celery task starts
+    # Always surface DB fields so frontend does not show placeholders while
+    # the background task starts.
     if textbook.topic:  # type: ignore
         progress_data.setdefault("topic", textbook.topic)  # type: ignore
     if textbook.core_topic:  # type: ignore
@@ -1113,6 +1118,7 @@ async def get_textbook_progress(
     return TextbookProgressResponse(
         id=textbook.id,  # type: ignore
         status=textbook.status,  # type: ignore
+        task_id=textbook.task_id,  # type: ignore[arg-type]
         progress_data=progress_data,  # type: ignore
     )
 
@@ -1193,7 +1199,7 @@ async def confirm_curriculum(
     Confirm edited curriculum and start content generation.
 
     Receives user-confirmed curriculum, updates progress_data,
-    then triggers the content generation Celery task.
+    then queues the server-side content generation task.
     """
     result = await db.execute(
         select(Textbook).where(
@@ -1247,6 +1253,7 @@ async def confirm_curriculum(
         return {
             "message": "Content generation already started",
             "textbook_id": textbook_id,
+            "task_id": textbook.task_id,  # type: ignore
             "credits_required": 0 if using_user_keys or is_admin_free else int(textbook.credits_used or 0),  # type: ignore
             "credits_charged": 0,
             "balance_after": user.credits,  # type: ignore
@@ -1382,16 +1389,27 @@ async def confirm_curriculum(
     await db.commit()
 
     # Trigger content generation task
-    from app.tasks.textbook_tasks import continue_textbook_generation_task
-    from app.utils import task_registry
-    task_result = continue_textbook_generation_task.delay(textbook_id, confirmed_curriculum)
-    task_registry.store(textbook_id, task_result.id)
-    textbook.celery_task_id = task_result.id  # type: ignore
+    from app.services.server_task_manager import server_task_manager
+    from app.tasks.textbook_tasks import run_generation_task
+
+    task_id = server_task_manager.new_task_id()
+    progress_data = dict(textbook.progress_data or {})  # type: ignore[arg-type]
+    progress_data["task_id"] = task_id
+    textbook.progress_data = progress_data  # type: ignore
+    textbook.task_id = task_id  # type: ignore
     await db.commit()
+    server_task_manager.submit(
+        textbook_id=textbook_id,
+        kind="generation",
+        target=run_generation_task,
+        args=(confirmed_curriculum,),
+        task_id=task_id,
+    )
 
     return {
         "message": "Content generation started",
         "textbook_id": textbook_id,
+        "task_id": task_id,
         "credits_required": credits_required,
         "credits_charged": credits_charged,
         "balance_after": user.credits,  # type: ignore
@@ -1418,9 +1436,13 @@ async def stop_generation(
     if not textbook:
         raise HTTPException(status_code=404, detail="Textbook not found")
 
-    # 1. Set Redis stop flag — worker checks this before each LangGraph node
+    # 1. Set in-memory stop flag; task checks this before each LangGraph node.
+    from app.services.server_task_manager import TASK_QUEUED, server_task_manager
     from app.utils import stop_signal
     stop_signal.request_stop_for(textbook_id)
+    record = server_task_manager.get_for_textbook(textbook_id)
+    was_queued = bool(record and record.status == TASK_QUEUED)
+    server_task_manager.request_stop(textbook_id)
 
     if _planning_draft_phase(textbook):
         # Planning has not spent credits or produced useful content, so it is
@@ -1432,8 +1454,24 @@ async def stop_generation(
         await db.commit()
         return {"message": "Planning draft deleted", "deleted": True}
 
-    # Do not terminate the running Celery task here. The worker checks the stop
-    # flag before each graph node, then runs Publisher on any accumulated
+    if was_queued:
+        message = "Đã hủy task generation trước khi bắt đầu chạy."
+        progress_data = dict(textbook.progress_data or {})  # type: ignore
+        progress_data.update({  # type: ignore
+            "phase": "idle",
+            "status_text": message,
+            "error_message": message,
+            "task_id": None,
+        })
+        textbook.status = TextbookStatus.FAILED.value  # type: ignore
+        textbook.error_message = message  # type: ignore
+        textbook.progress_data = progress_data  # type: ignore
+        textbook.task_id = None  # type: ignore
+        await db.commit()
+        return {"message": "Generation task cancelled", "deleted": False}
+
+    # Do not terminate the running task here. The task checks the stop flag
+    # before each graph node, then runs Publisher on any accumulated
     # content so the user can download a partial textbook.
     progress_data = dict(textbook.progress_data or {})  # type: ignore
     progress_data.update({  # type: ignore

@@ -25,6 +25,7 @@ export function CreateTextbookPage() {
   const { i18n, t } = useTranslation()
 
   const [textbookId, setTextbookId] = useState(urlTextbookId || null)
+  const [taskId, setTaskId] = useState(null)
   const [phase, setPhase] = useState('idle')
   const [progressData, setProgressData] = useState(null)
   const [configExpanded, setConfigExpanded] = useState(true)
@@ -84,6 +85,7 @@ export function CreateTextbookPage() {
   const clearDraftState = () => {
     setPhase('idle')
     setTextbookId(null)
+    setTaskId(null)
     setProgressData(null)
     setTextbookTitle('')
     setSubmittedConfig(null)
@@ -113,8 +115,9 @@ export function CreateTextbookPage() {
 
           if (data) {
             setTextbookId(urlTextbookId)
+            setTaskId(response.data.task_id || data.task_id || null)
             setProgressData(data)
-            // Don't reset to 'idle' if Celery hasn't written phase yet (race on new submit)
+            // Don't reset to idle if the background task has not written phase yet.
             if (data.phase) {
               setPhase(data.phase)
             }
@@ -173,10 +176,23 @@ export function CreateTextbookPage() {
 
     const poll = async () => {
       try {
-        const response = await textbooksAPI.getProgress(textbookId)
+        let response
+        try {
+          response = taskId
+            ? await textbooksAPI.getTask(taskId)
+            : await textbooksAPI.getProgress(textbookId)
+        } catch (taskErr) {
+          if (!taskId || taskErr.response?.status !== 404) {
+            throw taskErr
+          }
+          response = await textbooksAPI.getProgress(textbookId)
+        }
         const data = response.data.progress_data
 
         if (data) {
+          if (response.data.task_id && response.data.task_id !== taskId) {
+            setTaskId(response.data.task_id)
+          }
           setProgressData(data)
           setPhase(data.phase)
           
@@ -204,7 +220,7 @@ export function CreateTextbookPage() {
         clearInterval(pollingRef.current)
       }
     }
-  }, [textbookId, phase, navigate, textbookTitle])
+  }, [textbookId, taskId, phase, navigate, textbookTitle])
 
   const handleSubmit = async (formData) => {
     if (creatingTextbook) return
@@ -221,6 +237,7 @@ export function CreateTextbookPage() {
 
       const textbook = response.data
       setTextbookId(textbook.id)
+      setTaskId(textbook.task_id || null)
       setPhase('planning')
       setTextbookTitle(formData.topic)
       setSubmittedConfig({
@@ -310,10 +327,13 @@ export function CreateTextbookPage() {
     try {
       setConfirmingCurriculum(true)
       setConfirmedCurriculum(curriculum)
-      await textbooksAPI.confirmCurriculum(textbookId, curriculum, pagePlanConfirmed, {
+      const response = await textbooksAPI.confirmCurriculum(textbookId, curriculum, pagePlanConfirmed, {
         credential_usage: submittedConfig?.credential_usage || 'saved',
         model_selection: submittedConfig?.model_selection,
       })
+      if (response.data?.task_id) {
+        setTaskId(response.data.task_id)
+      }
       await loadUser?.()
       setPhase('generating')
     } catch (err) {
@@ -670,10 +690,13 @@ export function CreateTextbookPage() {
                   if (pending.confirmCurriculum && pending.curriculum && textbookId) {
                     setConfirmingCurriculum(true)
                     try {
-                      await textbooksAPI.confirmCurriculum(textbookId, pending.curriculum, true, {
+                      const response = await textbooksAPI.confirmCurriculum(textbookId, pending.curriculum, true, {
                         credential_usage: submittedConfig?.credential_usage || 'saved',
                         model_selection: submittedConfig?.model_selection,
                       })
+                      if (response.data?.task_id) {
+                        setTaskId(response.data.task_id)
+                      }
                       await loadUser?.()
                       setPhase('generating')
                     } finally {

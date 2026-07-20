@@ -71,12 +71,8 @@ pydantic>=2.7.4,<3.0.0
 pydantic-core>=2.18.0
 pydantic-settings>=2.1.0
 
-# ==================== Task Queue (Celery + Redis) ====================
-celery>=5.3.6
+# ==================== Optional Shared Coordination (Redis) ====================
 redis>=5.0.1
-kombu>=5.6.2
-billiard>=4.2.4
-vine>=5.1.0
 
 # ==================== Web Interface (Streamlit - Optional) ====================
 streamlit>=1.30.0

@@ -57,6 +57,6 @@ class Textbook(Base):
     progress_data = Column(JSON, nullable=True, default=None)
     current_chapter = Column(Integer, default=0)
     current_subsection = Column(Integer, default=0)
-    celery_task_id = Column(String(200), nullable=True)
+    task_id = Column(String(200), nullable=True)
 
     owner = relationship("User", back_populates="textbooks")

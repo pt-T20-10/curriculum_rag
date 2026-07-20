@@ -6,7 +6,7 @@ Chroma scale modes:
 - local_per_job: isolated embedded directory per textbook run. This is the
   Railway smoke-test path for two different users running at the same time.
 - http: external Chroma service. This is the intended path before raising
-  Celery/global generation concurrency to medium production levels.
+  server task/global generation concurrency to medium production levels.
 
 Cleanup is deliberately constrained to CHROMA_RUNS_DIR so a bad runtime config
 cannot delete arbitrary host paths.

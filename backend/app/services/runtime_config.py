@@ -188,7 +188,7 @@ def invalidate_runtime_config_cache() -> None:
 def environment_only_runtime_config() -> Iterator[None]:
     """Resolve runtime values from Settings/.env without touching MySQL.
 
-    The regular web and Celery paths retain DB-first configuration. Standalone
+    The regular web and server task paths retain DB-first configuration. Standalone
     commands can use this context to avoid requiring application infrastructure.
     """
     token = _database_lookup_enabled.set(False)

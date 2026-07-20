@@ -1,31 +1,23 @@
-"""Redis-based registry mapping textbook_id → active Celery task_id."""
-import redis
-from redis.connection import ConnectionPool
+"""In-process registry mapping textbook_id -> active server task_id."""
 
-_TTL = 86_400  # 24 hours
+from __future__ import annotations
 
-_pool: ConnectionPool | None = None
+import threading
 
-
-def _r() -> redis.Redis:
-    global _pool
-    if _pool is None:
-        from app.config import settings
-        _pool = ConnectionPool.from_url(
-            settings.REDIS_CONNECTION_URL,
-            decode_responses=True,
-            max_connections=10,
-        )
-    return redis.Redis(connection_pool=_pool)
+_lock = threading.RLock()
+_tasks_by_textbook: dict[int, str] = {}
 
 
 def store(textbook_id: int, task_id: str) -> None:
-    _r().setex(f"task:{textbook_id}", _TTL, task_id)
+    with _lock:
+        _tasks_by_textbook[int(textbook_id)] = str(task_id)
 
 
 def get(textbook_id: int) -> str | None:
-    return _r().get(f"task:{textbook_id}")  #type: ignore[return-value]
+    with _lock:
+        return _tasks_by_textbook.get(int(textbook_id))
 
 
 def delete(textbook_id: int) -> None:
-    _r().delete(f"task:{textbook_id}")
+    with _lock:
+        _tasks_by_textbook.pop(int(textbook_id), None)

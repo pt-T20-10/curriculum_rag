@@ -21,6 +21,9 @@ export const textbooksAPI = {
   
   // Get progress (for polling)
   getProgress: (id) => axios.get(`/textbooks/${id}/progress`),
+
+  // Get server task status (preferred realtime polling path)
+  getTask: (taskId) => axios.get(`/tasks/${taskId}`),
   
   // Stop generation
   stop: (id) => axios.post(`/textbooks/${id}/stop`),

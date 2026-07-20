@@ -13,7 +13,7 @@ const severityClasses = {
 function settingLine(settings = {}) {
   const items = [
     `Chroma: ${settings.CHROMA_MODE || 'unknown'}`,
-    `Celery: ${settings.CELERY_POOL || 'unknown'} x ${settings.CELERY_CONCURRENCY || 1}`,
+    `Server tasks: ${settings.SERVER_TASK_MAX_WORKERS || 1} worker`,
     `Global: ${settings.GENERATION_GLOBAL_CONCURRENCY || 1}`,
     `Per user: ${settings.GENERATION_PER_USER_CONCURRENCY || 1}`,
   ]

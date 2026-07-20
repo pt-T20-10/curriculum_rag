@@ -933,9 +933,9 @@ export const en = {
         label: 'Per-user Job Limit',
         description: 'Keep this at 1 so each user runs only one textbook at a time.',
       },
-      GENERATION_QUEUE_RETRY_SECONDS: {
-        label: 'Queue Retry Seconds',
-        description: 'Seconds a Celery task waits before retrying when user/global slots are busy.',
+      SERVER_TASK_MAX_WORKERS: {
+        label: 'Background Task Workers',
+        description: 'Number of textbook tasks running inside the FastAPI process. Keep 1 for v1.',
       },
       RAG_INITIAL_K: {
         label: 'Initial Retrieval K',

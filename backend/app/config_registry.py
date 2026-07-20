@@ -561,6 +561,18 @@ PARAMETER_REGISTRY: Dict[str, ParameterDef] = {
         "admin_only": True,
         "sensitive": False,
     },
+    "SERVER_TASK_MAX_WORKERS": {
+        "label": "Số Worker Task Nền",
+        "description": "Số task giáo trình chạy ngầm trong FastAPI process. V1 khuyến nghị giữ 1.",
+        "group": "deployment",
+        "type": "int",
+        "default": 1,
+        "min": 1,
+        "max": 4,
+        "user_editable": False,
+        "admin_only": True,
+        "sensitive": False,
+    },
     "GENERATION_PER_USER_CONCURRENCY": {
         "label": "Giới Hạn Job Mỗi User",
         "description": "Luôn giữ 1 để mỗi user chỉ chạy một giáo trình tại một thời điểm.",
@@ -573,19 +585,6 @@ PARAMETER_REGISTRY: Dict[str, ParameterDef] = {
         "admin_only": True,
         "sensitive": False,
     },
-    "GENERATION_QUEUE_RETRY_SECONDS": {
-        "label": "Thời Gian Chờ Queue",
-        "description": "Số giây Celery task chờ trước khi thử lại khi user/global slot đang bận.",
-        "group": "deployment",
-        "type": "int",
-        "default": 30,
-        "min": 5,
-        "max": 600,
-        "user_editable": False,
-        "admin_only": True,
-        "sensitive": False,
-    },
-
     # =========================================================================
     # GROUP: rag — RAG & Tìm Kiếm
     # =========================================================================

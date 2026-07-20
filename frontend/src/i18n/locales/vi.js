@@ -933,9 +933,9 @@ export const vi = {
         label: 'Giới Hạn Job Mỗi User',
         description: 'Luôn giữ 1 để mỗi user chỉ chạy một giáo trình tại một thời điểm.',
       },
-      GENERATION_QUEUE_RETRY_SECONDS: {
-        label: 'Thời Gian Chờ Queue',
-        description: 'Số giây Celery task chờ trước khi thử lại khi user/global slot đang bận.',
+      SERVER_TASK_MAX_WORKERS: {
+        label: 'Số Worker Task Nền',
+        description: 'Số task giáo trình chạy ngầm trong FastAPI process. V1 khuyến nghị giữ 1.',
       },
       RAG_INITIAL_K: {
         label: 'K Lấy Kết Quả Ban Đầu',

@@ -1,10 +1,11 @@
 """Shared API throttling helpers for external model providers.
 
 The limiter is intentionally small and synchronous because the textbook
-pipeline calls LangChain/OpenAI synchronously from Celery workers. When Redis is
-available, local and hosted workers that share the same Redis URL also share the
-same throttle bucket. If Redis is unavailable, the process falls back to a local
-in-memory throttle so a single worker still behaves politely.
+pipeline calls LangChain/OpenAI synchronously from background task threads.
+When Redis is available and explicitly enabled, processes that share the same
+Redis URL also share the same throttle bucket. If Redis is unavailable, the
+process falls back to a local in-memory throttle so a single worker still
+behaves politely.
 """
 
 from __future__ import annotations

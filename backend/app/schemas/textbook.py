@@ -134,6 +134,7 @@ class TextbookResponse(BaseModel):
     credits_used: int
     created_at: datetime
     completed_at: Optional[datetime] = None
+    task_id: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -181,6 +182,7 @@ class ProgressData(BaseModel):
 class TextbookProgressResponse(BaseModel):
     id: int
     status: str
+    task_id: Optional[str] = None
     progress_data: Optional[Dict[str, Any]] = None
 
 

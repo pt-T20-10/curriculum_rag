@@ -38,9 +38,9 @@ def _with_stop_check(node_fn):
     """
     Wrap a LangGraph node function with a pre-execution stop signal check.
 
-    stop_signal.is_stopped() reads the Redis key for the textbook_id that
-    was bound to this worker thread via stop_signal.set_current() in the
-    Celery task before asyncio.run() was called.  No AgentState changes needed.
+    stop_signal.is_stopped() reads the in-memory event for the textbook_id that
+    was bound to this task thread via stop_signal.set_current() before
+    asyncio.run() was called. No AgentState changes needed.
 
     Raises WorkflowStoppedException instead of returning {} to avoid the
     infinite-loop bug where routing functions see unchanged state and loop

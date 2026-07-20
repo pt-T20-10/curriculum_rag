@@ -21,7 +21,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.database import engine, Base
-from app.routers import account_deletion, admin, auth, base, byok, config, plans, site_info, support, textbook
+from app.routers import account_deletion, admin, auth, base, byok, config, plans, site_info, support, tasks, textbook
 
 
 @asynccontextmanager
@@ -60,10 +60,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         else:
             print("✅ Production schema managed by Alembic")
 
+        from app.services.schema_compat import ensure_textbook_task_id_column
+
+        schema_action = await ensure_textbook_task_id_column()
+        if schema_action in {"renamed", "added"}:
+            print(f"✅ Database compatibility repair applied: textbooks.task_id {schema_action}")
+
         from app.services.bootstrap import ensure_default_admin_user
 
         if await ensure_default_admin_user():
             print("✅ Default admin account created/verified")
+
+        from app.services.server_task_manager import mark_interrupted_textbook_tasks
+
+        interrupted = await mark_interrupted_textbook_tasks()
+        if interrupted:
+            print(f"⚠️ Marked {interrupted} interrupted background task(s)")
     except Exception as e:
         print(f"❌ Database initialization failed: {e}")
         raise
@@ -75,6 +87,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     
     # Shutdown
     print("🛑 Shutting down AI Textbook Generator API...")
+    from app.services.server_task_manager import server_task_manager
+    server_task_manager.shutdown()
     await engine.dispose()
     print("✅ Shutdown complete")
 
@@ -109,6 +123,7 @@ app.include_router(base.router, prefix="/api/v1", tags=["Base"])
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["Auth"])
 app.include_router(plans.router, prefix="/api/v1", tags=["Plans"])
 app.include_router(textbook.router, prefix="/api/v1", tags=["Textbooks"])
+app.include_router(tasks.router, prefix="/api/v1", tags=["Tasks"])
 app.include_router(byok.router, prefix="/api/v1", tags=["BYOK"])
 app.include_router(admin.router, prefix="/api/v1/admin", tags=["Admin"])
 app.include_router(config.router, prefix="/api/v1", tags=["Config"])

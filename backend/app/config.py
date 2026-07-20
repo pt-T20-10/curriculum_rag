@@ -71,15 +71,10 @@ class Settings(BaseSettings):
         """Use a provider URL (including credentials) when one is available."""
         return self.REDIS_URL or f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/0"
 
-    # Deployment/runtime controls. Development defaults preserve existing local
-    # behaviour; the production compose file overrides them explicitly.
-    # CELERY_POOL and CELERY_CONCURRENCY are read when the worker process starts,
-    # so changing them requires a Railway redeploy/restart. Runtime generation
-    # limits below can be shown/overridden by Admin Config, but they cannot add
-    # worker capacity by themselves.
+    # Deployment/runtime controls. Textbook tasks run in-process through
+    # SERVER_TASK_MAX_WORKERS.
     CORS_ORIGINS: str = ""
-    CELERY_POOL: str = "solo"
-    CELERY_CONCURRENCY: int = 1
+    SERVER_TASK_MAX_WORKERS: int = 1
     ENABLE_PROMPT_LOGS: bool = True
     LOG_TO_FILES: bool = True
     LOG_MAX_BYTES: int = 10 * 1024 * 1024
@@ -418,7 +413,6 @@ class Settings(BaseSettings):
     WIKIMEDIA_RATE_LIMIT_JITTER_SECONDS: float = 0.5
     GENERATION_GLOBAL_CONCURRENCY: int = 1
     GENERATION_PER_USER_CONCURRENCY: int = 1
-    GENERATION_QUEUE_RETRY_SECONDS: int = 30
 
     # ==================== Paths ====================
     @property
@@ -540,10 +534,10 @@ class Settings(BaseSettings):
                 errors.append("EMBEDDING_PROVIDER must be 'openai' on the low-memory demo server")
             if self.CHROMA_MODE not in {"local_shared", "local_per_job", "http"}:
                 errors.append("CHROMA_MODE must be one of local_shared, local_per_job, or http")
-            if self.CELERY_CONCURRENCY > 1 and self.CHROMA_MODE == "local_shared":
-                errors.append("CELERY_CONCURRENCY > 1 requires CHROMA_MODE=local_per_job or CHROMA_MODE=http")
-            if self.CHROMA_MODE == "local_per_job" and self.CELERY_CONCURRENCY > 2:
-                errors.append("CHROMA_MODE=local_per_job is limited to CELERY_CONCURRENCY <= 2 for Railway test profile")
+            if self.SERVER_TASK_MAX_WORKERS > 1 and self.CHROMA_MODE == "local_shared":
+                errors.append("SERVER_TASK_MAX_WORKERS > 1 requires CHROMA_MODE=local_per_job or CHROMA_MODE=http")
+            if self.CHROMA_MODE == "local_per_job" and self.SERVER_TASK_MAX_WORKERS > 2:
+                errors.append("CHROMA_MODE=local_per_job is limited to SERVER_TASK_MAX_WORKERS <= 2 for Railway test profile")
             if self.CHROMA_MODE == "http" and missing(self.CHROMA_HTTP_HOST):
                 errors.append("CHROMA_HTTP_HOST is required when CHROMA_MODE=http")
             if self.GENERATION_PER_USER_CONCURRENCY != 1:

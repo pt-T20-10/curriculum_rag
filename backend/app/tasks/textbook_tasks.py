@@ -1,19 +1,15 @@
 """
 Background tasks for textbook generation.
 
-Integrates LangGraph AI workflow with Celery task queue.
+Runs LangGraph AI workflows from the in-process server task manager.
 
-Scale note:
-Celery worker capacity is controlled by CELERY_POOL/CELERY_CONCURRENCY at
-process startup, while generation_limiter controls who may enter the expensive
-planning/content workflow. When a slot is unavailable, the task is marked as
-queued and retried later instead of occupying a long-running worker slot.
+The task manager owns the single-process FIFO queue. This module keeps the
+database/workflow logic separate from the transport used to start the task.
 """
 
 import asyncio
 from datetime import datetime
 
-from app.celery_app import celery_app
 from app.database import AsyncSessionLocal
 from app.models.credit_history import CreditHistory
 from app.models.textbook import Textbook, TextbookStatus
@@ -25,20 +21,16 @@ from app.services.byok_service import (
     delete_job_secrets,
     load_job_runtime_overrides,
 )
-from app.services.generation_limiter import (
-    GenerationSlotUnavailable,
-    acquire_generation_slot,
-)
 from app.services.runtime_config import runtime_config_overrides
 from app.services.textbook.language import progress_text
 from app.utils.log_config import setup_logger
 from sqlalchemy import select
 
-logger = setup_logger(name="TextbookTasks", logfile="logs/celery_tasks.log")
+logger = setup_logger(name="TextbookTasks", logfile="logs/textbook_tasks.log")
 
 
 async def _mark_textbook_queued(db, textbook: Textbook, reason: str) -> None:
-    """Persist queue state for UI polling while Celery retries the task later."""
+    """Persist queue state for UI polling while the server task waits its turn."""
     progress_data = dict(textbook.progress_data or {})  # type: ignore
     progress_data.update({
         "phase": "queued",
@@ -356,8 +348,7 @@ async def _run_content_generation_for_textbook(
     logger.error(f"[TASK] Content generation failed: {error_msg}")
     return {"status": "error", "error": error_msg}
 
-@celery_app.task(bind=True, name="generate_textbook", max_retries=None)
-def generate_textbook_task(self, textbook_id: int):
+def run_planning_task(textbook_id: int, task_id: str | None = None):
     from app.utils import stop_signal
     stop_signal.clear_for(textbook_id)
     stop_signal.set_current(textbook_id)  # bind to this worker thread
@@ -393,19 +384,12 @@ def generate_textbook_task(self, textbook_id: int):
                 logger.error(f"[TASK] Textbook {textbook_id} not found")
                 return {"status": "error", "message": "Textbook not found"}
 
-            # Guard: if broker re-queued this task after SIGKILL, DB already says 'failed'
+            # Guard: if the server was restarted/interrupted, DB may already say failed.
             if textbook.status == TextbookStatus.FAILED.value:  # type: ignore
                 logger.info(f"[TASK] Textbook {textbook_id} already failed/stopped — aborting re-queue")
                 return {"status": "stopped"}
 
-            lease = None
             try:
-                try:
-                    lease = await acquire_generation_slot(db, textbook)
-                except GenerationSlotUnavailable as exc:
-                    await _mark_textbook_queued(db, textbook, exc.reason)
-                    raise self.retry(countdown=exc.retry_seconds, exc=exc)
-
                 existing_progress = dict(textbook.progress_data or {})  # type: ignore
                 planning_mode = str(
                     existing_progress.get("planning_mode")
@@ -425,6 +409,7 @@ def generate_textbook_task(self, textbook_id: int):
                     "language": textbook.language,
                     "planning_mode": planning_mode,
                     "textbook_mode": textbook.textbook_mode or "standard",
+                    "task_id": task_id or textbook.task_id,
                 }
                 await db.commit()
 
@@ -485,8 +470,6 @@ def generate_textbook_task(self, textbook_id: int):
                     return {"status": "error", "error": error_msg}
                     
             except Exception as e:
-                if e.__class__.__name__ == "Retry":
-                    raise
                 textbook.status = TextbookStatus.FAILED.value #type: ignore
                 textbook.error_message = str(e) #type: ignore
                 await db.commit()
@@ -496,9 +479,6 @@ def generate_textbook_task(self, textbook_id: int):
                 
                 logger.error(f"[TASK] Exception: {e}", exc_info=True)
                 return {"status": "error", "error": str(e)}
-            finally:
-                if lease is not None:
-                    lease.release()
     
     try:
         return asyncio.run(_run_planning())
@@ -507,9 +487,13 @@ def generate_textbook_task(self, textbook_id: int):
         return {"status": "error", "error": str(e)}
 
 
+def generate_textbook_task(textbook_id: int):
+    """Backward-compatible synchronous entrypoint for planning."""
+    return run_planning_task(textbook_id)
+
+
     
-@celery_app.task(bind=True, name="continue_textbook_generation", max_retries=None)
-def continue_textbook_generation_task(self, textbook_id: int, confirmed_curriculum: dict):
+def run_generation_task(textbook_id: int, task_id: str | None, confirmed_curriculum: dict):
     from app.utils import stop_signal
     stop_signal.clear_for(textbook_id)
     stop_signal.set_current(textbook_id)  # bind to this worker thread
@@ -541,24 +525,18 @@ def continue_textbook_generation_task(self, textbook_id: int, confirmed_curricul
                 logger.error(f"[TASK] Textbook {textbook_id} not found")
                 return {"status": "error", "message": "Textbook not found"}
 
-            # Guard: if broker re-queued this task after SIGKILL, DB already says 'failed'
+            # Guard: if the server was restarted/interrupted, DB may already say failed.
             if textbook.status == TextbookStatus.FAILED.value:  # type: ignore
                 logger.info(f"[TASK] Textbook {textbook_id} already failed/stopped — aborting re-queue")
                 return {"status": "stopped"}
 
-            lease = None
             try:
-                try:
-                    lease = await acquire_generation_slot(db, textbook)
-                except GenerationSlotUnavailable as exc:
-                    await _mark_textbook_queued(db, textbook, exc.reason)
-                    raise self.retry(countdown=exc.retry_seconds, exc=exc)
-
                 logger.info(f"[TASK] Starting content generation for: {textbook.topic}")
                 progress_data = dict(textbook.progress_data or {})  # type: ignore
                 progress_data.update({
                     "phase": "generating",
                     "status_text": progress_text(textbook.language, "content_generation_started"),  # type: ignore[arg-type]
+                    "task_id": task_id or textbook.task_id,
                 })
                 textbook.status = TextbookStatus.GENERATING.value  # type: ignore
                 textbook.progress_data = progress_data  # type: ignore
@@ -660,8 +638,6 @@ def continue_textbook_generation_task(self, textbook_id: int, confirmed_curricul
                     return {"status": "error", "error": error_msg}
                     
             except Exception as e:
-                if e.__class__.__name__ == "Retry":
-                    raise
                 textbook.status = TextbookStatus.FAILED.value #type: ignore
                 textbook.error_message = str(e) #type: ignore
                 await db.commit()
@@ -671,12 +647,14 @@ def continue_textbook_generation_task(self, textbook_id: int, confirmed_curricul
                 
                 logger.error(f"[TASK] Exception: {e}", exc_info=True)
                 return {"status": "error", "error": str(e)}
-            finally:
-                if lease is not None:
-                    lease.release()
     
     try:
         return asyncio.run(_run_content_generation())
     except Exception as e:
         logger.error(f"[TASK] Asyncio error: {e}", exc_info=True)
         return {"status": "error", "error": str(e)}
+
+
+def continue_textbook_generation_task(textbook_id: int, confirmed_curriculum: dict):
+    """Backward-compatible synchronous entrypoint for content generation."""
+    return run_generation_task(textbook_id, None, confirmed_curriculum)
