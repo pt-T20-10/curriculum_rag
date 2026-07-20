@@ -1,8 +1,0 @@
-# Minimal dependencies for Experiment 1 and Experiment 2 (Python 3.11+)
-openai>=1.0.0
-tiktoken>=0.5.0
-rouge-score>=0.1.2
-numpy>=1.26.0,<3.0.0
-pandas>=2.0.0
-scipy>=1.11.0
-matplotlib>=3.8.0

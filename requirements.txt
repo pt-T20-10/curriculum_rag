@@ -110,10 +110,6 @@ opentelemetry-instrumentation==0.60b1
 opentelemetry-instrumentation-asgi==0.60b1
 opentelemetry-instrumentation-fastapi==0.60b1
 
-# ==================== Testing ====================
-pytest>=7.4.4
-pytest-asyncio>=0.23.3
-
 # ==================== Additional Utilities ====================
 tenacity>=8.5.0
 packaging>=24.0
