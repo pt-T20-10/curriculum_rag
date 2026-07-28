@@ -62,7 +62,7 @@ function ContactDetails({ info }) {
         {t('publicInfo.contact.title')}
       </h2>
       <p className="mt-2 text-sm leading-6 text-gray-600">
-        {info?.service_name || t('app.name')}
+        {t('app.name')}
       </p>
       {!hasContactChannel && (
         <p className="mt-4 border-l-4 border-amber-400 bg-amber-50 px-4 py-3 text-sm text-amber-900">
@@ -111,9 +111,9 @@ export function PublicInfoPage({ type }) {
   }, [language, siteInfo.effective_date, t])
 
   useEffect(() => {
-    document.title = `${content.title} | ${siteInfo.service_name || t('app.name')}`
+    document.title = `${content.title} | ${t('app.name')}`
     window.scrollTo({ top: 0, behavior: 'auto' })
-  }, [content.title, siteInfo.service_name, t])
+  }, [content.title, t])
 
   const related = useMemo(
     () => RELATED_PAGES.filter(page => page.type !== type),

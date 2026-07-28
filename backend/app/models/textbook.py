@@ -45,8 +45,11 @@ class Textbook(Base):
             "selected_source_ids": [],
             "custom_urls": [],
             "custom_domains": [],
+            "reference_style": "none",
+            "fallback_policy": "none",
         },
     )
+    source_materials = Column(JSON, nullable=True, default=list)
     status = Column(String(20), default=TextbookStatus.PENDING.value, nullable=False)
     pdf_path = Column(String(1000), nullable=True)
     docx_path = Column(String(1000), nullable=True)

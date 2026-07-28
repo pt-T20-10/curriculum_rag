@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Any
-
 from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,7 +11,7 @@ from app.config_registry import (
     LLM_MODEL_CHOICES,
     OPENAI_EMBEDDING_MODEL_CHOICES,
 )
-from app.models.api_credential import TextbookJobSecret, UserApiCredential
+from app.models.api_credential import TextbookJobSecret
 from app.schemas.byok import TextbookModelSelection
 from app.services.runtime_config import RuntimeConfigError, get_api_key, get_runtime_config
 
@@ -84,68 +82,6 @@ def normalize_provider(provider: str) -> str:
     return normalized
 
 
-async def credential_state(db: AsyncSession, user_id: int, provider: str) -> dict[str, Any]:
-    normalized = normalize_provider(provider)
-    row = await db.scalar(
-        select(UserApiCredential).where(
-            UserApiCredential.user_id == user_id,
-            UserApiCredential.provider == normalized,
-        )
-    )
-    if not row:
-        return {"configured": False, "last4": "", "updated_at": None}
-    return {
-        "configured": True,
-        "last4": row.last4 or "",
-        "updated_at": row.updated_at,
-    }
-
-
-async def saved_key(db: AsyncSession, user_id: int, provider: str) -> str:
-    normalized = normalize_provider(provider)
-    row = await db.scalar(
-        select(UserApiCredential).where(
-            UserApiCredential.user_id == user_id,
-            UserApiCredential.provider == normalized,
-        )
-    )
-    return decrypt_secret(row.encrypted_value) if row else ""
-
-
-async def upsert_user_key(db: AsyncSession, user_id: int, provider: str, value: str) -> None:
-    normalized = normalize_provider(provider)
-    cleaned = str(value or "").strip()
-    if not cleaned:
-        return
-    row = await db.scalar(
-        select(UserApiCredential).where(
-            UserApiCredential.user_id == user_id,
-            UserApiCredential.provider == normalized,
-        )
-    )
-    encrypted_value = encrypt_secret(cleaned)
-    if row:
-        row.encrypted_value = encrypted_value  # type: ignore[assignment]
-        row.last4 = secret_last4(cleaned)  # type: ignore[assignment]
-        row.updated_at = datetime.utcnow()  # type: ignore[assignment]
-    else:
-        db.add(UserApiCredential(
-            user_id=user_id,
-            provider=normalized,
-            encrypted_value=encrypted_value,
-            last4=secret_last4(cleaned),
-        ))
-
-
-async def delete_user_key(db: AsyncSession, user_id: int, provider: str) -> None:
-    await db.execute(
-        delete(UserApiCredential).where(
-            UserApiCredential.user_id == user_id,
-            UserApiCredential.provider == normalize_provider(provider),
-        )
-    )
-
-
 async def resolve_request_keys(
     db: AsyncSession,
     user_id: int,
@@ -168,12 +104,7 @@ async def resolve_request_keys(
         openai = str(openai_api_key or "").strip()
         serper = str(serper_api_key or "").strip()
     else:
-        openai = await saved_key(db, user_id, "openai")
-        serper = await saved_key(db, user_id, "serper")
-        if openai_api_key:
-            openai = str(openai_api_key).strip()
-        if serper_api_key:
-            serper = str(serper_api_key).strip()
+        raise ByokCredentialError("Chỉ hỗ trợ API key nhập trong phiên; hệ thống không lưu API key theo tài khoản.")
 
     if user_keys_required() and not openai:
         raise ByokCredentialError("Vui lòng nhập OpenAI API key trước khi tạo giáo trình.")

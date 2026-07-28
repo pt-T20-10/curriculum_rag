@@ -150,6 +150,13 @@ async def update_progress(
         textbook = result.scalar_one_or_none()
 
         if textbook:
+            previous = dict(textbook.progress_data or {})  # type: ignore[arg-type]
+            if "source_materials" not in progress_data and previous.get("source_materials"): # type: ignore
+                progress_data["source_materials"] = previous["source_materials"] # type: ignore
+            if "source_action_required" not in progress_data and previous.get("source_action_required"): # type: ignore
+                progress_data["source_action_required"] = previous["source_action_required"] # type: ignore
+            if "source_materials" in progress_data:
+                textbook.source_materials = progress_data["source_materials"]  # type: ignore[attr-defined]
             textbook.progress_data = progress_data  # type: ignore
             await db.commit()
             logger.info(f"Progress updated for textbook {textbook_id}: phase={progress_data.get('phase')}")
@@ -190,19 +197,19 @@ async def run_textbook_workflow(
         formula_need_val = textbook_record.formula_need if textbook_record else "none"
         language_val = textbook_record.language if textbook_record else language
         source_preferences_val = textbook_record.source_preferences if textbook_record else {}
-        progress_data_val = dict(textbook_record.progress_data or {}) if textbook_record else {}
-        target_pages_val = progress_data_val.get("target_pages")
+        progress_data_val = dict(textbook_record.progress_data or {}) if textbook_record else {} # type: ignore
+        target_pages_val = progress_data_val.get("target_pages") # type: ignore
         planning_mode_val = str(
-            progress_data_val.get("planning_mode")
-            or ("structured" if textbook_record and textbook_record.curriculum_json else "auto")
+            progress_data_val.get("planning_mode") # type: ignore
+            or ("structured" if textbook_record and textbook_record.curriculum_json else "auto") # type: ignore
         )
         structure_depth_val = str(
-            progress_data_val.get("structure_depth")
+            progress_data_val.get("structure_depth") # type: ignore
             or getattr(textbook_record, "structure_depth", None)
             or "level1"
         )
         max_child_val = int(
-            progress_data_val.get("max_child_subsections_per_section")
+            progress_data_val.get("max_child_subsections_per_section") # type: ignore
             or getattr(textbook_record, "max_child_subsections_per_section", None)
             or max_child_subsections_per_section
             or 3
@@ -317,7 +324,7 @@ async def run_textbook_workflow(
                             if target_pages_val:
                                 curriculum_data, page_validation = allocate_page_budget(
                                     curriculum_data,
-                                    target_pages=target_pages_val,
+                                    target_pages=target_pages_val, # type: ignore
                                     enable_images=enable_images,
                                     language=language_val,  # type: ignore[arg-type]
                                     textbook_mode=textbook_mode_val,  # type: ignore[arg-type]
@@ -571,6 +578,10 @@ async def continue_after_curriculum_confirmation(
                             "progress_value": 0.0,
                             "status_text":    progress_text(initial_state.get("language", "vi"), "ingestion_error", error=failed_msg),
                             "error_message":  failed_msg,
+                            "source_action_required": bool(cumulative_state.get("source_action_required")),
+                            "source_materials": cumulative_state.get("source_materials", []),
+                            "source_language_profile": cumulative_state.get("source_language_profile", {}),
+                            "source_language_preference": cumulative_state.get("source_language_preference", ""),
                             "topic":          topic,
                             "language":       initial_state.get("language", "vi"),
                             "planning_mode":  planning_mode,
@@ -599,6 +610,9 @@ async def continue_after_curriculum_confirmation(
                             "structure_depth": structure_depth,
                             "textbook_mode": textbook_mode,
                             "target_pages": target_pages,
+                            "source_materials": cumulative_state.get("source_materials", []),
+                            "source_language_profile": cumulative_state.get("source_language_profile", {}),
+                            "source_language_preference": cumulative_state.get("source_language_preference", ""),
                         })
 
                 elif node_name in _CRAG_NODES and db:
@@ -663,6 +677,7 @@ async def continue_after_curriculum_confirmation(
             return {
                 "success": False,
                 "error": "Ingestion failed: no search results found",
+                "source_action_required": bool(cumulative_state.get("source_action_required")),
                 "partial_markdown_path": cumulative_state.get("partial_markdown_filepath"),
                 "api_usage_summary": api_usage,
             }

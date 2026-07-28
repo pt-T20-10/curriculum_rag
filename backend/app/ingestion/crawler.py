@@ -32,6 +32,7 @@ from langchain_core.documents import Document
 
 from sklearn.metrics.pairwise import cosine_similarity
 from app.ingestion.query_expansion import QueryExpansionAgent
+from app.ingestion.uploaded_sources import clean_source_text_for_embedding
 from app.utils.log_config import setup_logger
 from app.config import settings, get_embedding_model
 from app.services.runtime_config import get_runtime_config
@@ -1282,7 +1283,10 @@ def extract_pdf_text(url: str) -> str:
                 if page_text.strip(): # type: ignore
                     pages_text.append(page_text)
             doc.close()
-            text = "\n".join(pages_text)
+            raw_text = "\n".join(pages_text)
+            text, filter_stats = clean_source_text_for_embedding(raw_text)
+            if filter_stats.get("removed_chars", 0) > 0:
+                logger.info("[PDF/fitz] front/back matter removed for %s: %s", url[:60], filter_stats)
             logger.info(f"[PDF/fitz] {url[:60]} ({len(text)} chars, {len(pages_text)} pages)")
             return text
 
@@ -1298,7 +1302,10 @@ def extract_pdf_text(url: str) -> str:
                 extracted = page.extract_text()
                 if extracted:
                     pages_text.append(extracted)
-            text = "\n".join(pages_text)
+            raw_text = "\n".join(pages_text)
+            text, filter_stats = clean_source_text_for_embedding(raw_text)
+            if filter_stats.get("removed_chars", 0) > 0:
+                logger.info("[PDF/pypdf] front/back matter removed for %s: %s", url[:60], filter_stats)
             logger.info(f"[PDF/pypdf] {url[:60]} ({len(text)} chars)")
             return text
 
@@ -2018,6 +2025,9 @@ def process_deep_crawl(
         "snippet_score": link_info.get("snippet_score", ""),
         "trusted_source": link_info.get("trusted_source", "false"),
         "direct_custom_url": link_info.get("direct_custom_url", link_info.get("_direct_custom_url", "false")),
+        "user_source": link_info.get("user_source", "false"),
+        "source_id": link_info.get("source_id", ""),
+        "source_kind": "user_url" if link_info.get("user_source") == "true" else link_info.get("source_kind", ""),
     }
     sub_link_limit = CRAWL_MAX_SUB_LINKS if crawl_max_sub_links is None else crawl_max_sub_links
     depth2_limit = CRAWL_MAX_DEPTH2_LINKS if crawl_max_depth2_links is None else crawl_max_depth2_links
@@ -2170,6 +2180,7 @@ def ingest_dynamic_data(
     progress_callback=None,
     runtime_config: dict[str, Any] | None = None,
     query_expansion: dict[str, list[str]] | None = None,
+    preloaded_docs: List[Document] | None = None,
 ) -> bool: #type: ignore
     """
     Ingest data from filtered URLs into ChromaDB.
@@ -2188,7 +2199,8 @@ def ingest_dynamic_data(
     Returns:
         True if at least some chunks were saved successfully, False otherwise.
     """
-    if not clean_links:
+    preloaded_docs = preloaded_docs or []
+    if not clean_links and not preloaded_docs:
         logger.warning("No clean links provided — skipping ingestion")
         return False
 
@@ -2236,6 +2248,13 @@ def ingest_dynamic_data(
 
     # ── Step 1: Parallel deep crawl ──────────────────────────────────────────
     all_docs: List[Document] = []
+    for doc in preloaded_docs:
+        doc.metadata["topic"] = topic
+        doc.metadata["run_id"] = run_id
+        doc.metadata["content_type"] = content_type
+        doc.metadata.setdefault("domain", "uploaded-file")
+        doc.metadata.setdefault("trusted_source", "true")
+        all_docs.append(doc)
     # Inject content_type into each link dict so process_deep_crawl
     # can check whitelist without a separate parameter channel.
     for link in clean_links:

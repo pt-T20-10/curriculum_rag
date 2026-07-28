@@ -446,6 +446,8 @@ def filter_and_classify_urls(
                     "search_title": r.get("title", ""),
                     "snippet_score": f"{score_map[href]:.4f}",
                     "direct_custom_url": r.get("_direct_custom_url", "false"),
+                    "user_source": r.get("_user_source", "false"),
+                    "source_id": r.get("_source_id", ""),
                 }
 
         before_snippet = len(remaining_urls)

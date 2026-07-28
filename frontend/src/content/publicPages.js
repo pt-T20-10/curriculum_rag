@@ -4,7 +4,7 @@ export const PUBLIC_PAGE_CONTENT = {
       eyebrow: 'Thông tin pháp lý',
       title: 'Chính sách quyền riêng tư',
       summary:
-        'Chính sách này giải thích dữ liệu được thu thập, cách dữ liệu được sử dụng và các lựa chọn của bạn khi sử dụng Hệ Thống Tạo Giáo Trình AI.',
+        'Chính sách này giải thích dữ liệu được thu thập, cách dữ liệu được sử dụng và các lựa chọn của bạn khi sử dụng AATG.',
       sections: [
         {
           id: 'scope',
@@ -101,7 +101,7 @@ export const PUBLIC_PAGE_CONTENT = {
       eyebrow: 'Thông tin pháp lý',
       title: 'Điều khoản sử dụng',
       summary:
-        'Các điều khoản dưới đây quy định việc truy cập và sử dụng Hệ Thống Tạo Giáo Trình AI.',
+        'Các điều khoản dưới đây quy định việc truy cập và sử dụng AATG.',
       sections: [
         {
           id: 'acceptance',
@@ -310,7 +310,7 @@ export const PUBLIC_PAGE_CONTENT = {
       eyebrow: 'Kết nối với chúng tôi',
       title: 'Liên hệ',
       summary:
-        'Thông tin liên hệ chính thức của đơn vị vận hành Hệ Thống Tạo Giáo Trình AI.',
+        'Thông tin liên hệ chính thức của đơn vị vận hành AATG.',
       sections: [
         {
           id: 'general',
@@ -337,7 +337,7 @@ export const PUBLIC_PAGE_CONTENT = {
       eyebrow: 'Legal information',
       title: 'Privacy Policy',
       summary:
-        'This policy explains what data is collected, how it is used, and the choices available to you when using AI Textbook Generator.',
+        'This policy explains what data is collected, how it is used, and the choices available to you when using AATG.',
       sections: [
         {
           id: 'scope',
@@ -431,7 +431,7 @@ export const PUBLIC_PAGE_CONTENT = {
     terms: {
       eyebrow: 'Legal information',
       title: 'Terms of Service',
-      summary: 'These terms govern access to and use of AI Textbook Generator.',
+      summary: 'These terms govern access to and use of AATG.',
       sections: [
         {
           id: 'acceptance',
@@ -637,7 +637,7 @@ export const PUBLIC_PAGE_CONTENT = {
     contact: {
       eyebrow: 'Get in touch',
       title: 'Contact',
-      summary: 'Official contact details for the operator of AI Textbook Generator.',
+      summary: 'Official contact details for the operator of AATG.',
       sections: [
         {
           id: 'general',

@@ -48,6 +48,13 @@ from app.ingestion.source_policy import (
 )
 from app.ingestion.url_filter import filter_and_classify_urls
 from app.ingestion.crawler import ingest_dynamic_data
+from app.ingestion.uploaded_sources import (
+    extract_uploaded_source_documents,
+    merge_source_materials,
+    update_url_manifest_from_clean_links,
+    url_source_manifest,
+    user_source_language_profile,
+)
 from app.utils import stop_signal
 from app.utils.log_config import setup_logger
 
@@ -371,6 +378,17 @@ def perform_ingestion(state: AgentState) -> dict:
     runtime_config = state.get("advanced_config", {}) or {}
     source_preferences = normalize_source_preferences(state.get("source_preferences"))
     source_mode = source_preferences["source_mode"]
+    source_materials = list(state.get("source_materials") or [])
+    if source_preferences["custom_urls"]:
+        source_materials = merge_source_materials(
+            source_materials,
+            url_source_manifest(source_preferences["custom_urls"]),
+        )
+    source_id_by_url = {
+        item.get("url"): item.get("id", "")
+        for item in source_materials
+        if item.get("kind") == "user_url"
+    }
     collection_name = state.get("rag_collection_name", "dynamic_context")
     rag_persist_dir = state.get("rag_persist_dir", "")
     targeted_per_chapter = _config_int(
@@ -460,8 +478,13 @@ def perform_ingestion(state: AgentState) -> dict:
         else None
     )
 
+    upload_heavy_vi_sources = (
+        source_mode != "system_default"
+        and state.get("language", "vi") == "vi"
+        and any((item.get("kind") == "user_file") for item in source_materials)
+    )
     if content_type in {"technical", "scholarly"}:
-        vi_query_limit = min(3, len(expanded["vi"]))
+        vi_query_limit = min(6 if upload_heavy_vi_sources else 3, len(expanded["vi"]))
         en_query_limit = min(6, len(expanded["en"]))
     else:
         vi_query_limit = min(search_queries_per_language, len(expanded["vi"]))
@@ -583,6 +606,8 @@ def perform_ingestion(state: AgentState) -> dict:
             "_query": "custom_url",
             "_region": "custom",
             "_direct_custom_url": "true",
+            "_user_source": "true",
+            "_source_id": source_id_by_url.get(custom_url, ""),
         })
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=search_max_workers) as executor:
@@ -630,14 +655,21 @@ def perform_ingestion(state: AgentState) -> dict:
         print(f"[DEBUG INGESTER] STOPPED after Step 3", flush=True)
         return {"messages": ["⛔ Ingestion stopped by user"]}
 
-    if not all_raw_urls:
+    preloaded_docs, source_materials = extract_uploaded_source_documents(source_materials)
+    language_profile = user_source_language_profile(source_materials)
+
+    if not all_raw_urls and not preloaded_docs:
         print(f"[DEBUG INGESTER] Step 3 FAILED: no search results", flush=True)
         logger.error("No search results found from any region")
         if source_mode == "custom_only":
             return {
                 "messages": [
-                    "✗ Ingestion failed: No custom sources were provided or found"
-                ]
+                    "✗ Ingestion failed: USER_SOURCE_ACTION_REQUIRED: No custom links or uploaded files produced source content"
+                ],
+                "source_materials": source_materials,
+                "source_language_profile": language_profile,
+                "source_language_preference": language_profile.get("preference", ""),
+                "source_action_required": True,
             }
         return {"messages": ["✗ Ingestion failed: No search results"]}
 
@@ -654,21 +686,27 @@ def perform_ingestion(state: AgentState) -> dict:
     # skipped entirely in the production flow.
     # ------------------------------------------------------------------
     print(f"[DEBUG INGESTER] Step 4: URL filtering ({len(all_raw_urls)} raw URLs)", flush=True)
-    clean_links = filter_and_classify_urls(
-        all_raw_urls,
-        scored_results=all_results_with_meta,
-        topic=topic,
-        content_type=content_type,
-        min_snippet_score=min_snippet_score,
-        max_workers=url_filter_max_workers,
-        trusted_domains=trusted_domains,
-        skip_snippet_urls=skip_snippet_urls,
+    clean_links = (
+        filter_and_classify_urls(
+            all_raw_urls,
+            scored_results=all_results_with_meta,
+            topic=topic,
+            content_type=content_type,
+            min_snippet_score=min_snippet_score,
+            max_workers=url_filter_max_workers,
+            trusted_domains=trusted_domains,
+            skip_snippet_urls=skip_snippet_urls,
+        )
+        if all_raw_urls
+        else []
     )
     if crawl_max_root_urls > 0 and len(clean_links) > crawl_max_root_urls:
         logger.info(
             f"Root URL cap: {len(clean_links)} → {crawl_max_root_urls} before deep crawl"
         )
         clean_links = clean_links[:crawl_max_root_urls]
+    source_materials = update_url_manifest_from_clean_links(source_materials, clean_links)
+    language_profile = user_source_language_profile(source_materials)
     print(f"[DEBUG INGESTER] Step 4 done: {len(clean_links)} clean links after filtering", flush=True)
     logger.info(f"Found {len(clean_links)} valid links to crawl")
     pdf_n  = sum(1 for u in clean_links if u["type"] == "pdf")
@@ -682,14 +720,18 @@ def perform_ingestion(state: AgentState) -> dict:
         print(f"[DEBUG INGESTER] STOPPED after Step 4", flush=True)
         return {"messages": ["⛔ Ingestion stopped by user"]}
 
-    if not clean_links:
+    if not clean_links and not preloaded_docs:
         print(f"[DEBUG INGESTER] Step 4 FAILED: all URLs filtered out", flush=True)
         logger.error("No valid links after filtering")
         if source_mode == "custom_only":
             return {
                 "messages": [
-                    "✗ Ingestion failed: No valid URLs from selected custom sources"
-                ]
+                    "✗ Ingestion failed: USER_SOURCE_ACTION_REQUIRED: No valid URLs or uploaded files from selected custom sources"
+                ],
+                "source_materials": source_materials,
+                "source_language_profile": language_profile,
+                "source_language_preference": language_profile.get("preference", ""),
+                "source_action_required": True,
             }
         return {"messages": ["✗ Ingestion failed: All URLs filtered out"]}
 
@@ -713,6 +755,7 @@ def perform_ingestion(state: AgentState) -> dict:
         progress_callback=_get_ingestion_callback(),
         runtime_config=runtime_config,
         query_expansion=reusable_query_expansion,
+        preloaded_docs=preloaded_docs,
     )
     print(f"[DEBUG INGESTER] Step 5 done: success={success}", flush=True)
     logger.info(
@@ -722,14 +765,30 @@ def perform_ingestion(state: AgentState) -> dict:
 
     if not success:
         logger.error("Crawling failed or no content found")
+        if source_mode == "custom_only":
+            return {
+                "messages": [
+                    "✗ Ingestion failed: USER_SOURCE_ACTION_REQUIRED: Custom sources did not produce embeddable content"
+                ],
+                "source_materials": source_materials,
+                "source_language_profile": language_profile,
+                "source_language_preference": language_profile.get("preference", ""),
+                "source_action_required": True,
+            }
         return {"messages": ["✗ Ingestion failed: Crawling error"]}
 
+    for item in source_materials:
+        if item.get("status") == "ready":
+            item["status"] = "embedded"
     print(f"[DEBUG INGESTER] perform_ingestion COMPLETE — {len(clean_links)} sources", flush=True)
     logger.info(f"✓ Ingestion complete with {len(clean_links)} sources")
     return {
         "messages": [
             f"✓ Ingestion complete: Database ready with {len(clean_links)} sources"
-        ]
+        ],
+        "source_materials": source_materials,
+        "source_language_profile": language_profile,
+        "source_language_preference": language_profile.get("preference", ""),
     }
     
     

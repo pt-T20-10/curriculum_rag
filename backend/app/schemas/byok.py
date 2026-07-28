@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 
 CredentialProvider = Literal["openai", "serper"]
-CredentialUsage = Literal["saved", "one_time", "system"]
+CredentialUsage = Literal["one_time", "system"]
 TextbookGenerationMode = Literal["user_provided_api_keys", "system_credit_billing"]
 
 
@@ -22,19 +22,11 @@ class ByokStatusResponse(BaseModel):
     serper: CredentialState
 
 
-class ByokCredentialUpdate(BaseModel):
-    openai_api_key: Optional[str] = Field(default=None, max_length=500)
-    serper_api_key: Optional[str] = Field(default=None, max_length=500)
-
-
-class ByokCredentialUpdateResponse(ByokStatusResponse):
-    message: str
-
-
 class ByokValidateRequest(BaseModel):
     credential_usage: CredentialUsage = "one_time"
     openai_api_key: Optional[str] = Field(default=None, max_length=500)
     serper_api_key: Optional[str] = Field(default=None, max_length=500)
+    ui_language: Literal["vi", "en"] = "en"
 
 
 class ByokValidateResponse(BaseModel):

@@ -15,7 +15,7 @@ const EMPTY_SITE_INFO = {
   effective_date: null,
 }
 
-export function useSiteInfo(language = 'vi') {
+export function useSiteInfo(language = 'en') {
   const normalizedLanguage = language === 'en' ? 'en' : 'vi'
   const [siteInfo, setSiteInfo] = useState(EMPTY_SITE_INFO)
   const [loading, setLoading] = useState(true)

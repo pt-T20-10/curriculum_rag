@@ -21,78 +21,52 @@ const LANGUAGE_LABEL_KEYS = {
   en: 'textbook.language.en',
 }
 
-const SOURCE_GROUPS = [
-  {
-    key: 'english_academic',
-    labelKey: 'textbook.form.sourceGroupEnglishAcademic',
-    items: [
-      ['en_academic_open_textbooks', 'OpenStax, LibreTexts, MIT OCW'],
-      ['en_academic_universities', 'Stanford, Berkeley, CMU, Ivy League'],
-    ],
-  },
-  {
-    key: 'english_technical',
-    labelKey: 'textbook.form.sourceGroupEnglishTechnical',
-    items: [
-      ['en_technical_official_docs', 'Official technical docs'],
-    ],
-  },
-  {
-    key: 'vietnamese_academic',
-    labelKey: 'textbook.form.sourceGroupVietnameseAcademic',
-    items: [
-      ['vi_academic_universities', '.edu.vn, VNU, HUST, HCMUT, PTIT'],
-    ],
-  },
-]
-
 const SOURCE_MODE_OPTIONS = [
-  ['system_default', 'textbook.form.sourceModeSystem'],
-  ['custom_hybrid', 'textbook.form.sourceModeHybrid'],
-  ['custom_only', 'textbook.form.sourceModeCustomOnly'],
+  ['system_default', 'textbook.form.writeNormally'],
+  ['custom_only', 'textbook.form.addOwnSources'],
 ]
 
 const USER_PROVIDED_API_KEYS = 'user_provided_api_keys'
 const SYSTEM_CREDIT_BILLING = 'system_credit_billing'
 
 const MAIN_MODEL_OPTIONS = [
-  ['gpt-5.1', 'GPT-5.1 - chất lượng cao, chi phí cao hơn'],
-  ['gpt-5', 'GPT-5 - mạnh hơn, có thể chậm và tốn kém hơn'],
-  ['gpt-5-mini', 'GPT-5 mini - cân bằng chi phí và chất lượng'],
-  ['gpt-5-nano', 'GPT-5 nano - nhanh, tiết kiệm'],
-  ['gpt-4.1', 'GPT-4.1 - mặc định'],
-  ['gpt-4.1-mini', 'GPT-4.1 mini - tiết kiệm hơn'],
-  ['gpt-4o-mini', 'GPT-4o mini - rất tiết kiệm nhưng chất lượng thấp hơn'],
+  ['gpt-5.1', 'GPT-5.1'],
+  ['gpt-5', 'GPT-5'],
+  ['gpt-5-mini', 'GPT-5 mini'],
+  ['gpt-5-nano', 'GPT-5 nano'],
+  ['gpt-4.1', 'GPT-4.1'],
+  ['gpt-4.1-mini', 'GPT-4.1 mini'],
+  ['gpt-4o-mini', 'GPT-4o mini'],
 ]
 
 const SUPPORT_MODEL_OPTIONS = [
-  ['gpt-4o-mini', 'GPT-4o mini - mặc định'],
-  ['gpt-5.1', 'GPT-5.1 - chất lượng cao, chi phí cao hơn'],
-  ['gpt-5', 'GPT-5 - mạnh hơn, có thể chậm và tốn kém hơn'],
-  ['gpt-5-mini', 'GPT-5 mini - cân bằng chi phí và chất lượng'],
-  ['gpt-5-nano', 'GPT-5 nano - nhanh, tiết kiệm'],
-  ['gpt-4.1', 'GPT-4.1 - ổn định nhưng tốn hơn'],
-  ['gpt-4.1-mini', 'GPT-4.1 mini - tiết kiệm hơn'],
+  ['gpt-4o-mini', 'GPT-4o mini'],
+  ['gpt-5.1', 'GPT-5.1'],
+  ['gpt-5', 'GPT-5'],
+  ['gpt-5-mini', 'GPT-5 mini'],
+  ['gpt-5-nano', 'GPT-5 nano'],
+  ['gpt-4.1', 'GPT-4.1'],
+  ['gpt-4.1-mini', 'GPT-4.1 mini'],
 ]
 
 const EMBEDDING_MODEL_OPTIONS = [
-  ['text-embedding-3-small', 'text-embedding-3-small - mặc định'],
-  ['text-embedding-3-large', 'text-embedding-3-large - chất lượng cao hơn'],
+  ['text-embedding-3-small', 'text-embedding-3-small'],
+  ['text-embedding-3-large', 'text-embedding-3-large'],
 ]
 
 const IMAGE_MODEL_OPTIONS = [
-  ['gpt-image-1', 'GPT Image 1 - ảnh chất lượng cao'],
-  ['gpt-image-1-mini', 'GPT Image 1 mini - tiết kiệm hơn'],
-  ['dall-e-3', 'DALL-E 3 - ổn định, đời cũ'],
-  ['gpt-image-2', 'GPT Image 2 - mặc định'],
+  ['gpt-image-1', 'GPT Image 1'],
+  ['gpt-image-1-mini', 'GPT Image 1 mini'],
+  ['dall-e-3', 'DALL-E 3'],
+  ['gpt-image-2', 'GPT Image 2'],
 ]
 
 const IMAGE_VALIDATION_MODEL_OPTIONS = [
-  ['gpt-5.4-mini', 'GPT-5.4 mini - mặc định'],
-  ['gpt-5.1', 'GPT-5.1 - kiểm ảnh kỹ hơn, chi phí cao hơn'],
-  ['gpt-5-mini', 'GPT-5 mini - cân bằng chi phí và chất lượng'],
-  ['gpt-4.1', 'GPT-4.1 - ổn định'],
-  ['gpt-4o-mini', 'GPT-4o mini - tiết kiệm hơn'],
+  ['gpt-5.4-mini', 'GPT-5.4 mini'],
+  ['gpt-5.1', 'GPT-5.1'],
+  ['gpt-5-mini', 'GPT-5 mini'],
+  ['gpt-4.1', 'GPT-4.1'],
+  ['gpt-4o-mini', 'GPT-4o mini'],
 ]
 
 const RECOMMENDED_CONFIG = {
@@ -119,7 +93,6 @@ const IMAGE_PAGE_OVERHEAD_PER_SUBSECTION = 0.25
 const PAGE_COMPATIBILITY_WARNING_MULTIPLIER = 1.25
 
 const VI_DIACRITIC_RE = /[ăâđêôơưáàảãạắằẳẵặấầẩẫậéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựýỳỷỹỵ]/i
-const DOMAIN_RE = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i
 
 const UNACCENTED_VI_PATTERNS = [
   /\bhoc\b/,
@@ -249,6 +222,8 @@ function defaultSourcePreferences() {
     selected_source_ids: [],
     custom_urls: [],
     custom_domains: [],
+    reference_style: 'none',
+    fallback_policy: 'none',
   }
 }
 
@@ -271,17 +246,7 @@ function parseSourceLines(value, t) {
       return
     }
 
-    if (line.includes('://') || line.includes('/') || line.includes('?') || line.includes('#')) {
-      errors.push(t('textbook.form.sourceLineDomainInvalid', { line: index + 1 }))
-      return
-    }
-
-    const domain = line.toLowerCase().replace(/^www\./, '')
-    if (!DOMAIN_RE.test(domain)) {
-      errors.push(t('textbook.form.sourceLineDomainInvalid', { line: index + 1 }))
-      return
-    }
-    if (!domains.includes(domain)) domains.push(domain)
+    errors.push(t('textbook.form.sourceLineUrlInvalid', { line: index + 1 }))
   })
 
   return { urls, domains, errors }
@@ -298,7 +263,6 @@ export function ConfigForm({
   currentTopic = '',
   submittedConfig = null, // ⭐ NEW - actual submitted config
   byokStatus = null,
-  onByokStatusChange = null,
 }) {
   const { i18n, t } = useTranslation()
   const [formData, setFormData] = useState({
@@ -315,7 +279,7 @@ export function ConfigForm({
     page_plan_confirmed: false,
     enable_images: true,
     formula_policy: 'auto',
-    credential_usage: 'saved',
+    credential_usage: 'one_time',
     openai_api_key: '',
     serper_api_key: '',
     model_selection: {
@@ -328,6 +292,7 @@ export function ConfigForm({
   })
   const [initialStructure, setInitialStructure] = useState(() => createDefaultStructure(t, 'level1'))
   const [sourceInput, setSourceInput] = useState('')
+  const [sourceFiles, setSourceFiles] = useState([])
   const [fieldErrors, setFieldErrors] = useState({})
   const [confirmWarnings, setConfirmWarnings] = useState([])
   const [pendingSubmitData, setPendingSubmitData] = useState(null)
@@ -342,29 +307,25 @@ export function ConfigForm({
     error: '',
   })
   const [highlightedErrorKey, setHighlightedErrorKey] = useState('')
-  const [savingCredentials, setSavingCredentials] = useState(false)
   const [validatingCredentials, setValidatingCredentials] = useState(false)
   const [credentialValidation, setCredentialValidation] = useState(null)
-  const [credentialMessage, setCredentialMessage] = useState('')
   const [pendingSerperChoiceData, setPendingSerperChoiceData] = useState(null)
   const [showOpenAIKey, setShowOpenAIKey] = useState(false)
   const [showSerperKey, setShowSerperKey] = useState(false)
   const formRef = useRef(null)
   const structureFileInputRef = useRef(null)
+  const sourceFileInputRef = useRef(null)
   const lastErrorSignatureRef = useRef('')
   const isAdmin = user?.role === 'admin'
   const generationMode = byokStatus?.generation_mode || USER_PROVIDED_API_KEYS
   const usesUserProvidedKeys = generationMode === USER_PROVIDED_API_KEYS
-  const hasSavedOpenAI = Boolean(byokStatus?.openai?.configured)
-  const hasSavedSerper = Boolean(byokStatus?.serper?.configured)
+  const generationModeLabel = t(`textbook.form.generationMode.${generationMode}`)
   const typedOpenAIKey = String(formData.openai_api_key || '').trim()
   const typedSerperKey = String(formData.serper_api_key || '').trim()
-  const hasUsableOpenAIKey = formData.credential_usage === 'saved'
-    ? (hasSavedOpenAI || Boolean(typedOpenAIKey))
-    : formData.credential_usage === 'system' && isAdmin
-      ? true
-      : Boolean(typedOpenAIKey)
-  const apiKeyGateMessage = 'Vui lòng nhập hoặc chọn OpenAI API key đã lưu trước khi thao tác tạo giáo trình.'
+  const hasUsableOpenAIKey = formData.credential_usage === 'system' && isAdmin
+    ? true
+    : Boolean(typedOpenAIKey)
+  const apiKeyGateMessage = t('textbook.form.apiKeyRequired')
 
   const errorFields = useMemo(() => Object.keys(fieldErrors), [fieldErrors])
   const firstErrorKey = errorFields[0] || (error ? 'api_error' : '')
@@ -424,7 +385,6 @@ export function ConfigForm({
       [name]: value,
     }))
     setCredentialValidation(null)
-    setCredentialMessage('')
     if (fieldErrors.api_keys) {
       setFieldErrors(prev => {
         const next = { ...prev }
@@ -438,6 +398,7 @@ export function ConfigForm({
     credential_usage: formData.credential_usage,
     openai_api_key: typedOpenAIKey || undefined,
     serper_api_key: typedSerperKey || undefined,
+    ui_language: (i18n.resolvedLanguage || i18n.language || 'en').split('-')[0] === 'vi' ? 'vi' : 'en',
   })
 
   const handleValidateCredentials = async () => {
@@ -445,27 +406,26 @@ export function ConfigForm({
       setCredentialValidation({
         openai_valid: true,
         serper_valid: null,
-        message: 'Admin đang dùng API key hệ thống. Hãy kiểm tra trạng thái trong trang Cấu hình hệ thống nếu cần.',
+        message: t('textbook.form.apiKeySystemValidationMessage'),
       })
       return
     }
-    if (!typedOpenAIKey && !(formData.credential_usage === 'saved' && hasSavedOpenAI)) {
+    if (!typedOpenAIKey) {
       setFieldErrors(prev => ({
         ...prev,
-        api_keys: 'Vui lòng nhập OpenAI API key hoặc lưu key trước khi kiểm tra.',
+        api_keys: t('textbook.form.apiKeyRequired'),
       }))
       return
     }
     setValidatingCredentials(true)
     setCredentialValidation(null)
-    setCredentialMessage('')
     try {
       const response = await byokAPI.validate(currentCredentialPayload())
       setCredentialValidation(response.data)
       if (!response.data?.openai_valid) {
         setFieldErrors(prev => ({
           ...prev,
-          api_keys: response.data?.openai_error || response.data?.message || 'OpenAI API key không hợp lệ.',
+          api_keys: response.data?.openai_error || response.data?.message || t('textbook.form.openaiKeyInvalid'),
         }))
       } else {
         setFieldErrors(prev => {
@@ -478,7 +438,7 @@ export function ConfigForm({
       const detail = err.response?.data?.detail
       setFieldErrors(prev => ({
         ...prev,
-        api_keys: typeof detail === 'string' ? detail : 'Không kiểm tra được API key.',
+        api_keys: typeof detail === 'string' ? detail : t('textbook.form.apiKeyValidateFailed'),
       }))
     } finally {
       setValidatingCredentials(false)
@@ -493,42 +453,6 @@ export function ConfigForm({
         [name]: value,
       },
     }))
-  }
-
-  const handleSaveCredentials = async () => {
-    if (!typedOpenAIKey && !typedSerperKey) {
-      setFieldErrors(prev => ({
-        ...prev,
-        api_keys: 'Nhập OpenAI API key hoặc Serper API key mới để lưu.',
-      }))
-      return
-    }
-    setSavingCredentials(true)
-    setCredentialMessage('')
-    try {
-      const response = await byokAPI.updateCredentials({
-        openai_api_key: typedOpenAIKey || undefined,
-        serper_api_key: typedSerperKey || undefined,
-      })
-      onByokStatusChange?.(response.data)
-      setFormData(prev => ({
-        ...prev,
-        credential_usage: 'saved',
-        openai_api_key: '',
-        serper_api_key: '',
-      }))
-      setShowOpenAIKey(false)
-      setShowSerperKey(false)
-      setCredentialMessage(response.data?.message || 'Da luu API key.')
-    } catch (err) {
-      const detail = err.response?.data?.detail
-      setFieldErrors(prev => ({
-        ...prev,
-        api_keys: typeof detail === 'string' ? detail : 'Khong luu duoc API key.',
-      }))
-    } finally {
-      setSavingCredentials(false)
-    }
   }
 
   const getConfigIssues = (data) => {
@@ -612,7 +536,7 @@ export function ConfigForm({
   }
 
   const getTopicWarnings = (data) => {
-    const language = (i18n.resolvedLanguage || i18n.language || 'vi').split('-')[0]
+    const language = (i18n.resolvedLanguage || i18n.language || 'en').split('-')[0]
     if (language !== 'vi') {
       return []
     }
@@ -668,8 +592,11 @@ export function ConfigForm({
         : [],
       custom_urls: shouldUseCustomSources ? parsedSources.urls : [],
       custom_domains: shouldUseCustomSources ? parsedSources.domains : [],
+      reference_style: shouldUseCustomSources ? 'apa_numbered' : 'none',
+      fallback_policy: shouldUseCustomSources ? 'ask_then_system' : 'none',
     }
     submitData.source_preferences = sourcePreferences
+    submitData.source_files = shouldUseCustomSources ? sourceFiles : []
 
     if (parsedSources.errors.length > 0) {
       setFieldErrors({ source_preferences: parsedSources.errors.join(' ') })
@@ -679,7 +606,8 @@ export function ConfigForm({
       sourcePreferences.source_mode === 'custom_only' &&
       sourcePreferences.selected_source_ids.length === 0 &&
       sourcePreferences.custom_urls.length === 0 &&
-      sourcePreferences.custom_domains.length === 0
+      sourcePreferences.custom_domains.length === 0 &&
+      sourceFiles.length === 0
     ) {
       setFieldErrors({ source_preferences: t('textbook.form.sourceCustomOnlyRequired') })
       return
@@ -748,7 +676,7 @@ export function ConfigForm({
         setCredentialValidation(validation)
         if (!validation.openai_valid) {
           setFieldErrors({
-            api_keys: validation.openai_error || validation.message || 'OpenAI API key không hợp lệ.',
+            api_keys: validation.openai_error || validation.message || t('textbook.form.openaiKeyInvalid'),
           })
           return
         }
@@ -758,14 +686,14 @@ export function ConfigForm({
             warnings: combinedWarnings,
             structuredMissingChildren,
             hasMissingPages: submitData.planning_mode === 'structured' && hasMissingStructurePageTargets(initialStructure),
-            serperError: validation.serper_error || 'Serper API key có lỗi.',
+            serperError: validation.serper_error || t('textbook.form.serperKeyError'),
           })
           return
         }
       } catch (err) {
         const detail = err.response?.data?.detail
         setFieldErrors({
-          api_keys: typeof detail === 'string' ? detail : 'Không kiểm tra được API key.',
+          api_keys: typeof detail === 'string' ? detail : t('textbook.form.apiKeyValidateFailed'),
         })
         return
       } finally {
@@ -821,8 +749,45 @@ export function ConfigForm({
         ...defaultSourcePreferences(),
         ...(prev.source_preferences || {}),
         source_mode: mode,
+        reference_style: mode === 'system_default' ? 'none' : 'apa_numbered',
+        fallback_policy: mode === 'system_default' ? 'none' : 'ask_then_system',
       },
     }))
+  }
+
+  const handleSourceFileUpload = (event) => {
+    const files = Array.from(event.target.files || [])
+    event.target.value = ''
+    if (!files.length) return
+    const accepted = []
+    const errors = []
+    files.forEach(file => {
+      const lower = file.name.toLowerCase()
+      if (!lower.endsWith('.pdf') && !lower.endsWith('.docx')) {
+        errors.push(`${file.name}: ${t('textbook.form.sourceFileUnsupported')}`)
+        return
+      }
+      if (file.size > 25 * 1024 * 1024) {
+        errors.push(`${file.name}: ${t('textbook.form.sourceFileTooLarge')}`)
+        return
+      }
+      accepted.push(file)
+    })
+    if (errors.length > 0) {
+      setFieldErrors({ source_preferences: errors.join(' ') })
+    }
+    if (accepted.length > 0) {
+      setSourceFiles(prev => {
+        const byKey = new Map(prev.map(file => [`${file.name}:${file.size}`, file]))
+        accepted.forEach(file => byKey.set(`${file.name}:${file.size}`, file))
+        return Array.from(byKey.values())
+      })
+      setSourceMode('custom_only')
+    }
+  }
+
+  const removeSourceFile = (name, size) => {
+    setSourceFiles(prev => prev.filter(file => !(file.name === name && file.size === size)))
   }
 
   const setStructureDepth = (depth) => {
@@ -939,30 +904,133 @@ export function ConfigForm({
     }
   }
 
-  const toggleSourceId = (sourceId) => {
-    setFormData(prev => {
-      const prefs = {
-        ...defaultSourcePreferences(),
-        ...(prev.source_preferences || {}),
-      }
-      const current = prefs.selected_source_ids || []
-      const selected = current.includes(sourceId)
-        ? current.filter(id => id !== sourceId)
-        : [...current, sourceId]
-      return {
-        ...prev,
-        source_preferences: {
-          ...prefs,
-          selected_source_ids: selected,
-        },
-      }
-    })
-  }
-
   const sourcePrefs = {
     ...defaultSourcePreferences(),
     ...(formData.source_preferences || {}),
   }
+
+  const sourceSettingsSection = (
+    <div className="space-y-3 rounded-lg border border-gray-200 bg-white p-4">
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-2">
+          {t('textbook.form.sourceSettings')}
+        </label>
+        <div className="grid grid-cols-1 gap-2 rounded-lg border border-gray-200 bg-gray-50 p-1 sm:grid-cols-2">
+          {SOURCE_MODE_OPTIONS.map(([value, labelKey]) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setSourceMode(value)}
+              disabled={loading}
+              title={value === 'custom_only' ? t('textbook.form.sourceReferencesTooltip') : undefined}
+              className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                sourcePrefs.source_mode === value
+                  ? 'bg-white text-blue-700 shadow-sm ring-1 ring-blue-200'
+                  : 'text-gray-600 hover:bg-white/70'
+              }`}
+            >
+              {t(labelKey)}
+            </button>
+          ))}
+        </div>
+        <p className="mt-1 text-xs text-gray-500">
+          {t(`textbook.form.sourceModeHint.${sourcePrefs.source_mode}`)}
+        </p>
+      </div>
+
+      {sourcePrefs.source_mode !== 'system_default' && (
+        <>
+          <div
+            {...errorScrollAttrs('source_preferences')}
+            className={errorHighlightClass('source_preferences')}
+          >
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              {t('textbook.form.customSources')}
+            </label>
+            <textarea
+              value={sourceInput}
+              onChange={(e) => {
+                setSourceInput(e.target.value)
+                if (fieldErrors.source_preferences) {
+                  setFieldErrors(prev => {
+                    const next = { ...prev }
+                    delete next.source_preferences
+                    return next
+                  })
+                }
+              }}
+              placeholder={t('textbook.form.customSourcesPlaceholder')}
+              className={inputClassName(
+                'source_preferences',
+                'w-full resize-none rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:ring-2 focus:ring-blue-500',
+              )}
+              rows={4}
+              disabled={loading}
+            />
+            {fieldErrors.source_preferences && (
+              <p className="mt-1 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
+                {fieldErrors.source_preferences}
+              </p>
+            )}
+            <p className="mt-1 text-xs text-gray-500">
+              {t('textbook.form.customSourcesHint')}
+            </p>
+          </div>
+
+          <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm font-medium text-gray-700">
+                  {t('textbook.form.sourceFiles')}
+                </p>
+                <p className="mt-1 text-xs text-gray-500">
+                  {t('textbook.form.sourceFilesHint')}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => sourceFileInputRef.current?.click()}
+                disabled={loading}
+                className="rounded-md border border-blue-300 bg-blue-50 px-3 py-2 text-sm font-medium text-blue-700 transition-colors hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {t('textbook.form.sourceFilesButton')}
+              </button>
+              <input
+                ref={sourceFileInputRef}
+                type="file"
+                multiple
+                accept=".docx,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf"
+                className="hidden"
+                tabIndex={-1}
+                onChange={handleSourceFileUpload}
+                disabled={loading}
+              />
+            </div>
+            {sourceFiles.length > 0 && (
+              <div className="mt-3 space-y-2">
+                {sourceFiles.map(file => (
+                  <div
+                    key={`${file.name}:${file.size}`}
+                    className="flex items-center justify-between gap-3 rounded-md border border-gray-200 bg-white px-3 py-2 text-xs text-gray-700"
+                  >
+                    <span className="min-w-0 truncate">{file.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => removeSourceFile(file.name, file.size)}
+                      className="shrink-0 text-red-600 hover:text-red-700"
+                      disabled={loading}
+                    >
+                      {t('common.remove', 'Xóa')}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  )
 
   if (isActive) {
     // Show user's original query immediately; fall back to AI-generated title if query unavailable
@@ -1097,29 +1165,25 @@ export function ConfigForm({
         >
           <div className="flex items-start justify-between gap-3">
             <div>
-              <p className="text-sm font-semibold text-gray-900">API key của bạn</p>
+              <p className="text-sm font-semibold text-gray-900">{t('textbook.form.apiKeyTitle')}</p>
               <p className="mt-1 text-xs text-gray-600">
-                Chế độ hiện tại: <span className="font-semibold">{byokStatus?.generation_mode_label || 'Người dùng tự nhập API key'}</span>. OpenAI API key là bắt buộc; hệ thống không trừ credit khi tạo giáo trình ở chế độ này.
+                {t('textbook.form.apiKeyCurrentMode', { mode: generationModeLabel })}
               </p>
             </div>
-            {hasSavedOpenAI && (
-              <span className="shrink-0 rounded-md bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700">
-                OpenAI đã lưu ••••{byokStatus?.openai?.last4}
-              </span>
-            )}
           </div>
 
-          <div className="mt-3 grid grid-cols-2 gap-2 rounded-lg border border-gray-200 bg-gray-50 p-1">
+          <div className={`mt-3 grid gap-2 rounded-lg border border-gray-200 bg-gray-50 p-1 ${
+            isAdmin ? 'grid-cols-2' : 'grid-cols-1'
+          }`}>
             {[
-              ['saved', 'Lưu key mã hóa trong tài khoản'],
-              ['one_time', 'Chỉ dùng key một lần cho giáo trình này'],
-              ...(isAdmin ? [['system', 'Sử dụng API key hệ thống']] : []),
+              ['one_time', t('textbook.form.apiKeyOneTime')],
+              ...(isAdmin ? [['system', t('textbook.form.apiKeySystem')]] : []),
             ].map(([value, label]) => (
               <button
                 key={value}
                 type="button"
                 onClick={() => handleCredentialFieldChange('credential_usage', value)}
-                disabled={loading || savingCredentials}
+                disabled={loading}
                 className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${
                   formData.credential_usage === value
                     ? 'bg-white text-blue-700 shadow-sm ring-1 ring-blue-200'
@@ -1133,7 +1197,7 @@ export function ConfigForm({
 
           {formData.credential_usage === 'system' && isAdmin && (
             <p className="mt-3 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
-              Admin đang dùng API key đã cấu hình trong hệ thống cho giáo trình này. Chế độ này vẫn không trừ credit vì hệ thống đang ở “Người dùng tự nhập API key”.
+              {t('textbook.form.apiKeySystemHint')}
             </p>
           )}
 
@@ -1148,17 +1212,17 @@ export function ConfigForm({
                   type={showOpenAIKey ? 'text' : 'password'}
                   value={formData.openai_api_key}
                   onChange={(e) => handleCredentialFieldChange('openai_api_key', e.target.value)}
-                  placeholder={hasSavedOpenAI ? `Đang dùng key đã lưu ••••${byokStatus?.openai?.last4}` : 'sk-...'}
+                  placeholder="sk-..."
                   className={inputClassName('api_keys', 'w-full rounded-lg border border-gray-300 px-3 py-2 pr-10 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100')}
-                  disabled={loading || savingCredentials}
+                  disabled={loading}
                 />
                 <button
                   type="button"
                   onClick={() => setShowOpenAIKey(current => !current)}
-                  disabled={loading || savingCredentials || !formData.openai_api_key}
+                  disabled={loading || !formData.openai_api_key}
                   className="absolute inset-y-0 right-0 flex items-center px-3 text-gray-400 transition-colors hover:text-gray-600 disabled:cursor-not-allowed disabled:opacity-40"
-                  title={showOpenAIKey ? 'Ẩn OpenAI API key' : 'Hiện OpenAI API key'}
-                  aria-label={showOpenAIKey ? 'Ẩn OpenAI API key' : 'Hiện OpenAI API key'}
+                  title={showOpenAIKey ? t('textbook.form.hideApiKey') : t('textbook.form.showApiKey')}
+                  aria-label={showOpenAIKey ? t('textbook.form.hideApiKey') : t('textbook.form.showApiKey')}
                 >
                   {showOpenAIKey ? <FiEyeOff className="h-4 w-4" /> : <FiEye className="h-4 w-4" />}
                 </button>
@@ -1166,24 +1230,24 @@ export function ConfigForm({
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-gray-700">
-                Serper API key <span className="font-normal text-gray-400">(tùy chọn)</span>
+                Serper API key <span className="font-normal text-gray-400">{t('textbook.form.optionalLabel')}</span>
               </label>
               <div className="relative">
                 <input
                   type={showSerperKey ? 'text' : 'password'}
                   value={formData.serper_api_key}
                   onChange={(e) => handleCredentialFieldChange('serper_api_key', e.target.value)}
-                  placeholder={hasSavedSerper ? `Đang dùng key đã lưu ••••${byokStatus?.serper?.last4}` : 'Tăng chất lượng ảnh tìm kiếm thực tế'}
+                  placeholder={t('textbook.form.serperPlaceholder')}
                   className="w-full rounded-lg border border-gray-300 px-3 py-2 pr-10 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
-                  disabled={loading || savingCredentials}
+                  disabled={loading}
                 />
                 <button
                   type="button"
                   onClick={() => setShowSerperKey(current => !current)}
-                  disabled={loading || savingCredentials || !formData.serper_api_key}
+                  disabled={loading || !formData.serper_api_key}
                   className="absolute inset-y-0 right-0 flex items-center px-3 text-gray-400 transition-colors hover:text-gray-600 disabled:cursor-not-allowed disabled:opacity-40"
-                  title={showSerperKey ? 'Ẩn Serper API key' : 'Hiện Serper API key'}
-                  aria-label={showSerperKey ? 'Ẩn Serper API key' : 'Hiện Serper API key'}
+                  title={showSerperKey ? t('textbook.form.hideApiKey') : t('textbook.form.showApiKey')}
+                  aria-label={showSerperKey ? t('textbook.form.hideApiKey') : t('textbook.form.showApiKey')}
                 >
                   {showSerperKey ? <FiEyeOff className="h-4 w-4" /> : <FiEye className="h-4 w-4" />}
                 </button>
@@ -1192,9 +1256,9 @@ export function ConfigForm({
           </div>
           )}
 
-          {formData.credential_usage !== 'system' && !hasSavedSerper && !typedSerperKey && (
+          {formData.credential_usage !== 'system' && !typedSerperKey && (
             <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-              Không có Serper API key thì ảnh sẽ chủ yếu là AI-generated/Wikimedia, ít ảnh tìm kiếm thực tế hơn.
+              {t('textbook.form.serperMissingHint')}
             </p>
           )}
 
@@ -1205,13 +1269,12 @@ export function ConfigForm({
                 onClick={handleValidateCredentials}
                 disabled={
                   loading ||
-                  savingCredentials ||
                   validatingCredentials ||
-                  (!typedOpenAIKey && !(formData.credential_usage === 'saved' && hasSavedOpenAI))
+                  !typedOpenAIKey
                 }
                 className="rounded-lg border border-blue-300 bg-white px-3 py-2 text-sm font-medium text-blue-700 transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {validatingCredentials ? 'Đang kiểm tra...' : 'Kiểm tra key'}
+                {validatingCredentials ? t('textbook.form.apiKeyChecking') : t('textbook.form.apiKeyCheck')}
               </button>
             </div>
           )}
@@ -1220,10 +1283,10 @@ export function ConfigForm({
             <div className="mt-2 space-y-1 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs">
               <p className={credentialValidation.openai_valid ? 'text-emerald-700' : 'font-medium text-red-700'}>
                 OpenAI: {credentialValidation.openai_valid
-                  ? 'Key hợp lệ.'
-                  : (credentialValidation.openai_error || credentialValidation.message || 'Key không hợp lệ.')}
+                  ? t('textbook.form.keyValid')
+                  : (credentialValidation.openai_error || credentialValidation.message || t('textbook.form.keyInvalid'))}
               </p>
-              {typedSerperKey || hasSavedSerper ? (
+              {typedSerperKey ? (
                 <p className={
                   credentialValidation.serper_valid === true
                     ? 'text-emerald-700'
@@ -1232,47 +1295,31 @@ export function ConfigForm({
                       : 'text-gray-500'
                 }>
                   Serper: {credentialValidation.serper_valid === true
-                    ? 'Key hợp lệ.'
+                    ? t('textbook.form.keyValid')
                     : credentialValidation.serper_valid === false
-                      ? (credentialValidation.serper_error || 'Key có lỗi.')
-                      : 'Chưa kiểm tra.'}
+                      ? (credentialValidation.serper_error || t('textbook.form.keyHasError'))
+                      : t('textbook.form.keyNotChecked')}
                 </p>
               ) : (
                 <p className="text-gray-500">
-                  Serper: chưa nhập key, hệ thống sẽ dùng AI-generated/Wikimedia nếu tiếp tục.
+                  {t('textbook.form.serperNotProvidedStatus')}
                 </p>
-              )}
-            </div>
-          )}
-
-          {formData.credential_usage === 'saved' && (
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={handleSaveCredentials}
-                disabled={loading || savingCredentials || validatingCredentials || (!typedOpenAIKey && !typedSerperKey)}
-                className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {savingCredentials ? 'Đang lưu...' : 'Lưu key mã hóa'}
-              </button>
-              {credentialMessage && (
-                <span className="text-xs font-medium text-emerald-700">{credentialMessage}</span>
               )}
             </div>
           )}
 
           <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-3">
-            <p className="text-xs font-semibold text-gray-800">Model sử dụng key của bạn</p>
+            <p className="text-xs font-semibold text-gray-800">{t('textbook.form.apiKeyModelTitle')}</p>
             <p className="mt-1 text-xs text-gray-500">
-              Chọn model mạnh hơn có thể tăng chi phí và thời gian chạy trên tài khoản OpenAI của bạn.
+              {t('textbook.form.apiKeyModelHint')}
             </p>
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
               {[
-                ['main_model', 'Model chính', MAIN_MODEL_OPTIONS],
-                ['support_model', 'Model phụ trợ / phản biện', SUPPORT_MODEL_OPTIONS],
-                ['embedding_model', 'Model embedding', EMBEDDING_MODEL_OPTIONS],
-                ['image_model', 'Model vẽ ảnh', IMAGE_MODEL_OPTIONS],
-                ['image_validation_model', 'Model kiểm tra ảnh', IMAGE_VALIDATION_MODEL_OPTIONS],
+                ['main_model', t('textbook.form.modelMain'), MAIN_MODEL_OPTIONS],
+                ['support_model', t('textbook.form.modelSupport'), SUPPORT_MODEL_OPTIONS],
+                ['embedding_model', t('textbook.form.modelEmbedding'), EMBEDDING_MODEL_OPTIONS],
+                ['image_model', t('textbook.form.modelImage'), IMAGE_MODEL_OPTIONS],
+                ['image_validation_model', t('textbook.form.modelImageValidation'), IMAGE_VALIDATION_MODEL_OPTIONS],
               ].map(([name, label, options]) => (
                 <label key={name} className="block">
                   <span className="mb-1 block text-xs font-medium text-gray-700">{label}</span>
@@ -1299,63 +1346,11 @@ export function ConfigForm({
 
       {!usesUserProvidedKeys && (
         <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
-          Chế độ hiện tại: <span className="font-semibold">Nạp tiền bằng credit hệ thống</span>. Quy trình nạp tiền và trừ credit giữ như hiện tại.
+          {t('textbook.form.creditBillingModeNotice')}
         </div>
       )}
 
-      {/* Topic Input */}
-      <div>
-        <label className="block text-sm font-medium text-gray-700 mb-2">
-          {t('textbook.form.topic')} <span className="text-red-500">*</span>
-        </label>
-        <div className="mb-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
-          <p className="text-xs font-semibold text-blue-900">
-            {t('textbook.form.topicGuideTitle')}
-          </p>
-          <p className="mt-1 text-xs text-blue-800">
-            {t('textbook.form.topicGuideText')}
-          </p>
-        </div>
-        <textarea
-          name="topic"
-          value={formData.topic}
-          onChange={handleChange}
-          placeholder={t('textbook.form.topicPlaceholder')}
-          className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none transition-all"
-          rows={3}
-          disabled={loading}
-          required
-        />
-        <p className="mt-1 text-xs text-gray-500">
-          {t('textbook.form.topicHint')}
-        </p>
-      </div>
-
-      <div className="rounded-lg border border-gray-200 bg-white p-3">
-        <div className="flex items-start gap-3">
-          <input
-            type="checkbox"
-            id="formula_policy"
-            checked={formData.formula_policy === 'include'}
-            onChange={(e) => {
-              setFormData(prev => ({
-                ...prev,
-                formula_policy: e.target.checked ? 'include' : 'auto',
-              }))
-            }}
-            className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-            disabled={loading}
-          />
-          <div>
-            <label htmlFor="formula_policy" className="text-sm font-medium text-gray-700">
-              {t('textbook.form.formulas')}
-            </label>
-            <p className="mt-1 text-xs text-gray-500">
-              {t('textbook.form.formulasHint')}
-            </p>
-          </div>
-        </div>
-      </div>
+      {sourceSettingsSection}
 
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -1419,6 +1414,89 @@ export function ConfigForm({
         </p>
       </div>
 
+      {/* Topic Input */}
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-2">
+          {t('textbook.form.topic')} <span className="text-red-500">*</span>
+        </label>
+        <div className="mb-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
+          <p className="text-xs font-semibold text-blue-900">
+            {t('textbook.form.topicGuideTitle')}
+          </p>
+          <p className="mt-1 text-xs text-blue-800">
+            {t('textbook.form.topicGuideText')}
+          </p>
+        </div>
+        <textarea
+          name="topic"
+          value={formData.topic}
+          onChange={handleChange}
+          placeholder={t('textbook.form.topicPlaceholder')}
+          className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none transition-all"
+          rows={3}
+          disabled={loading}
+          required
+        />
+        <p className="mt-1 text-xs text-gray-500">
+          {t('textbook.form.topicHint')}
+        </p>
+      </div>
+
+      <div className="rounded-lg border border-gray-200 bg-white p-3">
+        <div className="flex items-start gap-3">
+          <input
+            type="checkbox"
+            id="formula_policy"
+            checked={formData.formula_policy === 'include'}
+            onChange={(e) => {
+              setFormData(prev => ({
+                ...prev,
+                formula_policy: e.target.checked ? 'include' : 'auto',
+              }))
+            }}
+            className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            disabled={loading}
+          />
+          <div>
+            <label htmlFor="formula_policy" className="text-sm font-medium text-gray-700">
+              {t('textbook.form.formulas')}
+            </label>
+            <p className="mt-1 text-xs text-gray-500">
+              {t('textbook.form.formulasHint')}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div
+        {...errorScrollAttrs('target_pages')}
+        className={errorHighlightClass('target_pages')}
+      >
+        <label className="block text-sm font-medium text-gray-700 mb-2">
+          {t('textbook.form.targetPages')} <span className="text-red-500">*</span>
+        </label>
+        <input
+          type="number"
+          name="target_pages"
+          value={formData.target_pages}
+          onChange={handleChange}
+          step={1}
+          min={5}
+          className={inputClassName(
+            'target_pages',
+            'w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100',
+          )}
+          disabled={loading}
+          required
+        />
+        {fieldErrors.target_pages && (
+          <p className="mt-1 text-xs text-red-600">{fieldErrors.target_pages}</p>
+        )}
+        <p className="mt-1 text-xs text-gray-500">
+          {t('textbook.form.targetPagesHint')}
+        </p>
+      </div>
+
       {formData.planning_mode === 'auto' && (
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -1451,35 +1529,6 @@ export function ConfigForm({
         </p>
       </div>
       )}
-
-      <div
-        {...errorScrollAttrs('target_pages')}
-        className={errorHighlightClass('target_pages')}
-      >
-        <label className="block text-sm font-medium text-gray-700 mb-2">
-          {t('textbook.form.targetPages')} <span className="text-red-500">*</span>
-        </label>
-        <input
-          type="number"
-          name="target_pages"
-          value={formData.target_pages}
-          onChange={handleChange}
-          step={1}
-          min={5}
-          className={inputClassName(
-            'target_pages',
-            'w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100',
-          )}
-          disabled={loading}
-          required
-        />
-        {fieldErrors.target_pages && (
-          <p className="mt-1 text-xs text-red-600">{fieldErrors.target_pages}</p>
-        )}
-        <p className="mt-1 text-xs text-gray-500">
-          {t('textbook.form.targetPagesHint')}
-        </p>
-      </div>
 
       {formData.planning_mode === 'structured' && (
         <div
@@ -1653,105 +1702,6 @@ export function ConfigForm({
             </div>
           )}
 
-          <div className="space-y-3 rounded-lg border border-gray-200 bg-white p-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                {t('textbook.form.sourceSettings')}
-              </label>
-              <div className="grid grid-cols-1 gap-2 rounded-lg border border-gray-200 bg-gray-50 p-1 sm:grid-cols-3">
-                {SOURCE_MODE_OPTIONS.map(([value, labelKey]) => (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => setSourceMode(value)}
-                    disabled={loading}
-                    className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${
-                      sourcePrefs.source_mode === value
-                        ? 'bg-white text-blue-700 shadow-sm ring-1 ring-blue-200'
-                        : 'text-gray-600 hover:bg-white/70'
-                    }`}
-                  >
-                    {t(labelKey)}
-                  </button>
-                ))}
-              </div>
-              <p className="mt-1 text-xs text-gray-500">
-                {t(`textbook.form.sourceModeHint.${sourcePrefs.source_mode}`)}
-              </p>
-            </div>
-
-            {sourcePrefs.source_mode !== 'system_default' && (
-              <>
-                <div className="space-y-3">
-                  {SOURCE_GROUPS.map(group => (
-                    <div key={group.key}>
-                      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
-                        {t(group.labelKey)}
-                      </p>
-                      <div className="flex flex-wrap gap-2">
-                        {group.items.map(([sourceId, label]) => {
-                          const checked = sourcePrefs.selected_source_ids.includes(sourceId)
-                          return (
-                            <button
-                              key={sourceId}
-                              type="button"
-                              onClick={() => toggleSourceId(sourceId)}
-                              disabled={loading}
-                              className={`rounded-md border px-3 py-2 text-xs font-medium transition-colors ${
-                                checked
-                                  ? 'border-blue-300 bg-blue-50 text-blue-700'
-                                  : 'border-gray-200 bg-white text-gray-700 hover:border-blue-200'
-                              }`}
-                            >
-                              {label}
-                            </button>
-                          )
-                        })}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                <div
-                  {...errorScrollAttrs('source_preferences')}
-                  className={errorHighlightClass('source_preferences')}
-                >
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    {t('textbook.form.customSources')}
-                  </label>
-                  <textarea
-                    value={sourceInput}
-                    onChange={(e) => {
-                      setSourceInput(e.target.value)
-                      if (fieldErrors.source_preferences) {
-                        setFieldErrors(prev => {
-                          const next = { ...prev }
-                          delete next.source_preferences
-                          return next
-                        })
-                      }
-                    }}
-                    placeholder={t('textbook.form.customSourcesPlaceholder')}
-                    className={inputClassName(
-                      'source_preferences',
-                      'w-full resize-none rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:ring-2 focus:ring-blue-500',
-                    )}
-                    rows={4}
-                    disabled={loading}
-                  />
-                  {fieldErrors.source_preferences && (
-                    <p className="mt-1 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
-                      {fieldErrors.source_preferences}
-                    </p>
-                  )}
-                  <p className="mt-1 text-xs text-gray-500">
-                    {t('textbook.form.customSourcesHint')}
-                  </p>
-                </div>
-              </>
-            )}
-          </div>
-
           {formData.planning_mode === 'auto' && (
             <div
               {...errorScrollAttrs('max_subsections_per_chapter')}
@@ -1897,7 +1847,7 @@ export function ConfigForm({
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
             </svg>
-            {validatingCredentials ? 'Đang kiểm tra key...' : t('textbook.form.submitting')}
+            {validatingCredentials ? t('textbook.form.apiKeyCheckingLong') : t('textbook.form.submitting')}
           </span>
         ) : (
           `🚀 ${t('textbook.form.submit')}`
@@ -2021,13 +1971,13 @@ export function ConfigForm({
               </svg>
             </div>
             <h3 className="text-xl font-bold text-gray-900 text-center mb-2">
-              Serper API key có lỗi
+              {t('textbook.form.serperErrorTitle')}
             </h3>
             <p className="text-sm text-gray-600 text-center mb-4">
               {pendingSerperChoiceData.serperError}
             </p>
             <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 mb-6">
-              Nếu tiếp tục, hệ thống sẽ bỏ qua Serper API key cho giáo trình này. Ảnh sẽ chủ yếu dùng AI-generated/Wikimedia và ít ảnh tìm kiếm thực tế hơn.
+              {t('textbook.form.serperErrorContinueHint')}
             </div>
             <div className="flex gap-3">
               <button
@@ -2035,12 +1985,12 @@ export function ConfigForm({
                 onClick={() => {
                   setPendingSerperChoiceData(null)
                   setFieldErrors({
-                    api_keys: pendingSerperChoiceData.serperError || 'Serper API key có lỗi.',
+                    api_keys: pendingSerperChoiceData.serperError || t('textbook.form.serperKeyError'),
                   })
                 }}
                 className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 font-medium rounded-lg hover:bg-gray-300 transition-colors"
               >
-                Dừng lại để sửa key
+                {t('textbook.form.serperFixKey')}
               </button>
               <button
                 type="button"
@@ -2050,7 +2000,7 @@ export function ConfigForm({
                   if (!pending?.submitData) return
                   const nextWarnings = [
                     ...(pending.warnings || []),
-                    'Bạn đã chọn tiếp tục không dùng Serper API key cho giáo trình này.',
+                    t('textbook.form.serperSkippedWarning'),
                   ]
                   const nextSubmitData = {
                     ...pending.submitData,
@@ -2079,7 +2029,7 @@ export function ConfigForm({
                 }}
                 className="flex-1 px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors"
               >
-                Tiếp tục không dùng Serper
+                {t('textbook.form.serperContinueWithout')}
               </button>
             </div>
           </div>

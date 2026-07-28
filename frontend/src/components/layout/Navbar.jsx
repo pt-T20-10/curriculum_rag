@@ -36,8 +36,14 @@ export function Navbar() {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex justify-between items-center h-16">
           {/* Logo */}
-          <Link to="/dashboard" className="flex items-center">
-            <h1 className="text-xl font-bold text-primary">
+          <Link to="/dashboard" className="flex items-center gap-2.5">
+            <img
+              src="/favicon.svg"
+              alt=""
+              aria-hidden="true"
+              className="h-8 w-8 shrink-0 rounded-lg"
+            />
+            <h1 className="text-2xl font-bold text-primary">
               {t('app.name')}
             </h1>
           </Link>

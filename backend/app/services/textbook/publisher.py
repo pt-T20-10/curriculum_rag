@@ -38,6 +38,7 @@ except ImportError:
 
 from app.schemas.curriculum import AgentState
 from app.config import settings
+from app.ingestion.uploaded_sources import format_apa_numbered_references
 from app.services.textbook.language import get_language_profile
 from app.utils.log_config import setup_logger
 
@@ -47,6 +48,25 @@ logger = setup_logger(name="PublisherAgent", logfile="logs/agents.log")
 
 # Temporary image directory — created by Illustrator, cleaned up by Publisher.
 image_dir = BASE_DIR / "outputs" / "images"
+
+
+def _reference_heading(language: str) -> str:
+    return "References" if language == "en" else "Tài liệu tham khảo"
+
+
+def _build_reference_section(state: AgentState, *, language: str) -> str:
+    prefs = state.get("source_preferences") or {}
+    if prefs.get("reference_style") != "apa_numbered":
+        return ""
+    references = format_apa_numbered_references(
+        state.get("source_materials") or [],
+        language=language,
+    )
+    if not references:
+        return ""
+    heading = _reference_heading(language)
+    body = "\n\n".join(references)
+    return f"```{{=typst}}\n#pagebreak()\n```\n\n# {heading}\n\n{body}"
 
 
 def _document_font() -> str:
@@ -175,6 +195,41 @@ _WORD_FONT_STYLE_IDS = {
     "Heading3",
 }
 
+_DOCUMENT_STYLE_SIZES_PT = {
+    "Normal": 13,
+    "Heading1": 14,
+    "Heading2": 13,
+    "Heading3": 13,
+    "Title": 18,
+}
+
+
+def _style_size_pt(style_id: str) -> int | None:
+    return _DOCUMENT_STYLE_SIZES_PT.get(style_id)
+
+
+def _typst_style_size(style_id: str) -> str:
+    return f"{_DOCUMENT_STYLE_SIZES_PT[style_id]}pt"
+
+
+def _typst_heading_size_rules(raw_block: bool = False) -> str:
+    prefix = "#" if raw_block else ""
+    return "\n".join([
+        (
+            f'{prefix}show heading.where(level: 1): it => '
+            f'align(center, text(it, size: {_typst_style_size("Heading1")}, '
+            'weight: "bold"))'
+        ),
+        (
+            f'{prefix}show heading.where(level: 2): it => '
+            f'text(it, size: {_typst_style_size("Heading2")}, weight: "bold")'
+        ),
+        (
+            f'{prefix}show heading.where(level: 3): it => '
+            f'text(it, size: {_typst_style_size("Heading3")}, weight: "bold")'
+        ),
+    ])
+
 
 def _set_style_font(style, font_name: str, size_pt: int | None = None) -> None:
     """Force a python-docx style to use a concrete font, not a theme font."""
@@ -263,7 +318,7 @@ def _patch_word_document_styles(doc) -> None:
     for style in doc.styles:
         style_id = getattr(style, "style_id", "")
         if style_id in _WORD_FONT_STYLE_IDS:
-            _set_style_font(style, font_name, size_pt=12 if style_id == "Normal" else None)
+            _set_style_font(style, font_name, size_pt=_style_size_pt(style_id))
             if style_id == "TOCHeading":
                 _set_ppr_alignment_xml(style.element.get_or_add_pPr(), "center")
 
@@ -1178,6 +1233,26 @@ def _patch_word_formula_definition_pagination(doc) -> int:
     return changed
 
 
+def _patch_word_reference_paragraphs(doc, reference_heading: str) -> int:
+    from docx.shared import Inches
+
+    in_references = False
+    changed = 0
+    for paragraph in doc.paragraphs:
+        text = (paragraph.text or "").strip()
+        if text == reference_heading:
+            in_references = True
+            continue
+        if in_references and text.startswith("#"):
+            break
+        if in_references and re.match(r"^\[\d+\]\s+", text):
+            paragraph.paragraph_format.left_indent = Inches(0.5)
+            paragraph.paragraph_format.first_line_indent = Inches(-0.5)
+            paragraph.paragraph_format.space_after = 6
+            changed += 1
+    return changed
+
+
 def _add_centered_page_footer(doc, body_only: bool = False) -> None:
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.oxml import OxmlElement
@@ -1218,6 +1293,7 @@ def finalize_word_docx(
     docx_path: Path,
     toc_label: str,
     page_start_heading: str | None = None,
+    reference_heading: str | None = None,
 ) -> bool:
     """
     Best-effort Word finishing pass for Pandoc DOCX output.
@@ -1245,6 +1321,11 @@ def finalize_word_docx(
         image_count, caption_count, code_count = _patch_word_media_and_code_alignment(doc)
         table_paragraph_count = _left_align_word_table_paragraphs(doc)
         formula_keep_count = _patch_word_formula_definition_pagination(doc)
+        reference_count = (
+            _patch_word_reference_paragraphs(doc, reference_heading)
+            if reference_heading
+            else 0
+        )
         justified_count = _justify_word_body_paragraphs(doc)
         has_body_section = False
         if page_start_heading:
@@ -1258,7 +1339,7 @@ def finalize_word_docx(
             "(title=%s, %s h1 centered, %s figures, %s images, "
             "%s front breaks, %s captions, %s inserted captions, %s code blocks, "
             "%s table paragraphs left-aligned, %s formula paragraphs kept, "
-            "%s body paragraphs justified)",
+            "%s references styled, %s body paragraphs justified)",
             docx_path,
             title_page_patched,
             heading_count,
@@ -1270,6 +1351,7 @@ def finalize_word_docx(
             code_count,
             table_paragraph_count,
             formula_keep_count,
+            reference_count,
             justified_count,
         )
         return True
@@ -1662,6 +1744,18 @@ def repair_mixed_math_markdown_blocks(content: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", normalized)
 
 
+def split_compact_display_math_delimiters(content: str) -> str:
+    """Put compact $$ delimiters on their own lines before deeper repairs."""
+
+    def transform(text: str) -> str:
+        text = re.sub(r"(?<!\$)\$\$(?!\$)[ \t]*(?=\S)", "$$\n", text)
+        text = re.sub(r"(?<=\S)[ \t]*(?<!\$)\$\$(?!\$)", "\n$$", text)
+        return text
+
+    normalized = _apply_outside_fenced_blocks(content, transform)
+    return re.sub(r"\n{3,}", "\n\n", normalized)
+
+
 def wrap_bare_formula_lines(content: str) -> str:
     """Wrap standalone formula-like lines that were emitted without delimiters."""
 
@@ -1681,6 +1775,245 @@ def wrap_bare_formula_lines(content: str) -> str:
                 continue
             indent = re.match(r"\s*", line).group(0)  # type: ignore[union-attr]
             out.extend([f"{indent}$$", f"{indent}{stripped}", f"{indent}$$"])
+
+        return "\n".join(out)
+
+    normalized = _apply_outside_fenced_blocks(content, transform)
+    return re.sub(r"\n{3,}", "\n\n", normalized)
+
+
+_PROSE_LABEL_IN_MATH_RE = re.compile(
+    r"^\$?\s*-?\s*(?P<label>(?:Sử dụng công thức lượng giác|Sử dụng công thức|"
+    r"Thay vào|Công suất trung bình|Công suất tức thời|Trong đó|Where|"
+    r"Kết quả|Giải|Hướng dẫn giải|Bước\s+\d+)[^$]{0,100}:)\s*\$?$",
+    re.IGNORECASE,
+)
+
+
+def _unwrap_prose_label_math_spans(line: str) -> str:
+    def repl(match: re.Match) -> str:
+        label = match.group("label").strip()
+        if _looks_like_bare_formula_line(label):
+            return match.group(0)
+        return f"\n{label}\n"
+
+    return re.sub(
+        r"\$\s*-?\s*(?P<label>(?:Sử dụng công thức lượng giác|Sử dụng công thức|"
+        r"Thay vào|Công suất trung bình|Công suất tức thời|Trong đó|Where|"
+        r"Kết quả|Giải|Hướng dẫn giải|Bước\s+\d+)[^$\n]{0,100}:)\$",
+        repl,
+        line,
+        flags=re.IGNORECASE,
+    )
+
+
+def normalize_formula_line_blocks(content: str) -> str:
+    """Force formula-like lines into display math and keep prose outside math."""
+
+    def is_math_line(stripped: str) -> bool:
+        if not stripped:
+            return True
+        if _PROSE_LABEL_IN_MATH_RE.match(stripped):
+            return False
+        if _is_markdown_boundary_inside_math(stripped):
+            return False
+        if _looks_like_bare_formula_line(stripped):
+            return True
+        return bool(re.match(r"^\\(?:begin|end)\{", stripped))
+
+    def emit_formula(out: list[str], line: str) -> None:
+        indent = re.match(r"\s*", line).group(0)  # type: ignore[union-attr]
+        out.extend([f"{indent}$$", f"{indent}{line.strip()}", f"{indent}$$"])
+
+    def transform(text: str) -> str:
+        text = "\n".join(_unwrap_prose_label_math_spans(line) for line in text.split("\n"))
+        lines = text.split("\n")
+        out: list[str] = []
+        in_math = False
+
+        for line in lines:
+            stripped = line.strip()
+            if stripped == "$$":
+                if out and out[-1].strip() == "$$":
+                    continue
+                out.append(line)
+                in_math = not in_math
+                continue
+
+            if in_math:
+                if is_math_line(stripped):
+                    if stripped:
+                        out.append(line)
+                    continue
+                if out and out[-1].strip() != "$$":
+                    out.append("$$")
+                in_math = False
+
+            label_match = _PROSE_LABEL_IN_MATH_RE.match(stripped)
+            if label_match:
+                out.append(label_match.group("label").strip())
+                continue
+
+            if _looks_like_bare_formula_line(line):
+                emit_formula(out, line)
+                continue
+
+            out.append(line)
+
+        if in_math:
+            out.append("$$")
+
+        return "\n".join(out)
+
+    normalized = _apply_outside_fenced_blocks(content, transform)
+    return re.sub(r"\n{3,}", "\n\n", normalized)
+
+
+def prune_stray_math_delimiters(content: str) -> str:
+    """Drop empty display-math delimiters and close before prose boundaries."""
+
+    def next_nonblank(lines: list[str], start: int) -> str:
+        for line in lines[start + 1:]:
+            if line.strip():
+                return line
+        return ""
+
+    def transform(text: str) -> str:
+        lines = text.split("\n")
+        out: list[str] = []
+        in_math = False
+        math_start: int | None = None
+        formula_seen = False
+
+        def remove_opening_if_empty() -> None:
+            nonlocal math_start
+            if math_start is not None and math_start < len(out):
+                out.pop(math_start)
+            math_start = None
+
+        idx = 0
+        while idx < len(lines):
+            line = lines[idx]
+            stripped = line.strip()
+
+            if stripped == "$$":
+                if not in_math:
+                    if _looks_like_bare_formula_line(next_nonblank(lines, idx)):
+                        out.append(line)
+                        in_math = True
+                        math_start = len(out) - 1
+                        formula_seen = False
+                    idx += 1
+                    continue
+
+                if formula_seen:
+                    out.append(line)
+                else:
+                    remove_opening_if_empty()
+                in_math = False
+                math_start = None
+                formula_seen = False
+                idx += 1
+                continue
+
+            if in_math:
+                if _looks_like_bare_formula_line(stripped):
+                    out.append(line)
+                    formula_seen = True
+                    idx += 1
+                    continue
+                if not stripped:
+                    idx += 1
+                    continue
+                if formula_seen:
+                    out.append("$$")
+                else:
+                    remove_opening_if_empty()
+                in_math = False
+                math_start = None
+                formula_seen = False
+                continue
+
+            out.append(line)
+            idx += 1
+
+        if in_math and not formula_seen:
+            remove_opening_if_empty()
+        elif in_math:
+            out.append("$$")
+
+        return "\n".join(out)
+
+    normalized = _apply_outside_fenced_blocks(content, transform)
+    return re.sub(r"\n{3,}", "\n\n", normalized)
+
+
+def repair_orphan_math_delimiters(content: str) -> str:
+    """Repair display-math delimiters emitted only before or after formulas."""
+
+    def previous_nonblank_index(lines: list[str]) -> int | None:
+        for idx in range(len(lines) - 1, -1, -1):
+            if lines[idx].strip():
+                return idx
+        return None
+
+    def next_nonblank_line(lines: list[str], start: int) -> str:
+        for candidate in lines[start + 1:]:
+            if candidate.strip():
+                return candidate
+        return ""
+
+    def insert_opening_before_previous_formula(out: list[str]) -> bool:
+        idx = previous_nonblank_index(out)
+        if idx is None or not _looks_like_bare_formula_line(out[idx]):
+            return False
+        start = idx
+        while start - 1 >= 0 and (
+            not out[start - 1].strip()
+            or _looks_like_bare_formula_line(out[start - 1])
+        ):
+            start -= 1
+        out.insert(start, "$$")
+        return True
+
+    def transform(text: str) -> str:
+        lines = text.split("\n")
+        out: list[str] = []
+        in_math = False
+
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+
+            if stripped == "$$":
+                if in_math:
+                    out.append(line)
+                    in_math = False
+                    continue
+
+                prev_idx = previous_nonblank_index(out)
+                prev_formula = (
+                    prev_idx is not None
+                    and _looks_like_bare_formula_line(out[prev_idx])
+                )
+                next_formula = _looks_like_bare_formula_line(next_nonblank_line(lines, idx))
+                if prev_formula and not next_formula:
+                    insert_opening_before_previous_formula(out)
+                    out.append("$$")
+                    continue
+                if next_formula:
+                    out.append(line)
+                    in_math = True
+                    continue
+                continue
+
+            if in_math and _is_markdown_boundary_inside_math(line):
+                out.append("$$")
+                in_math = False
+
+            out.append(line)
+
+        if in_math:
+            out.append("$$")
 
         return "\n".join(out)
 
@@ -1878,8 +2211,21 @@ def normalize_list_lead_in_labels(content: str) -> str:
 def lint_math_export_risks(content: str) -> str:
     """Apply conservative final cleanup for known export-risk math artifacts."""
 
+    def remove_extra_decimal_closing_braces(value: str) -> str:
+        if value.count("}") <= value.count("{"):
+            return value
+
+        def repl(match: re.Match) -> str:
+            candidate = value[:match.start(2)] + value[match.end(2):]
+            if abs(candidate.count("{") - candidate.count("}")) < abs(value.count("{") - value.count("}")):
+                return match.group(1)
+            return match.group(0)
+
+        return re.sub(r"(\d\{,\}\d{1,6})(\})", repl, value)
+
     def clean_math_text(value: str) -> str:
         value = re.sub(r"(?<=[A-Za-z0-9_}])\s*=\s*=\s*", " = ", value)
+        value = remove_extra_decimal_closing_braces(value)
         value = re.sub(r"\s{2,}", " ", value)
         return value.strip()
 
@@ -1895,6 +2241,11 @@ def lint_math_export_risks(content: str) -> str:
             display_repl,
             text,
             flags=re.DOTALL,
+        )
+        text = re.sub(
+            r"(?<!\$)\$(?!\$)([^$\n]{1,240})(?<!\$)\$(?!\$)",
+            lambda m: f"${clean_math_text(m.group(1))}$",
+            text,
         )
         lines = [
             clean_math_text(line) if _looks_like_bare_formula_line(line) else line
@@ -2059,8 +2410,9 @@ def _fix_glued_inline_math(text: str) -> str:
 
 def normalize_markdown_list_spacing(content: str) -> str:
     """Ensure Markdown lists are separated from prose so Pandoc parses them."""
-    list_item_re = re.compile(r'^\s*(?:[-+*]\s+\S|\d+[.)]\s+\S)')
+    list_item_re = re.compile(r'^\s*(?:[-+*]\s+\S|\d+[.)]\s+\S|[a-z][.)]\s+\S)', re.IGNORECASE)
     formula_intro_re = re.compile(r'^\s*(?:Trong đó|Where)\b', re.IGNORECASE)
+    alpha_label_re = re.compile(r'^\s*[a-z][.)]\s+.+:\s*$', re.IGNORECASE)
 
     def is_list_item(line: str) -> bool:
         stripped = line.strip()
@@ -2080,7 +2432,10 @@ def normalize_markdown_list_spacing(content: str) -> str:
                 prev = out[-1]
                 prev_is_blank = not prev.strip()
                 prev_is_list = is_list_item(prev)
-                if current_is_list and not prev_is_blank and not prev_is_list:
+                current_is_bullet = bool(re.match(r'^\s*[-+*]\s+\S', line))
+                if current_is_bullet and alpha_label_re.match(prev) and not prev_is_blank:
+                    out.append("")
+                elif current_is_list and not prev_is_blank and not prev_is_list:
                     out.append("")
                 elif formula_intro_re.match(line) and prev_is_list and not prev_is_blank:
                     out.append("")
@@ -2093,6 +2448,223 @@ def normalize_markdown_list_spacing(content: str) -> str:
                     out.append("")
             out.append(line)
 
+        return '\n'.join(out)
+
+    normalized = _apply_outside_fenced_blocks(content, transform)
+    return re.sub(r'\n{3,}', '\n\n', normalized)
+
+
+def normalize_markdown_table_spacing(content: str) -> str:
+    """Ensure Markdown tables are separated from surrounding paragraphs."""
+
+    def is_table_line(line: str) -> bool:
+        stripped = line.strip()
+        return (
+            stripped.startswith("|")
+            and stripped.endswith("|")
+            and stripped.count("|") >= 2
+        )
+
+    def transform(text: str) -> str:
+        lines = text.split("\n")
+        out: list[str] = []
+        in_table = False
+
+        for line in lines:
+            current_table = is_table_line(line)
+            if current_table and not in_table and out and out[-1].strip():
+                out.append("")
+            if not current_table and in_table and line.strip():
+                out.append("")
+            out.append(line)
+            in_table = current_table
+
+        return "\n".join(out)
+
+    normalized = _apply_outside_fenced_blocks(content, transform)
+    return re.sub(r'\n{3,}', '\n\n', normalized)
+
+
+def normalize_markdown_table_cell_pipes(content: str) -> str:
+    """Escape accidental cell-internal pipes before Pandoc parses tables."""
+
+    table_separator_re = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$")
+
+    def is_table_line(line: str) -> bool:
+        stripped = line.strip()
+        return stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 2
+
+    def split_row(line: str) -> list[str]:
+        stripped = line.strip()
+        parts = re.split(r"(?<!\\)\|", stripped)
+        if parts and parts[0] == "":
+            parts = parts[1:]
+        if parts and parts[-1] == "":
+            parts = parts[:-1]
+        return parts
+
+    def join_row(cells: list[str]) -> str:
+        return "| " + " | ".join(cell.strip() for cell in cells) + " |"
+
+    def merge_extra_cells(cells: list[str], expected_count: int) -> list[str]:
+        def escaped_join(parts: list[str]) -> str:
+            return r"\|".join(parts).strip()
+
+        if expected_count <= 0 or len(cells) <= expected_count:
+            return cells
+        if expected_count == 1:
+            return [escaped_join(cells)]
+        if expected_count == 2:
+            return [cells[0], escaped_join(cells[1:])]
+
+        suffix_count = expected_count - 2
+        middle_end = len(cells) - suffix_count
+        merged_middle = escaped_join(cells[1:middle_end])
+        return [cells[0], merged_middle, *cells[middle_end:]]
+
+    def flush_table(table_lines: list[str], out: list[str]) -> None:
+        if len(table_lines) < 2:
+            out.extend(table_lines)
+            return
+
+        separator_index = next(
+            (idx for idx, line in enumerate(table_lines[:3]) if table_separator_re.match(line.strip())),
+            None,
+        )
+        if separator_index is None:
+            out.extend(table_lines)
+            return
+
+        expected_count = len(split_row(table_lines[separator_index]))
+        for idx, line in enumerate(table_lines):
+            if idx <= separator_index:
+                out.append(line)
+                continue
+            cells = split_row(line)
+            if len(cells) > expected_count:
+                out.append(join_row(merge_extra_cells(cells, expected_count)))
+            else:
+                out.append(line)
+
+    def transform(text: str) -> str:
+        lines = text.split("\n")
+        out: list[str] = []
+        table_lines: list[str] = []
+
+        for line in lines:
+            if is_table_line(line):
+                table_lines.append(line)
+                continue
+            if table_lines:
+                flush_table(table_lines, out)
+                table_lines = []
+            out.append(line)
+
+        if table_lines:
+            flush_table(table_lines, out)
+
+        return "\n".join(out)
+
+    normalized = _apply_outside_fenced_blocks(content, transform)
+    return re.sub(r'\n{3,}', '\n\n', normalized)
+
+
+def normalize_exercise_block_spacing(content: str) -> str:
+    """Keep exercises, solution labels, and bare equations as distinct blocks."""
+
+    exercise_label_re = re.compile(
+        r'^\s*\*\*(?:Bài tập\s+\d+|Bài tập tự luyện|Ví dụ\s+\d+|'
+        r'Giải|Hướng dẫn giải|Bước\s+\d+[^*]*):\*\*',
+        re.IGNORECASE,
+    )
+    inline_exercise_label_re = re.compile(
+        r'\s*(\*\*(?:Bài tập\s+\d+|Bài tập tự luyện|Ví dụ\s+\d+|'
+        r'Giải|Hướng dẫn giải):\*\*)\s*',
+        re.IGNORECASE,
+    )
+    letter_item_re = re.compile(r'^\s*[a-z][.)]\s+\S', re.IGNORECASE)
+    glued_letter_item_re = re.compile(
+        r'(?<=\S)\s*-\s*([a-z][.)])(?=\s*[$A-Za-zÀ-ỹ0-9])',
+        re.IGNORECASE,
+    )
+    bullet_letter_item_re = re.compile(r'^(\s*)-\s+([a-z][.)]\s*)', re.IGNORECASE)
+
+    def is_exercise_boundary(line: str) -> bool:
+        stripped = line.strip()
+        return (
+            bool(exercise_label_re.match(stripped))
+            or bool(letter_item_re.match(stripped))
+            or _looks_like_bare_formula_line(stripped)
+        )
+
+    def transform(text: str) -> str:
+        text = inline_exercise_label_re.sub(r'\n\n\1\n\n', text)
+        text = glued_letter_item_re.sub(r'\n\n\1 ', text)
+        text = re.sub(r'^(\s*[a-z][.)])(?=\$)', r'\1 ', text, flags=re.MULTILINE | re.IGNORECASE)
+        text = re.sub(r'^(\s*[a-z][.)])\s{2,}', r'\1 ', text, flags=re.MULTILINE | re.IGNORECASE)
+        lines = text.split('\n')
+        out: list[str] = []
+        in_math = False
+
+        for line in lines:
+            line = bullet_letter_item_re.sub(r'\1\2', line)
+            stripped = line.strip()
+            if stripped == "$$":
+                in_math = not in_math
+                out.append(line)
+                continue
+            if in_math:
+                out.append(line)
+                continue
+
+            if is_exercise_boundary(line) and out and out[-1].strip():
+                out.append("")
+            out.append(line)
+            if exercise_label_re.match(stripped):
+                out.append("")
+
+        return '\n'.join(out)
+
+    normalized = _apply_outside_fenced_blocks(content, transform)
+    return re.sub(r'\n{3,}', '\n\n', normalized)
+
+
+def normalize_labeled_formula_lines(content: str) -> str:
+    """Split `a) formula` style solution lines into label + display formula."""
+
+    labeled_formula_re = re.compile(r'^(\s*)([a-z][.)])\s+(.+)$', re.IGNORECASE)
+
+    def formula_body(value: str) -> str | None:
+        body = value.strip()
+        inline = re.fullmatch(r'\$(?!\$)([^$\n]+)\$(?!\$)', body)
+        if inline:
+            body = inline.group(1).strip()
+        if _looks_like_bare_formula_line(body):
+            return body
+        return None
+
+    def transform(text: str) -> str:
+        lines = text.split('\n')
+        out: list[str] = []
+        in_math = False
+        for line in lines:
+            stripped = line.strip()
+            if stripped == "$$":
+                in_math = not in_math
+                out.append(line)
+                continue
+            if in_math:
+                out.append(line)
+                continue
+
+            match = labeled_formula_re.match(line)
+            if match:
+                body = formula_body(match.group(3))
+                if body:
+                    indent, label = match.group(1), match.group(2)
+                    out.extend([f"{indent}{label}", f"{indent}$$", f"{indent}{body}", f"{indent}$$"])
+                    continue
+            out.append(line)
         return '\n'.join(out)
 
     normalized = _apply_outside_fenced_blocks(content, transform)
@@ -2612,21 +3184,36 @@ def prepare_markdown_for_standalone_export(
         content = normalize_english_dashes(content)
     content = fix_markdown_headings(content)
     content = remove_markdown_horizontal_rules(content)
+    content = split_compact_display_math_delimiters(content)
     content = repair_mixed_math_markdown_blocks(content)
+    content = repair_orphan_math_delimiters(content)
     content = wrap_bare_formula_lines(content)
     content = normalize_display_math_blocks(content)
+    content = normalize_formula_line_blocks(content)
     content = fix_inline_display_math(content)
     content = fix_math_formatting(content)
     content = normalize_math_identifier_formatting(content)
     content = normalize_formula_explanations(content)
     content = normalize_lead_in_labels(content)
     content = normalize_list_lead_in_labels(content)
+    content = normalize_exercise_block_spacing(content)
+    content = normalize_labeled_formula_lines(content)
     content = normalize_markdown_list_spacing(content)
+    content = normalize_markdown_table_cell_pipes(content)
+    content = normalize_markdown_table_spacing(content)
     content = lint_math_export_risks(content)
+    content = normalize_formula_line_blocks(content)
+    content = prune_stray_math_delimiters(content)
+    content = normalize_labeled_formula_lines(content)
     content = normalize_markdown_list_spacing(content)
     content = normalize_markdown_image_blocks(content)
     content = promote_standalone_inline_math(content)
     content = fix_typst_deprecated_symbols(content)
+    content = normalize_exercise_block_spacing(content)
+    content = normalize_labeled_formula_lines(content)
+    content = normalize_markdown_list_spacing(content)
+    content = normalize_markdown_table_cell_pipes(content)
+    content = normalize_markdown_table_spacing(content)
     content = fix_chapter_pagebreaks(content, language=language)
     if enable_images:
         content = add_figure_numbers(content, language=language)
@@ -2675,15 +3262,24 @@ def _prepare_word_md(
 
     # Step 3 — Strip all remaining {=typst} blocks
     content = re.sub(r'```\{=typst\}.*?```', '', content, flags=re.DOTALL)
+    content = split_compact_display_math_delimiters(content)
     content = repair_mixed_math_markdown_blocks(content)
+    content = repair_orphan_math_delimiters(content)
     content = wrap_bare_formula_lines(content)
     content = normalize_display_math_blocks(content)
+    content = normalize_formula_line_blocks(content)
     content = normalize_math_identifier_formatting(content)
     content = normalize_formula_explanations(content)
     content = normalize_lead_in_labels(content)
     content = normalize_list_lead_in_labels(content)
+    content = normalize_exercise_block_spacing(content)
+    content = normalize_labeled_formula_lines(content)
     content = normalize_markdown_list_spacing(content)
+    content = normalize_markdown_table_spacing(content)
     content = lint_math_export_risks(content)
+    content = normalize_formula_line_blocks(content)
+    content = prune_stray_math_delimiters(content)
+    content = normalize_labeled_formula_lines(content)
     content = normalize_markdown_list_spacing(content)
     content = normalize_markdown_image_blocks(content)
 
@@ -2823,7 +3419,7 @@ def _get_word_reference_doc(pandoc_tmp: Path) -> Path | None:
 # just before the body content.
 _TYPST_SETUP_BLOCK = (
     "```{=typst}\n"
-    "#show heading.where(level: 1): it => align(center, it)\n"
+    f"{_typst_heading_size_rules(raw_block=True)}\n"
     "#set figure(numbering: none)\n"   # disable "Figure X:" prefix globally
     "#set page(numbering: none)\n"     # title + TOC + figure list: no page numbers
     "```"
@@ -2844,11 +3440,11 @@ def _build_title_block(title: str) -> str:
     safe_title = _typst_string_literal(title)
     return (
         "```{=typst}\n"
-        "#show heading.where(level: 1): it => align(center, it)\n"
+        f"{_typst_heading_size_rules(raw_block=True)}\n"
         "#set figure(numbering: none)\n"
         "#v(1fr)\n"
         "#align(center)[\n"
-        f'  #text({safe_title}, weight: "bold", size: 2em)\n'
+        f'  #text({safe_title}, weight: "bold", size: {_typst_style_size("Title")})\n'
         "]\n"
         "#v(1fr)\n"
         "#pagebreak()\n"
@@ -3040,7 +3636,7 @@ def publish_curriculum(state: AgentState) -> dict:
     yaml_header = (
         f'---\n'
         f'title-meta: {_typst_string_literal(title)}\n'
-        f'fontsize: 12pt\n'
+        f'fontsize: {_typst_style_size("Normal")}\n'
         f'mainfont: {_typst_string_literal(_document_font())}\n'
         f'---\n\n'
     )
@@ -3060,23 +3656,42 @@ def publish_curriculum(state: AgentState) -> dict:
         full_content = normalize_english_dashes(full_content)
     full_content = fix_markdown_headings(full_content)
     full_content = remove_markdown_horizontal_rules(full_content)
+    full_content = split_compact_display_math_delimiters(full_content)
     full_content = repair_mixed_math_markdown_blocks(full_content)
+    full_content = repair_orphan_math_delimiters(full_content)
     full_content = wrap_bare_formula_lines(full_content)
     full_content = normalize_display_math_blocks(full_content)
+    full_content = normalize_formula_line_blocks(full_content)
     full_content = fix_inline_display_math(full_content)
     full_content = fix_math_formatting(full_content)
     full_content = normalize_math_identifier_formatting(full_content)
     full_content = normalize_formula_explanations(full_content)
     full_content = normalize_lead_in_labels(full_content)
     full_content = normalize_list_lead_in_labels(full_content)
+    full_content = normalize_exercise_block_spacing(full_content)
+    full_content = normalize_labeled_formula_lines(full_content)
     full_content = normalize_markdown_list_spacing(full_content)
+    full_content = normalize_markdown_table_cell_pipes(full_content)
+    full_content = normalize_markdown_table_spacing(full_content)
     full_content = lint_math_export_risks(full_content)
+    full_content = normalize_formula_line_blocks(full_content)
+    full_content = prune_stray_math_delimiters(full_content)
+    full_content = normalize_labeled_formula_lines(full_content)
     full_content = normalize_markdown_list_spacing(full_content)
     full_content = normalize_markdown_image_blocks(full_content)
     full_content = promote_standalone_inline_math(full_content)
     full_content = fix_typst_deprecated_symbols(full_content)
+    full_content = normalize_exercise_block_spacing(full_content)
+    full_content = normalize_labeled_formula_lines(full_content)
+    full_content = normalize_markdown_list_spacing(full_content)
+    full_content = normalize_markdown_table_cell_pipes(full_content)
+    full_content = normalize_markdown_table_spacing(full_content)
     full_content = fix_chapter_pagebreaks(full_content, language=language)
     full_content = add_figure_numbers(full_content, language=language)
+    reference_section = _build_reference_section(state, language=language)
+    if reference_section:
+        full_content = full_content.rstrip() + "\n\n" + reference_section
+        logger.info("✓ Reference section appended")
     logger.info("✓ All fix passes applied")
 
     # ------------------------------------------------------------------
@@ -3164,7 +3779,7 @@ def publish_curriculum(state: AgentState) -> dict:
                   lang: "en",
                   region: "US",
                   font: (),
-                  fontsize: 11pt,
+                  fontsize: 13pt,
                   sectionnumbering: none,
                   doc,
                   ..args,
@@ -3180,6 +3795,9 @@ def publish_curriculum(state: AgentState) -> dict:
                            font: font,
                            size: fontsize)
                   set heading(numbering: sectionnumbering)
+                  show heading.where(level: 1): it => align(center, text(it, size: 14pt, weight: "bold"))
+                  show heading.where(level: 2): it => text(it, size: 13pt, weight: "bold")
+                  show heading.where(level: 3): it => text(it, size: 13pt, weight: "bold")
                   show table.cell: it => {
                     set align(left)
                     set par(justify: false)
@@ -3261,6 +3879,7 @@ def publish_curriculum(state: AgentState) -> dict:
                         docx_filename,
                         profile.toc_label,
                         page_start_heading=profile.preface_heading,
+                        reference_heading=_reference_heading(language),
                     )
                     logger.info(f"✓ Word saved: {docx_filename}")
                     final_docx_filepath = str(docx_filename)

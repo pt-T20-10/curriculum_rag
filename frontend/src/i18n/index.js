@@ -4,7 +4,7 @@ import { en } from './locales/en'
 import { vi } from './locales/vi'
 
 export const LANGUAGE_STORAGE_KEY = 'app_language'
-export const DEFAULT_LANGUAGE = 'vi'
+export const DEFAULT_LANGUAGE = 'en'
 export const SUPPORTED_LANGUAGES = ['vi', 'en']
 
 function getInitialLanguage() {

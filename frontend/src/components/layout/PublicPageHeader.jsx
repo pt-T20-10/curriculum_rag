@@ -10,7 +10,7 @@ export function PublicPageHeader() {
   return (
     <header className="border-b border-gray-200 bg-white">
       <div className="content-container flex min-h-16 items-center justify-between gap-4 py-3">
-        <Link to="/" className="text-lg font-bold text-primary">
+        <Link to="/" className="text-xl font-bold text-primary">
           {t('app.name')}
         </Link>
         <div className="flex items-center gap-3">

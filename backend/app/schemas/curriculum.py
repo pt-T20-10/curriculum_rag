@@ -441,6 +441,9 @@ class AgentState(TypedDict):
     structure_depth: str
     advanced_config: dict[str, Any]
     source_preferences: dict[str, Any]
+    source_materials: list[dict[str, Any]]
+    source_language_profile: dict[str, Any]
+    source_language_preference: str
 
     # ---- Planning ----
     curriculum: Any
@@ -765,6 +768,9 @@ def build_initial_state(
     formula_policy: str = "auto",
     formula_need: str = "none",
     source_preferences: dict[str, Any] | None = None,
+    source_materials: list[dict[str, Any]] | None = None,
+    source_language_profile: dict[str, Any] | None = None,
+    source_language_preference: str = "",
     core_topic: str = "",
     user_requirements: str = "",
     language: str = "vi",
@@ -818,6 +824,9 @@ def build_initial_state(
         "language":                    language,
         "advanced_config":             advanced_config or {},
         "source_preferences":          source_preferences or {},
+        "source_materials":            source_materials or [],
+        "source_language_profile":     source_language_profile or {},
+        "source_language_preference":  source_language_preference or "",
         # ---- Planning ----
         "curriculum":      None,
         "initial_curriculum_structure": initial_curriculum_structure,

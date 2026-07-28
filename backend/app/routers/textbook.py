@@ -2,14 +2,20 @@
 Textbook management endpoints.
 """
 
+import json
 from math import ceil
 from typing import Any, Optional
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
 from app.database import get_async_db
 from app.ingestion.source_policy import normalize_source_preferences
+from app.ingestion.uploaded_sources import (
+    merge_source_materials,
+    save_uploaded_source_files,
+    url_source_manifest,
+)
 from app.models.credit_history import CreditHistory
 from app.models.textbook import Textbook, TextbookStatus
 from app.models.user import User, UserRole
@@ -54,7 +60,6 @@ from app.services.byok_service import (
     load_job_runtime_overrides,
     replace_job_secrets,
     resolve_request_keys,
-    upsert_user_key,
     validate_model_selection,
 )
 from app.services.runtime_config import RuntimeConfigError, get_api_key, runtime_config_overrides
@@ -613,11 +618,33 @@ async def parse_structure_file(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.post("/", response_model=TextbookResponse, status_code=201)
-async def create_textbook(
+async def _queue_planning_task(textbook: Textbook, db: AsyncSession) -> None:
+    from app.services.server_task_manager import server_task_manager
+    from app.tasks.textbook_tasks import run_planning_task
+
+    task_id = server_task_manager.new_task_id()
+    textbook.task_id = task_id  # type: ignore
+    progress_data = dict(textbook.progress_data or {})  # type: ignore[arg-type]
+    progress_data.update({
+        "phase": progress_data.get("phase") or "queued",
+        "task_id": task_id,
+    })
+    textbook.progress_data = progress_data  # type: ignore
+    await db.commit()
+    server_task_manager.submit(
+        textbook_id=textbook.id,  # type: ignore[arg-type]
+        kind="planning",
+        target=run_planning_task,
+        task_id=task_id,
+    )
+
+
+async def _create_textbook_impl(
     textbook_data: TextbookCreate,
-    current_user_id: int = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_async_db),
+    current_user_id: int,
+    db: AsyncSession,
+    *,
+    start_planning: bool = True,
 ):
     """
     Create new textbook with topic validation.
@@ -731,6 +758,7 @@ async def create_textbook(
     source_preferences = normalize_source_preferences(
         textbook_data.source_preferences.model_dump()
     )
+    source_materials = list(textbook_data.source_materials or [])
     initial_curriculum: dict[str, Any] | None = None
     initial_total_subsections = 0
     preflight_page_validation: dict | None = None
@@ -822,6 +850,7 @@ async def create_textbook(
         "formula_policy": formula_policy,
         "formula_need": formula_need,
         "source_preferences": source_preferences,
+        "source_materials": source_materials,
         "target_pages": textbook_data.target_pages,
         "page_plan_confirmed": textbook_data.page_plan_confirmed,
         "generation_mode": mode,
@@ -862,6 +891,7 @@ async def create_textbook(
         formula_policy=formula_policy,
         formula_need=formula_need,
         source_preferences=source_preferences,
+        source_materials=source_materials,
         status=TextbookStatus.PENDING,
         credits_used=0,
         progress_data={
@@ -881,9 +911,6 @@ async def create_textbook(
     await db.refresh(textbook)
     if using_user_keys:
         try:
-            if textbook_data.credential_usage == "saved":
-                await upsert_user_key(db, current_user_id, "openai", textbook_data.openai_api_key or "")
-                await upsert_user_key(db, current_user_id, "serper", textbook_data.serper_api_key or "")
             await replace_job_secrets(db, textbook.id, request_keys)  # type: ignore[arg-type]
             await db.commit()
         except ByokConfigurationError as exc:
@@ -891,27 +918,80 @@ async def create_textbook(
             await db.commit()
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    # ================ TRIGGER PLANNING TASK ================
-    from app.services.server_task_manager import server_task_manager
-    from app.tasks.textbook_tasks import run_planning_task
-
-    task_id = server_task_manager.new_task_id()
-    textbook.task_id = task_id  # type: ignore
-    progress_data = dict(textbook.progress_data or {})  # type: ignore[arg-type]
-    progress_data.update({
-        "phase": progress_data.get("phase") or "queued",
-        "task_id": task_id,
-    })
-    textbook.progress_data = progress_data  # type: ignore
-    await db.commit()
-    server_task_manager.submit(
-        textbook_id=textbook.id,  # type: ignore[arg-type]
-        kind="planning",
-        target=run_planning_task,
-        task_id=task_id,
-    )
+    if start_planning:
+        await _queue_planning_task(textbook, db)
 
     return textbook
+
+
+@router.post("/", response_model=TextbookResponse, status_code=201)
+async def create_textbook(
+    textbook_data: TextbookCreate,
+    current_user_id: int = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_async_db),
+):
+    return await _create_textbook_impl(
+        textbook_data,
+        current_user_id,
+        db,
+        start_planning=True,
+    )
+
+
+@router.post("/with-sources", response_model=TextbookResponse, status_code=201)
+async def create_textbook_with_sources(
+    request: Request,
+    current_user_id: int = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_async_db),
+):
+    """Create a textbook from JSON payload plus uploaded PDF/DOCX source files."""
+    form = await request.form()
+    payload = form.get("payload")
+    if not isinstance(payload, str) or not payload.strip():
+        raise HTTPException(status_code=400, detail="Payload không hợp lệ hoặc bị thiếu.")
+    source_files = [
+        item
+        for item in form.getlist("source_files")
+        if hasattr(item, "filename") and getattr(item, "filename", None)
+    ]
+    try:
+        textbook_data = TextbookCreate.model_validate(json.loads(payload))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Payload không hợp lệ: {exc}") from exc
+
+    textbook = await _create_textbook_impl(
+        textbook_data,
+        current_user_id,
+        db,
+        start_planning=False,
+    )
+    try:
+        file_materials = await save_uploaded_source_files(
+            int(textbook.id),  # type: ignore[arg-type]
+            source_files,  # type: ignore[arg-type]
+        )
+        url_materials = url_source_manifest(
+            normalize_source_preferences(textbook.source_preferences or {}).get("custom_urls", [])  # type: ignore[arg-type]
+        )
+        source_materials = merge_source_materials(
+            list(getattr(textbook, "source_materials", None) or []),
+            [*url_materials, *file_materials],
+        )
+        textbook.source_materials = source_materials  # type: ignore[attr-defined]
+        progress_data = dict(textbook.progress_data or {})  # type: ignore[arg-type]
+        progress_data["source_materials"] = source_materials
+        textbook.progress_data = progress_data  # type: ignore[attr-defined]
+        await db.commit()
+        await _queue_planning_task(textbook, db)
+        await db.refresh(textbook)
+        return textbook
+    except Exception:
+        from app.services.server_task_manager import server_task_manager
+
+        server_task_manager.request_stop(int(textbook.id))  # type: ignore[arg-type]
+        await db.delete(textbook)
+        await db.commit()
+        raise
 
 
 @router.get("/", response_model=TextbookListResponse)
@@ -1114,6 +1194,10 @@ async def get_textbook_progress(
         "source_preferences",
         normalize_source_preferences(getattr(textbook, "source_preferences", None)),
     )
+    progress_data.setdefault(
+        "source_materials",
+        getattr(textbook, "source_materials", None) or [],
+    )
 
     return TextbookProgressResponse(
         id=textbook.id,  # type: ignore
@@ -1312,12 +1396,6 @@ async def confirm_curriculum(
 
     if using_user_keys:
         textbook.credits_used = 0  # type: ignore
-        if request.credential_usage == "saved":
-            try:
-                await upsert_user_key(db, current_user_id, "openai", request.openai_api_key or "")
-                await upsert_user_key(db, current_user_id, "serper", request.serper_api_key or "")
-            except ByokConfigurationError as exc:
-                raise HTTPException(status_code=500, detail=str(exc)) from exc
         if request_keys:
             try:
                 await replace_job_secrets(db, textbook_id, request_keys)
@@ -1416,6 +1494,59 @@ async def confirm_curriculum(
         "is_admin_free": is_admin_free,
         "page_validation": page_validation,
     }
+
+
+@router.post("/{textbook_id}/use-system-sources")
+async def continue_with_system_sources(
+    textbook_id: int,
+    current_user_id: int = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_async_db),
+):
+    """Retry content generation with system/default sources added as fallback."""
+    result = await db.execute(
+        select(Textbook).where(
+            Textbook.id == textbook_id,
+            Textbook.user_id == current_user_id,
+        )
+    )
+    textbook = result.scalar_one_or_none()
+    if not textbook:
+        raise HTTPException(status_code=404, detail="Textbook not found")
+    if not textbook.curriculum_json:  # type: ignore
+        raise HTTPException(status_code=400, detail="Chưa có cấu trúc giáo trình để tiếp tục.")
+
+    prefs = normalize_source_preferences(getattr(textbook, "source_preferences", None))
+    prefs["source_mode"] = "custom_hybrid"
+    prefs["fallback_policy"] = "ask_then_system"
+    textbook.source_preferences = prefs  # type: ignore
+    textbook.status = TextbookStatus.GENERATING.value  # type: ignore
+    textbook.error_message = None  # type: ignore
+    progress_data = dict(textbook.progress_data or {})  # type: ignore[arg-type]
+    progress_data.update({
+        "phase": "generating",
+        "progress_value": 0.20,
+        "status_text": progress_text(textbook.language, "content_generation_started"),  # type: ignore[arg-type]
+        "source_preferences": prefs,
+        "source_action_required": False,
+        "error_message": "",
+    })
+
+    from app.services.server_task_manager import server_task_manager
+    from app.tasks.textbook_tasks import run_generation_task
+
+    task_id = server_task_manager.new_task_id()
+    progress_data["task_id"] = task_id
+    textbook.progress_data = progress_data  # type: ignore
+    textbook.task_id = task_id  # type: ignore
+    await db.commit()
+    server_task_manager.submit(
+        textbook_id=textbook_id,
+        kind="generation",
+        target=run_generation_task,
+        args=(textbook.curriculum_json,),  # type: ignore[arg-type]
+        task_id=task_id,
+    )
+    return {"message": "Content generation restarted with system sources", "task_id": task_id}
 
 
 @router.post("/{textbook_id}/stop")

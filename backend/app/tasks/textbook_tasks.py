@@ -280,6 +280,7 @@ async def _run_content_generation_for_textbook(
         language=textbook.language,  # type: ignore[arg-type]
         advanced_config=advanced_config,
         source_preferences=textbook.source_preferences or {},  # type: ignore[arg-type]
+        source_materials=getattr(textbook, "source_materials", None) or [],  # type: ignore[arg-type]
         planning_mode=planning_mode,
         structure_depth=getattr(textbook, "structure_depth", "level1") or "level1",  # type: ignore[arg-type]
         export_formats=["PDF", "Word"],
@@ -563,6 +564,7 @@ def run_generation_task(textbook_id: int, task_id: str | None, confirmed_curricu
                     language             = textbook.language,      # type: ignore
                     advanced_config       = advanced_config,
                     source_preferences    = textbook.source_preferences or {},  # type: ignore[arg-type]
+                    source_materials      = getattr(textbook, "source_materials", None) or [],  # type: ignore[arg-type]
                     structure_depth       = getattr(textbook, "structure_depth", "level1") or "level1",  # type: ignore[arg-type]
                     export_formats       = ["PDF", "Word"],
                 )

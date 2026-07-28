@@ -148,6 +148,8 @@ def default_source_preferences() -> dict[str, Any]:
         "selected_source_ids": [],
         "custom_urls": [],
         "custom_domains": [],
+        "reference_style": "none",
+        "fallback_policy": "none",
     }
 
 
@@ -196,6 +198,12 @@ def normalize_source_preferences(value: Any) -> dict[str, Any]:
         "selected_source_ids": selected_source_ids,
         "custom_urls": custom_urls,
         "custom_domains": custom_domains,
+        "reference_style": str(value.get("reference_style") or "none").strip()
+        if str(value.get("reference_style") or "none").strip() in {"none", "apa_numbered"}
+        else "none",
+        "fallback_policy": str(value.get("fallback_policy") or "none").strip()
+        if str(value.get("fallback_policy") or "none").strip() in {"none", "ask_then_system"}
+        else "none",
     }
 
 
@@ -261,4 +269,3 @@ def domain_matches(domain: str, trusted_domain: str) -> bool:
     if trusted.startswith("."):
         return host.endswith(trusted)
     return host == trusted or host.endswith(f".{trusted}")
-

@@ -43,6 +43,7 @@ from app.services.cost_profile import (
 )
 from app.services.runtime_config import get_api_key, get_runtime_config
 from app.services.chroma_runtime import chroma_vector_store_kwargs, effective_chroma_persist_dir
+from app.ingestion.uploaded_sources import user_source_language_profile
 
 LLM_MODEL_CHEAP = settings.LLM_MODEL_CHEAP
 CHROMA_DB_DIR = settings.CHROMA_DB_DIR
@@ -497,8 +498,13 @@ class Retriever:
         content_type:  str  = "technical",
         advanced_config: dict[str, Any] | None = None,
         chunk_llm_filter_mode: str | None = None,
+        prefer_language: str = "",
     ) -> str:
-        logger.info(f"Searching ChromaDB — query: '{query}' | k={k}")
+        prefer_language = str(prefer_language or "").lower()
+        logger.info(
+            f"Searching ChromaDB — query: '{query}' | k={k}"
+            + (f" | prefer_language={prefer_language}" if prefer_language else "")
+        )
         """
         Retrieve the top-k most relevant document chunks for a given query.
 
@@ -553,27 +559,7 @@ class Retriever:
                 if chunk_id in self._retrieved_ids:
                     continue
 
-                _TRUSTED_EDU_DOMAINS = (
-                    "wikipedia.org",
-                    "britannica.com",
-                    "openstax.org",        
-                    "ocw.mit.edu",        
-                    "slds-lmu",
-                    "cs.cmu",
-                    "stanford.edu",
-                    "mit.edu",
-                    "geeksforgeeks.org",
-                    "machinelearningcoban",
-                    "arxiv.org",
-                    "pmc.ncbi.nlm.nih.gov",
-                    "iosrjournals",
-                    "ijirt",
-                )
-                max_quota = (
-                    _TRUSTED_DOMAIN_QUOTA
-                    if any(d in source_url for d in _TRUSTED_EDU_DOMAINS)
-                    else _DEFAULT_DOMAIN_QUOTA
-                )
+                max_quota = _source_quota_for_doc(doc, source_url, k)
 
                 source_count = sum(
                     1 for cid in self._retrieved_ids
@@ -671,14 +657,31 @@ class Retriever:
                     embedding_model=self.vector_db._embedding_function
                 )
                 
-                # Score quality and sort by retrieval confidence
+                # Score quality and sort by retrieval confidence. When the user
+                # supplied mostly Vietnamese source files, keep English available
+                # but prefer Vietnamese chunks from the same uploaded corpus.
                 for chunk in deduped:
-                    chunk['quality_score'] = chunk.get('retrieval_score', 0.0)
+                    language = chunk.get('language') or ""
+                    language_bonus = 0.08 if prefer_language and language == prefer_language else 0.0
+                    user_source_bonus = (
+                        0.04
+                        if _is_user_source_doc(chunk.get("doc")) and prefer_language and language == prefer_language
+                        else 0.0
+                    )
+                    chunk['quality_score'] = (
+                        chunk.get('retrieval_score', 0.0)
+                        + language_bonus
+                        + user_source_bonus
+                    )
                 
                 deduped.sort(key=lambda x: x['quality_score'], reverse=True)
 
                 selected = deduped[:k]
-                if k >= 3 and not any(c.get('language') == 'en' for c in selected):
+                if (
+                    prefer_language != "vi"
+                    and k >= 3
+                    and not any(c.get('language') == 'en' for c in selected)
+                ):
                     english_candidate = next(
                         (c for c in deduped[k:] if c.get('language') == 'en'),
                         None,
@@ -1067,6 +1070,42 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _is_user_source_doc(doc: Any) -> bool:
+    metadata = getattr(doc, "metadata", {}) or {}
+    return (
+        str(metadata.get("user_source", "")).lower() == "true"
+        or str(metadata.get("source_kind", "")).startswith("user_")
+        or str(metadata.get("source", "")).startswith("uploaded://")
+    )
+
+
+def _source_quota_for_doc(doc: Any, source_url: str, k: int) -> int:
+    if _is_user_source_doc(doc):
+        return max(k, _TRUSTED_DOMAIN_QUOTA, _DEFAULT_DOMAIN_QUOTA)
+
+    trusted_domains = (
+        "wikipedia.org",
+        "britannica.com",
+        "openstax.org",
+        "ocw.mit.edu",
+        "slds-lmu",
+        "cs.cmu",
+        "stanford.edu",
+        "mit.edu",
+        "geeksforgeeks.org",
+        "machinelearningcoban",
+        "arxiv.org",
+        "pmc.ncbi.nlm.nih.gov",
+        "iosrjournals",
+        "ijirt",
+    )
+    return (
+        _TRUSTED_DOMAIN_QUOTA
+        if any(domain in source_url for domain in trusted_domains)
+        else _DEFAULT_DOMAIN_QUOTA
+    )
+
+
 def _keyword_overlap_score(query: str, text: str) -> float:
     query_terms = {
         term
@@ -1358,6 +1397,7 @@ def retrieve_context_tool(
     collection_name: str = "dynamic_context",
     persist_directory: str = "",
     chunk_llm_filter_mode: str = "",
+    prefer_language: str = "",
 ) -> str:
     """
     Retrieve relevant chunks from the knowledge base for a given query.
@@ -1382,6 +1422,7 @@ def retrieve_context_tool(
         context_label="[TOOL CALL]",
         content_type=content_type,
         chunk_llm_filter_mode=chunk_llm_filter_mode or None,
+        prefer_language=prefer_language,
     )
 
 
@@ -1423,6 +1464,11 @@ def retriever_node(state: AgentState) -> dict:
     collection_name = state.get("rag_collection_name", "dynamic_context")
     persist_directory = state.get("rag_persist_dir", "")
     advanced_config = state.get("advanced_config", {}) or {}
+    prefer_language = str(state.get("source_language_preference") or "")
+    if not prefer_language:
+        prefer_language = str(
+            user_source_language_profile(state.get("source_materials") or []).get("preference") or ""
+        )
 
     if not query:
         logger.warning("retrieval_query is empty — RetrieverNode skipped")
@@ -1440,17 +1486,26 @@ def retriever_node(state: AgentState) -> dict:
 
     try:
         retriever = _get_retriever(collection_name, persist_directory)
-        retriever.reset_retrieved_ids()
+        prior_used = list(state.get("used_rag_queries", []))
+        prior_attempts = int(state.get("rag_retrieval_attempts", 0) or 0)
+        retrieval_attempts = prior_attempts + 1
+        if prior_attempts <= 0:
+            retriever.reset_retrieved_ids()
+        else:
+            logger.info(
+                "RetrieverNode retry #%s for Chapter %s: preserving retrieved "
+                "chunk blacklist to avoid repeating the same uploaded-source context",
+                retrieval_attempts,
+                display_number,
+            )
         context = retriever.retrieve_context(
             query         = query,
             k             = RAG_INITIAL_K,
             context_label = context_label,
             content_type  = content_type,
             advanced_config = advanced_config,
+            prefer_language = prefer_language,
         )
-
-        prior_used = list(state.get("used_rag_queries", []))
-        retrieval_attempts = int(state.get("rag_retrieval_attempts", 0) or 0) + 1
 
         if not context:
             return {
