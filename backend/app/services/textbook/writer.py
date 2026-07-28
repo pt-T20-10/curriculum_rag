@@ -692,6 +692,14 @@ Content standards:
 - In numbered/bulleted calculation steps, each step label must stay outside
   math. Put only that step's formula inside its own $$...$$ block. Never open
   one $$ block that spans multiple numbered/bulleted steps or prose labels.
+- Exercise blocks must be visually separated for export: put a blank line
+  before and after each "**Ví dụ N:**", "**Bài tập N:**", "**Bài tập tự luyện:**",
+  "**Giải:**", and "**Hướng dẫn giải:**" label. Put each subquestion on its
+  own line as "a) ...", "b) ..."; do not run multiple examples, exercises,
+  subquestions, or solution steps into one paragraph.
+- Standalone equations in examples/exercises must always be written as their
+  own $$...$$ block. Do not leave lines such as "I_max = ..." or "P = ..."
+  outside math delimiters, and never emit repeated equals like "== ==".
 - Colon rule: keep prose explanations on the same line/paragraph after ":".
   Correct: "Ví dụ thực tiễn: ..." and "Điểm khác biệt là: ...".
   Start a new list after ":" only for a true list, table, formula explanation,

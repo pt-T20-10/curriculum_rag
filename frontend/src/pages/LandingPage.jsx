@@ -123,8 +123,8 @@ function HeroSection({ cfg, user }) {
 
       {/* Nav bar inside hero */}
       <nav className="absolute top-0 left-0 right-0 flex items-center justify-between px-6 md:px-12 py-5 z-10">
-        <span className="font-bold text-xl tracking-tight text-white">
-          📖 AI Textbook
+        <span className="font-bold text-2xl tracking-tight text-white">
+          AATG
         </span>
         <div className="flex items-center gap-3">
           <LanguageSwitcher compact />
@@ -499,7 +499,7 @@ function CtaBannerSection({ cfg, user }) {
 export function LandingPage() {
   const { user, loading } = useAuth()
   const { i18n } = useTranslation()
-  const language = i18n.resolvedLanguage || i18n.language || 'vi'
+  const language = i18n.resolvedLanguage || i18n.language || 'en'
   // Lazy initializer: loadConfig() runs once synchronously before first render
   const [config, setConfig] = useState(() => loadConfig(language))
   const [plans, setPlans] = useState([])

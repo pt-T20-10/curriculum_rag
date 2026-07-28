@@ -25,7 +25,10 @@ _CHAPTER_RE = re.compile(
     re.IGNORECASE,
 )
 _NUMBERED_ITEM_RE = re.compile(r"(?<![\d\[])(\d{1,2})\.(\d{1,2})(?:\.(\d{1,2}))?\.?\s+")
-_TOPIC_RE = re.compile(r"t[êe]n\s+gi[aá]o\s+tr[iì]nh(?:/s[aá]ch)?\s*:\s*(.*)", re.IGNORECASE)
+_TOPIC_RE = re.compile(
+    r"t[êe]n\s+(?:gi[aá]o\s+tr[iì]nh(?:/s[aá]ch)?|h[oọ]c\s+ph[ầa]n)\s*:\s*(.*)",
+    re.IGNORECASE,
+)
 _MAX_STRUCTURE_FILE_SIZE = 10 * 1024 * 1024
 
 
@@ -108,9 +111,9 @@ def _add_warning(warnings: list[str], message: str) -> None:
 
 def _strip_chapter_prefix(text: str, chapter_number: int | None = None) -> str:
     if chapter_number is None:
-        pattern = r"^\s*(?:chương|chuong|bài|bai)(?:\s+thực\s+hành|\s+thuc\s+hanh)?\s*\d+\s*[:.)\-]*\s*"
+        pattern = r"^\s*(?:chương|chuong|bài|bai)(?:\s+thực\s+hành|\s+thuc\s+hanh)?\s*\d+\s*[:.)\-–—]*\s*"
     else:
-        pattern = rf"^\s*(?:chương|chuong|bài|bai)(?:\s+thực\s+hành|\s+thuc\s+hanh)?\s*{chapter_number}\s*[:.)\-]*\s*"
+        pattern = rf"^\s*(?:chương|chuong|bài|bai)(?:\s+thực\s+hành|\s+thuc\s+hanh)?\s*{chapter_number}\s*[:.)\-–—]*\s*"
     return re.sub(pattern, "", text, flags=re.IGNORECASE).strip()
 
 
@@ -425,6 +428,148 @@ def _parse_table_rows(
     )
 
 
+def _header_cell_indexes(row: dict[str, Any]) -> dict[str, int]:
+    indexes: dict[str, int] = {}
+    for idx, cell in enumerate(row.get("cells") or []):
+        normalized = _normalize_ascii(cell)
+        if "noi dung" in normalized and "content" not in indexes:
+            indexes["content"] = idx
+        if normalized in {"tuan", "tuần"} or normalized.startswith("tuan"):
+            indexes["week"] = idx
+        if "tai lieu" in normalized:
+            indexes["reference"] = idx
+        if "cdr" in normalized or "chuan dau ra" in normalized:
+            indexes["outcome"] = idx
+    return indexes
+
+
+def _is_weekly_detail_table(rows: list[dict[str, Any]]) -> bool:
+    for row in rows[:3]:
+        indexes = _header_cell_indexes(row)
+        if "week" in indexes and "content" in indexes:
+            return True
+    return False
+
+
+def _content_lines_from_row(row: dict[str, Any], content_index: int) -> list[str]:
+    cell_lines = row.get("cell_lines") or []
+    if content_index < len(cell_lines):
+        return [
+            str(line or "").strip()
+            for line in cell_lines[content_index]
+            if str(line or "").strip()
+        ]
+    cells = row.get("cells") or []
+    if content_index < len(cells):
+        return [
+            str(part or "").strip()
+            for part in str(cells[content_index] or "").splitlines()
+            if str(part or "").strip()
+        ]
+    return []
+
+
+def _append_weekly_subsection(
+    chapter: dict[str, Any],
+    line: str,
+    warnings: list[str],
+    unparsed_items: list[str],
+) -> bool:
+    added = False
+    dash_items = _split_dash_items(line)
+    titles = dash_items or [_clean_outline_title(line)]
+    for title in titles:
+        if not title or _is_boilerplate(title):
+            continue
+        if _CHAPTER_RE.match(title):
+            unparsed_items.append(title)
+            continue
+        chapter.setdefault("subsections", []).append({
+            "title": title,
+            "children": [],
+        })
+        added = True
+    return added
+
+
+def _parse_weekly_detail_rows(
+    rows: list[dict[str, Any]],
+    *,
+    topic: str,
+    warnings: list[str],
+    unparsed_items: list[str],
+) -> dict[str, Any]:
+    chapters: list[dict[str, Any]] = []
+    current_chapter: dict[str, Any] | None = None
+    current_chapter_number: int | None = None
+    current_week: str = ""
+    header_indexes: dict[str, int] = {}
+
+    for row in rows:
+        row_indexes = _header_cell_indexes(row)
+        if "week" in row_indexes and "content" in row_indexes:
+            header_indexes = row_indexes
+            continue
+        if not header_indexes:
+            continue
+
+        cells = row.get("cells") or []
+        week_cell = str(cells[header_indexes.get("week", 0)] if cells else "").strip()
+        content_lines = _content_lines_from_row(row, header_indexes["content"])
+        if not content_lines:
+            continue
+
+        chapter_line_idx: int | None = None
+        chapter_match: re.Match[str] | None = None
+        for idx, line in enumerate(content_lines):
+            chapter_match = _CHAPTER_RE.match(line)
+            if chapter_match:
+                chapter_line_idx = idx
+                break
+
+        if chapter_line_idx is not None and chapter_match is not None:
+            current_chapter_number = int(chapter_match.group(1))
+            chapter_title = _chapter_title_from_content(
+                content_lines[chapter_line_idx],
+                current_chapter_number,
+            )
+            current_chapter = {
+                "title": chapter_title,
+                "subsections": [],
+            }
+            current_week = week_cell
+            chapters.append(current_chapter)
+            for line in content_lines[chapter_line_idx + 1:]:
+                _append_weekly_subsection(current_chapter, line, warnings, unparsed_items)
+            continue
+
+        if current_chapter is None or current_chapter_number is None:
+            continue
+
+        # Continuation rows for the same week usually carry the remaining
+        # bullet/paragraph list for the current chapter. Rows for a later week
+        # without a chapter header are often assessments or reports, so avoid
+        # folding them into the previous chapter.
+        same_week_continuation = week_cell and current_week and week_cell == current_week
+        dash_continuation = any(str(line or "").strip().startswith("-") for line in content_lines)
+        if not same_week_continuation and not dash_continuation:
+            for line in content_lines:
+                title = _clean_outline_title(line)
+                if title and not _is_boilerplate(title):
+                    unparsed_items.append(title)
+            continue
+
+        for line in content_lines:
+            _append_weekly_subsection(current_chapter, line, warnings, unparsed_items)
+
+    return _finalize_parsed_curriculum(
+        topic=topic,
+        chapters=chapters,
+        target_pages=None,
+        warnings=warnings,
+    )
+
+
 def _extract_topic(lines: list[str]) -> str:
     for idx, line in enumerate(lines):
         match = _TOPIC_RE.search(line)
@@ -717,9 +862,25 @@ def parse_structure_document(filename: str, content: bytes) -> dict[str, Any]:
                 and "so trang" in " ".join(_normalize_ascii(cell) for cell in row.get("cells") or [])
                 for row in rows
             )
-            if not header_found:
+            if header_found:
+                curriculum = _parse_table_rows(
+                    rows,
+                    topic=topic,
+                    warnings=warnings,
+                    unparsed_items=unparsed_items,
+                )
+                return {
+                    "topic": topic,
+                    "target_pages": curriculum.get("target_pages"),
+                    "structure_depth": curriculum.get("structure_depth", "level1"),
+                    "curriculum": curriculum,
+                    "warnings": warnings,
+                    "unparsed_items": unparsed_items[:30],
+                    "source_format": "docx",
+                }
+            if not _is_weekly_detail_table(rows):
                 continue
-            curriculum = _parse_table_rows(
+            curriculum = _parse_weekly_detail_rows(
                 rows,
                 topic=topic,
                 warnings=warnings,
@@ -732,7 +893,7 @@ def parse_structure_document(filename: str, content: bytes) -> dict[str, Any]:
                 "curriculum": curriculum,
                 "warnings": warnings,
                 "unparsed_items": unparsed_items[:30],
-                "source_format": "docx",
+                "source_format": "docx_weekly_detail",
             }
         _add_warning(warnings, "Không tìm thấy bảng TT / Nội dung / Số trang; đã thử nhận dạng từ văn bản.")
         rows = _text_rows(lines)

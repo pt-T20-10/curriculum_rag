@@ -60,11 +60,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         else:
             print("✅ Production schema managed by Alembic")
 
-        from app.services.schema_compat import ensure_textbook_task_id_column
+        from app.services.schema_compat import ensure_database_schema_compat
 
-        schema_action = await ensure_textbook_task_id_column()
-        if schema_action in {"renamed", "added"}:
-            print(f"✅ Database compatibility repair applied: textbooks.task_id {schema_action}")
+        schema_actions = await ensure_database_schema_compat()
+        repaired_columns = [
+            column for column, action in schema_actions.items()
+            if action in {"added", "renamed"}
+        ]
+        if repaired_columns:
+            print(
+                "✅ Database compatibility repair applied: "
+                + ", ".join(repaired_columns)
+            )
 
         from app.services.bootstrap import ensure_default_admin_user
 

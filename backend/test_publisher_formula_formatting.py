@@ -1,9 +1,12 @@
+import re
+
 from app.services.textbook.publisher import (
     fix_inline_display_math,
     lint_math_export_risks,
     normalize_display_math_blocks,
     normalize_formula_explanations,
     normalize_math_identifier_formatting,
+    normalize_markdown_table_cell_pipes,
     normalize_lead_in_labels,
     normalize_list_lead_in_labels,
     promote_standalone_inline_math,
@@ -209,6 +212,23 @@ def test_lint_math_export_risks_repairs_double_equals_in_formula():
 
     assert "I_{tong} = \\frac{P}{U}" in linted
     assert "= =" not in linted
+
+
+def test_normalize_markdown_table_cell_pipes_escapes_absolute_value_pipes():
+    content = (
+        "| Chỉ tiêu | Công thức | Ngưỡng | Ý nghĩa |\n"
+        "| --- | --- | --- | --- |\n"
+        "| Hiệu quả kiểm soát chi phí | |Chi phí thực tế - Dự toán| / Dự toán × 100% | < 5% | Kiểm soát ổn định |\n"
+    )
+
+    normalized = normalize_markdown_table_cell_pipes(content)
+
+    assert (
+        "| Hiệu quả kiểm soát chi phí | "
+        r"\|Chi phí thực tế - Dự toán\| / Dự toán × 100% | "
+        "< 5% | Kiểm soát ổn định |"
+    ) in normalized
+    assert len(re.findall(r"(?<!\\)\|", normalized.splitlines()[2])) == 5
 
 
 def test_normalize_list_lead_in_labels_keeps_numbered_bold_label_inline():

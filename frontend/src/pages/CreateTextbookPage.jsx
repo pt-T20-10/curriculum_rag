@@ -134,7 +134,7 @@ export function CreateTextbookPage() {
               max_subsections_per_chapter: data.max_subsections_per_chapter || 5,
               max_child_subsections_per_section: data.max_child_subsections_per_section || 3,
               enable_images: data.enable_images !== undefined ? data.enable_images : true,
-              language: data.language || 'vi',
+              language: data.language || 'en',
               planning_mode: data.planning_mode || 'auto',
               structure_depth: data.structure_depth || 'level1',
               textbook_mode: data.textbook_mode || 'standard',
@@ -142,7 +142,7 @@ export function CreateTextbookPage() {
               formula_need: data.formula_need || 'none',
               target_pages: data.target_pages || null,
               generation_mode: data.generation_mode,
-              credential_usage: data.credential_usage,
+              credential_usage: data.credential_usage === 'system' ? 'system' : 'one_time',
               model_selection: data.model_selection_runtime,
               page_validation: data.page_validation || null,
               source_preferences: data.source_preferences || {
@@ -226,14 +226,17 @@ export function CreateTextbookPage() {
     if (creatingTextbook) return
     setError(null)
     setCreatingTextbook(true)
-    const uiLanguage = (i18n.resolvedLanguage || i18n.language || 'vi').split('-')[0]
+    const uiLanguage = (i18n.resolvedLanguage || i18n.language || 'en').split('-')[0]
 
     try {
-      const response = await textbooksAPI.create({
+      const payload = {
         ...formData,
         ui_language: uiLanguage,
         export_formats: ['PDF', 'Word'],
-      })
+      }
+      const response = formData.source_files?.length
+        ? await textbooksAPI.createWithSources(payload)
+        : await textbooksAPI.create(payload)
 
       const textbook = response.data
       setTextbookId(textbook.id)
@@ -328,7 +331,7 @@ export function CreateTextbookPage() {
       setConfirmingCurriculum(true)
       setConfirmedCurriculum(curriculum)
       const response = await textbooksAPI.confirmCurriculum(textbookId, curriculum, pagePlanConfirmed, {
-        credential_usage: submittedConfig?.credential_usage || 'saved',
+        credential_usage: submittedConfig?.credential_usage === 'system' ? 'system' : 'one_time',
         model_selection: submittedConfig?.model_selection,
       })
       if (response.data?.task_id) {
@@ -372,6 +375,27 @@ export function CreateTextbookPage() {
     } catch (err) {
       console.error('Reset planning draft error:', err)
       setError({ message: t('textbook.resetDraftError') })
+    }
+  }
+
+  const handleUseSystemSources = async () => {
+    if (!textbookId) return
+    try {
+      const response = await textbooksAPI.useSystemSources(textbookId)
+      if (response.data?.task_id) {
+        setTaskId(response.data.task_id)
+      }
+      setPhase('generating')
+      setProgressData(prev => ({
+        ...(prev || {}),
+        source_action_required: false,
+        error_message: '',
+        phase: 'generating',
+      }))
+    } catch (err) {
+      console.error('Use system sources error:', err)
+      const detail = err.response?.data?.detail
+      setError({ message: typeof detail === 'string' ? detail : t('textbook.sourceFallbackError') })
     }
   }
 
@@ -491,7 +515,6 @@ export function CreateTextbookPage() {
                   currentTopic={displayTopic}
                   submittedConfig={submittedConfig}
                   byokStatus={byokStatus}
-                  onByokStatusChange={setByokStatus}
                 />
               </div>
 
@@ -596,6 +619,39 @@ export function CreateTextbookPage() {
       </div>
 
       {/* Modals */}
+      {progressData?.source_action_required && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black bg-opacity-50 backdrop-blur-sm" />
+          <div className="relative mx-4 w-full max-w-lg rounded-lg bg-white p-6 shadow-2xl">
+            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-amber-100 text-xl font-bold text-amber-700">
+              !
+            </div>
+            <h3 className="mb-2 text-center text-xl font-bold text-gray-900">
+              {t('textbook.sourceActionTitle')}
+            </h3>
+            <p className="mb-4 text-center text-sm text-gray-600">
+              {t('textbook.sourceActionDescription')}
+            </p>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={handlePlanningReset}
+                className="flex-1 rounded-lg bg-gray-200 px-4 py-2 font-medium text-gray-700 transition-colors hover:bg-gray-300"
+              >
+                {t('textbook.sourceActionAddMore')}
+              </button>
+              <button
+                type="button"
+                onClick={handleUseSystemSources}
+                className="flex-1 rounded-lg bg-blue-600 px-4 py-2 font-medium text-white transition-colors hover:bg-blue-700"
+              >
+                {t('textbook.sourceActionUseSystem')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {formulaConfirmation && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div
@@ -691,7 +747,7 @@ export function CreateTextbookPage() {
                     setConfirmingCurriculum(true)
                     try {
                       const response = await textbooksAPI.confirmCurriculum(textbookId, pending.curriculum, true, {
-                        credential_usage: submittedConfig?.credential_usage || 'saved',
+                        credential_usage: submittedConfig?.credential_usage === 'system' ? 'system' : 'one_time',
                         model_selection: submittedConfig?.model_selection,
                       })
                       if (response.data?.task_id) {

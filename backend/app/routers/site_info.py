@@ -19,8 +19,8 @@ from app.security.jwt import require_admin
 router = APIRouter(tags=["site-info"])
 
 DEFAULT_SITE_INFO = {
-    "service_name_vi": "Hệ Thống Tạo Giáo Trình AI",
-    "service_name_en": "AI Textbook Generator",
+    "service_name_vi": "AATG",
+    "service_name_en": "AATG",
     "operator_name": "",
     "address_vi": "",
     "address_en": "",
@@ -84,7 +84,7 @@ def _admin_payload(config: SiteContactConfig | None) -> SiteInfoAdminResponse:
 
 @router.get("/site-info", response_model=SiteInfoPublicResponse)
 async def get_public_site_info(
-    language: Literal["vi", "en"] = Query("vi"),
+    language: Literal["vi", "en"] = Query("en"),
     db: AsyncSession = Depends(get_async_db),
 ) -> SiteInfoPublicResponse:
     config = await _get_config(db)

@@ -13,6 +13,7 @@ from app.schemas.curriculum import (
     get_chapter_and_subsection,
     get_section_location,
 )
+from app.ingestion.uploaded_sources import user_source_language_profile
 from app.utils.log_config import setup_logger
 
 logger = setup_logger(name="QueryFormulatorNode", logfile="logs/agents.log")
@@ -76,6 +77,12 @@ def formulate_query(state: AgentState) -> dict:
     textbook_mode     = state.get("textbook_mode", "standard")
     formula_policy    = state.get("formula_policy", "auto")
     formula_need      = state.get("formula_need", "none")
+    language          = state.get("language", "vi")
+    source_language_preference = str(state.get("source_language_preference") or "")
+    if not source_language_preference:
+        source_language_preference = str(
+            user_source_language_profile(state.get("source_materials") or []).get("preference") or ""
+        )
 
     try:
         location = get_section_location(curriculum, chap_idx, sub_idx)
@@ -200,6 +207,16 @@ def formulate_query(state: AgentState) -> dict:
                 max_terms=48,
             )
             logger.info(f"Formula-focused query: {enhanced_query}")
+
+        if source_language_preference == "vi" and str(language or "vi").lower().startswith("vi"):
+            enhanced_query = _compact_query(
+                [
+                    enhanced_query,
+                    "khái niệm giáo trình tiếng Việt bài giảng đại học ví dụ phương pháp quy trình",
+                ],
+                max_terms=52,
+            )
+            logger.info(f"Vietnamese-source-biased query: {enhanced_query}")
 
         return {
             "retrieval_query": enhanced_query,

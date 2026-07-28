@@ -108,6 +108,7 @@ export function ContentSidebar({ progressData }) {
       >
         <SourceAuditSection
           sourceAudit={progressData.source_audit}
+          sourceMaterials={progressData.source_materials}
           className="h-full"
         />
       </div>

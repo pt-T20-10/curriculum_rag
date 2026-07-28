@@ -10,6 +10,16 @@ export const textbooksAPI = {
   // Create textbook
   create: (data) => axios.post('/textbooks/', data),
 
+  createWithSources: (data) => {
+    const formData = new FormData()
+    const { source_files: sourceFiles = [], ...payload } = data
+    formData.append('payload', JSON.stringify(payload))
+    sourceFiles.forEach(file => formData.append('source_files', file))
+    return axios.post('/textbooks/with-sources', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
+
   // Parse an uploaded outline file into the manual structure editor shape
   parseStructureFile: (formData) =>
     axios.post('/textbooks/parse-structure-file', formData, {
@@ -27,6 +37,8 @@ export const textbooksAPI = {
   
   // Stop generation
   stop: (id) => axios.post(`/textbooks/${id}/stop`),
+
+  useSystemSources: (id) => axios.post(`/textbooks/${id}/use-system-sources`),
 
   // Estimate credits for the confirmed curriculum without charging
   estimateCredits: (id, curriculum) =>

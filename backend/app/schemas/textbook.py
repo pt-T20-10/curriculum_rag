@@ -40,6 +40,8 @@ class SourcePreferences(BaseModel):
     selected_source_ids: List[str] = Field(default_factory=list, max_length=20)
     custom_urls: List[str] = Field(default_factory=list, max_length=30)
     custom_domains: List[str] = Field(default_factory=list, max_length=20)
+    reference_style: Literal["none", "apa_numbered"] = "none"
+    fallback_policy: Literal["none", "ask_then_system"] = "none"
 
     @field_validator("selected_source_ids")
     @classmethod
@@ -99,12 +101,13 @@ class TextbookCreate(BaseModel):
     textbook_mode: Literal["standard", "practice"] = "standard"
     formula_policy: Literal["auto", "include", "exclude"] = "auto"
     formula_confirmed: bool = False
-    credential_usage: CredentialUsage = "saved"
+    credential_usage: CredentialUsage = "one_time"
     openai_api_key: Optional[str] = Field(default=None, max_length=500)
     serper_api_key: Optional[str] = Field(default=None, max_length=500)
     skip_serper_api_key: bool = False
     model_selection: TextbookModelSelection = Field(default_factory=TextbookModelSelection)
     source_preferences: SourcePreferences = Field(default_factory=SourcePreferences)
+    source_materials: Optional[List[Dict[str, Any]]] = Field(default_factory=list)
     initial_structure: Optional[Dict[str, Any]] = None
     initial_structure_markdown: Optional[str] = Field(default=None, max_length=20000)
 
@@ -127,6 +130,7 @@ class TextbookResponse(BaseModel):
     formula_policy: str = "auto"
     formula_need: str = "none"
     source_preferences: Optional[Dict[str, Any]] = Field(default_factory=default_source_preferences)
+    source_materials: Optional[List[Dict[str, Any]]] = Field(default_factory=list)
     status: str
     pdf_path: Optional[str] = None
     docx_path: Optional[str] = None
@@ -189,7 +193,7 @@ class TextbookProgressResponse(BaseModel):
 class CurriculumConfirmRequest(BaseModel):
     curriculum: Dict[str, Any]
     page_plan_confirmed: bool = False
-    credential_usage: CredentialUsage = "saved"
+    credential_usage: CredentialUsage = "one_time"
     openai_api_key: Optional[str] = Field(default=None, max_length=500)
     serper_api_key: Optional[str] = Field(default=None, max_length=500)
     skip_serper_api_key: bool = False

@@ -493,12 +493,12 @@ export function CurriculumEditor({
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-sm font-semibold text-emerald-900">
-              {usesUserProvidedKeys ? 'Không trừ credit hệ thống' : t('textbook.curriculum.creditEstimateTitle')}
+              {usesUserProvidedKeys ? t('textbook.curriculum.userKeysNoCreditTitle') : t('textbook.curriculum.creditEstimateTitle')}
             </p>
             {creditEstimate ? (
               <p className="text-xs text-emerald-700 mt-1">
                 {usesUserProvidedKeys
-                  ? 'Bạn đang dùng OpenAI/Serper API key của riêng mình; chi phí phát sinh trực tiếp trên tài khoản API của bạn.'
+                  ? t('textbook.curriculum.userKeysNoCreditDescription')
                   : t('textbook.curriculum.creditEstimateDetails', {
                     chapters: creditEstimate.total_chapters,
                     subsections: creditEstimate.total_subsections,

@@ -23,6 +23,25 @@ def _docx_bytes(rows, topic="TEST GIÁO TRÌNH"):
     return output.getvalue()
 
 
+def _weekly_docx_bytes(rows, topic="Xử lý ảnh"):
+    from docx import Document
+
+    document = Document()
+    document.add_paragraph(f"Tên học phần: {topic}")
+    document.add_paragraph("Nội dung chi tiết học phần")
+    table = document.add_table(rows=len(rows), cols=4)
+    for row_idx, row_values in enumerate(rows):
+        for col_idx, value in enumerate(row_values):
+            cell = table.cell(row_idx, col_idx)
+            cell.text = ""
+            for line_idx, line in enumerate(str(value).splitlines()):
+                paragraph = cell.paragraphs[0] if line_idx == 0 else cell.add_paragraph()
+                paragraph.text = line
+    output = BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
 def test_parse_structure_markdown_uses_chapters_and_subsections() -> None:
     curriculum = parse_structure_markdown(
         """
@@ -171,6 +190,53 @@ def test_parse_structure_document_treats_lesson_and_dash_rows_as_chapter_section
         "Cấu hình IP tĩnh",
         "Cập nhật hệ thống",
     ]
+
+
+def test_parse_structure_document_reads_weekly_detail_table_as_level1_sections() -> None:
+    result = parse_structure_document(
+        "course-outline.docx",
+        _weekly_docx_bytes([
+            ["Tuần", "Nội dung", "Tài liệu", "CĐR của HP"],
+            ["1", "Chương 1 – Tổng quan về xử lý ảnh", "[1] [2]", "CO1"],
+            [
+                "1",
+                "Giới thiệu lịch sử hình thành\nMột số thuật ngữ\nCác bước xử lý ảnh",
+                "[1] [2]",
+                "CO1",
+            ],
+            [
+                "2,3",
+                "Chương 2 – Xử lý điểm trên ảnh\n- Giới thiệu\n- Xử lý Histogram\n- Các phép toán số học",
+                "[1] [2]",
+                "CO2",
+            ],
+            [
+                "10",
+                "Báo cáo nhóm\nChủ đề báo cáo cuối kỳ",
+                "[1] [2]",
+                "CO1",
+            ],
+        ]),
+    )
+
+    assert result["topic"] == "Xử lý ảnh"
+    assert result["source_format"] == "docx_weekly_detail"
+    chapters = result["curriculum"]["chapters"]
+    assert [chapter["title"] for chapter in chapters] == [
+        "Tổng quan về xử lý ảnh",
+        "Xử lý điểm trên ảnh",
+    ]
+    assert [sub["title"] for sub in chapters[0]["subsections"]] == [
+        "Giới thiệu lịch sử hình thành",
+        "Một số thuật ngữ",
+        "Các bước xử lý ảnh",
+    ]
+    assert [sub["title"] for sub in chapters[1]["subsections"]] == [
+        "Giới thiệu",
+        "Xử lý Histogram",
+        "Các phép toán số học",
+    ]
+    assert "Báo cáo nhóm" in result["unparsed_items"]
 
 
 def test_parse_structure_document_treats_lines_after_colon_dash_as_children() -> None:

@@ -136,7 +136,8 @@ def test_ingestion_custom_only_without_sources_fails(monkeypatch) -> None:
         }
     )
 
-    assert "No custom sources" in result["messages"][0]
+    assert "USER_SOURCE_ACTION_REQUIRED" in result["messages"][0]
+    assert "No custom links or uploaded files" in result["messages"][0]
 
 
 def test_domain_cap_bypasses_priority_textbook_pdf() -> None:

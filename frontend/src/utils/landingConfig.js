@@ -172,7 +172,7 @@ function storageKey(language) {
 }
 
 function getDefaultConfig(language) {
-  return DEFAULT_CONFIGS[language] || DEFAULT_CONFIGS.vi
+  return DEFAULT_CONFIGS[language] || DEFAULT_CONFIGS.en
 }
 
 /** Deep merge: override top-level keys from stored, keep default shape. */
@@ -204,8 +204,8 @@ function migrateLegacyVietnameseConfig() {
   }
 }
 
-export function loadConfig(language = 'vi') {
-  const normalizedLanguage = DEFAULT_CONFIGS[language] ? language : 'vi'
+export function loadConfig(language = 'en') {
+  const normalizedLanguage = DEFAULT_CONFIGS[language] ? language : 'en'
 
   try {
     const raw = localStorage.getItem(storageKey(normalizedLanguage))
@@ -223,8 +223,8 @@ export function loadConfig(language = 'vi') {
   }
 }
 
-export function loadLegacySiteInfo(language = 'vi') {
-  const normalizedLanguage = DEFAULT_CONFIGS[language] ? language : 'vi'
+export function loadLegacySiteInfo(language = 'en') {
+  const normalizedLanguage = DEFAULT_CONFIGS[language] ? language : 'en'
   try {
     const raw = localStorage.getItem(storageKey(normalizedLanguage))
       || (normalizedLanguage === 'vi' ? localStorage.getItem(LEGACY_STORAGE_KEY) : null)
@@ -235,8 +235,8 @@ export function loadLegacySiteInfo(language = 'vi') {
   }
 }
 
-export function saveConfig(language = 'vi', config) {
-  const normalizedLanguage = DEFAULT_CONFIGS[language] ? language : 'vi'
+export function saveConfig(language = 'en', config) {
+  const normalizedLanguage = DEFAULT_CONFIGS[language] ? language : 'en'
   localStorage.setItem(storageKey(normalizedLanguage), JSON.stringify(config))
   window.dispatchEvent(
     new CustomEvent(LANDING_CONFIG_UPDATED_EVENT, {

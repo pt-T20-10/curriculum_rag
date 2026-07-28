@@ -32,6 +32,7 @@ def _unique_output_paths(output_dir: Path, stem: str) -> tuple[Path, Path]:
 
 def _write_typst_header(tmp_dir: Path) -> Path:
     header = tmp_dir / "typst_header.typ"
+    safe_font = publisher._typst_string_literal(publisher._document_font())
     header.write_text(
         textwrap.dedent("""\
             #let conf(
@@ -44,8 +45,8 @@ def _write_typst_header(tmp_dir: Path) -> Path:
               paper: "us-letter",
               lang: "en",
               region: "US",
-              font: (),
-              fontsize: 11pt,
+              font: __DOCUMENT_FONT__,
+              fontsize: 13pt,
               sectionnumbering: none,
               doc,
               ..args,
@@ -61,9 +62,12 @@ def _write_typst_header(tmp_dir: Path) -> Path:
                        font: font,
                        size: fontsize)
               set heading(numbering: sectionnumbering)
+              show heading.where(level: 1): it => align(center, text(it, size: 14pt, weight: "bold"))
+              show heading.where(level: 2): it => text(it, size: 13pt, weight: "bold")
+              show heading.where(level: 3): it => text(it, size: 13pt, weight: "bold")
               if cols == 1 { doc } else { columns(cols, doc) }
             }
-        """),
+        """).replace("__DOCUMENT_FONT__", safe_font),
         encoding="utf-8",
     )
     return header

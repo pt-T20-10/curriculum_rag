@@ -115,9 +115,9 @@ Admin:
 i18n được khởi tạo tại `src/i18n/index.js`:
 
 - Supported languages: `vi`, `en`
-- Default: `vi`
+- Default: `en`
 - Storage key: `app_language`
-- Fallback language: `vi`
+- Fallback language: `en`
 - Locale resources: `src/i18n/locales/vi.js` và `src/i18n/locales/en.js`
 - Khi đổi ngôn ngữ, app cập nhật cả `localStorage` và `document.documentElement.lang`
 

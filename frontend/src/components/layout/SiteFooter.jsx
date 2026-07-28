@@ -40,6 +40,7 @@ export function SiteFooter() {
   const navigationLinks = NAVIGATION_LINKS.map(withLabel)
   const legalLinks = LEGAL_LINKS.map(withLabel)
   const supportLinks = SUPPORT_LINKS.map(withLabel)
+  const brandName = t('app.name')
 
   const contactItems = [
     siteInfo.address && { icon: FiMapPin, text: siteInfo.address },
@@ -60,8 +61,8 @@ export function SiteFooter() {
       <div className="content-container py-10">
         <div className="grid gap-x-8 gap-y-10 border-b border-gray-800 pb-9 sm:grid-cols-2 lg:grid-cols-[1.45fr_0.8fr_1fr_1.1fr]">
           <div>
-            <Link to="/" className="text-base font-semibold text-white">
-              {siteInfo.service_name || t('app.name')}
+            <Link to="/" className="text-lg font-semibold text-white">
+              {brandName}
             </Link>
             <p className="mt-2 max-w-xl text-sm leading-6 text-gray-500">
               {t('footer.description')}
@@ -120,7 +121,7 @@ export function SiteFooter() {
           <p className="text-sm text-gray-500">
             {t('footer.defaultCopyright', {
               year: new Date().getFullYear(),
-              name: siteInfo.service_name || t('app.name'),
+              name: brandName,
             })}
           </p>
         </div>
